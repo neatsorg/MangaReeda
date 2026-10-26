@@ -15,12 +15,14 @@ fn main() {
         target_dir.pop();
     }
 
-    let required_files = [
-        ("pdfium.dll", "pdfium.dll"),
-        ("dav1d.dll", "dav1d.dll"),
+    let mut required_files = vec![
         ("settings.json", "settings.json"),
         ("LICENSE", "LICENSE"),
     ];
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        required_files.push(("pdfium.dll", "pdfium.dll"));
+        required_files.push(("dav1d.dll", "dav1d.dll"));
+    }
 
     for (file_name, label) in required_files {
         fs::copy(manifest_dir.join(file_name), target_dir.join(file_name))

@@ -33,7 +33,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE;
+#[cfg(windows)]
 use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
 
 const LONG_CLICK_DURATION: Duration = Duration::from_millis(450);
@@ -99,6 +101,9 @@ fn settings_path() -> PathBuf {
     exe_path
 }
 
+#[cfg(not(windows))]
+fn is_packaged_app() -> bool { false }
+#[cfg(windows)]
 fn is_packaged_app() -> bool {
     let mut length = 0;
     let result = unsafe { GetCurrentPackageFullName(&mut length, None) };

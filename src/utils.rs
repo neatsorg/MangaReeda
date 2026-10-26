@@ -3,12 +3,16 @@ use crate::localize::tr;
 use egui::PointerButton;
 use gilrs::Button as GilrsButton;
 use std::fs;
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use windows::Win32::UI::Shell::StrCmpLogicalW;
+#[cfg(windows)]
 use windows::core::PCWSTR;
 
 /// Performs Windows-native natural alphanumeric sorting
+#[cfg(windows)]
 pub fn windows_natural_sort(paths: &mut [PathBuf]) {
     paths.sort_by(|a, b| {
         // Convert OsStr to null-terminated Wide Strings (UTF-16) for Windows API
@@ -36,6 +40,7 @@ pub fn windows_natural_sort(paths: &mut [PathBuf]) {
 }
 
 /// Natural alphanumeric sorting specifically for String vectors
+#[cfg(windows)]
 pub fn windows_natural_sort_strings(strings: &mut [String]) {
     strings.sort_by(|a, b| {
         // Convert Strings to null-terminated UTF-16 for the Windows API
@@ -425,4 +430,36 @@ pub fn is_repeatable_gamepad_action(action: MangaAction) -> bool {
             | MangaAction::NextFolder
             | MangaAction::PrevFolder
     )
+}
+
+#[cfg(not(windows))]
+fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, _) => return std::cmp::Ordering::Less,
+            (_, None) => return std::cmp::Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let mut n1 = String::new(); while let Some(&c) = x.peek() { if c.is_ascii_digit() { n1.push(c); x.next(); } else { break } }
+                let mut n2 = String::new(); while let Some(&c) = y.peek() { if c.is_ascii_digit() { n2.push(c); y.next(); } else { break } }
+                let (t1, t2) = (n1.trim_start_matches('0'), n2.trim_start_matches('0'));
+                let o = t1.len().cmp(&t2.len()).then(t1.cmp(t2));
+                if o != std::cmp::Ordering::Equal { return o; }
+            }
+            (Some(c), Some(d)) => {
+                let o = c.to_lowercase().cmp(d.to_lowercase());
+                if o != std::cmp::Ordering::Equal { return o; }
+                x.next(); y.next();
+            }
+        }
+    }
+}
+#[cfg(not(windows))]
+pub fn windows_natural_sort(paths: &mut [PathBuf]) {
+    paths.sort_by(|a, b| nat_cmp(&a.file_name().unwrap_or_default().to_string_lossy(), &b.file_name().unwrap_or_default().to_string_lossy()));
+}
+#[cfg(not(windows))]
+pub fn windows_natural_sort_strings(strings: &mut [String]) {
+    strings.sort_by(|a, b| nat_cmp(&Path::new(a).file_name().unwrap_or_default().to_string_lossy(), &Path::new(b).file_name().unwrap_or_default().to_string_lossy()));
 }
