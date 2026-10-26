@@ -1,5 +1,5 @@
 [package]
-name = "RustMangaReader"
+name = "mangareeda"
 version = "0.2.4"
 edition = "2024"
 build = "build.rs"

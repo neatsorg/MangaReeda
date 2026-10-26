@@ -34,7 +34,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Rust Manga Reader for Windows - Productivity",
+        "MangaReeda",
         native_options,
         Box::new(|cc| Ok(Box::new(MangaReader::new(cc, initial_path)))),
     )

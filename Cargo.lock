@@ -3,24 +3,6 @@
 version = 4
 
 [[package]]
-name = "RustMangaReader"
-version = "0.2.4"
-dependencies = [
- "eframe",
- "egui",
- "gilrs",
- "image",
- "pdfium-render",
- "rfd",
- "serde",
- "serde_json",
- "unrar",
- "windows 0.62.2",
- "winres",
- "zip",
-]
-
-[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2341,6 +2323,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "mangareeda"
+version = "0.2.4"
+dependencies = [
+ "eframe",
+ "egui",
+ "gilrs",
+ "image",
+ "pdfium-render",
+ "rfd",
+ "serde",
+ "serde_json",
+ "unrar",
+ "windows 0.62.2",
+ "winres",
+ "zip",
 ]
 
 [[package]]
