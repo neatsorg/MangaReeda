@@ -1,25 +1,18 @@
 use super::MangaReader;
 use super::animation::AnimationScanStatus;
-use super::navigation::is_portrait;
-use crate::config::{ImageSizingMode, PageViewOptions, ResizeMethod, SourceMode};
+use crate::config::{PageViewOptions, SourceMode};
+use crate::engine::imaging::{
+    ImageProcessingSpec, resize_for_display, strip_adobe_app14_if_invalid,
+};
+use crate::engine::layout::is_portrait;
+use crate::engine::library::{natural_sort_strings, scan_folder};
+use crate::engine::source::{Listing, SourceReader, list_images, read_entry};
 use crate::localize::tr;
-use crate::utils::{scan_folder, strip_adobe_app14_if_invalid, windows_natural_sort_strings};
 use eframe::egui;
 use image::{DynamicImage, ImageFormat};
 use pdfium_render::prelude::{Pdfium, Pixels};
-use std::fs::{self, File};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-
-#[derive(Clone, Copy)]
-pub(super) struct ImageProcessingSpec {
-    pub(super) resize_method: ResizeMethod,
-    pub(super) image_sizing_mode: ImageSizingMode,
-    pub(super) transparency_support: bool,
-    pub(super) zoom_factor: f32,
-    pub(super) container_size: [f32; 2],
-}
 
 impl MangaReader {
     pub(super) fn reload_current_image(&mut self, ctx: &egui::Context) {
@@ -114,55 +107,6 @@ impl MangaReader {
         }
     }
 
-    pub(super) fn read_source_bytes_from(
-        source_mode: SourceMode,
-        source_path: &Path,
-        filename: &str,
-    ) -> Option<Vec<u8>> {
-        if source_mode == SourceMode::Folder {
-            return fs::read(filename).ok();
-        }
-        if source_mode == SourceMode::Zip {
-            let file = File::open(source_path).ok()?;
-            let mut archive = zip::ZipArchive::new(file).ok()?;
-            let mut entry = archive.by_name(filename).ok()?;
-            let mut buffer = Vec::new();
-            entry.read_to_end(&mut buffer).ok()?;
-            return Some(buffer);
-        }
-        if source_mode == SourceMode::Rar {
-            return unrar::Archive::new(source_path)
-                .open_for_processing()
-                .ok()
-                .and_then(|rar_archive| {
-                    let mut cursor = rar_archive.read_header().ok().flatten();
-                    loop {
-                        match cursor {
-                            Some(e) => {
-                                let current_name = e.entry().filename.to_str();
-                                if let Some(name_str) = current_name {
-                                    if name_str == filename {
-                                        break e.read().ok().map(|(bytes, _arc)| bytes);
-                                    }
-                                    cursor = e
-                                        .skip()
-                                        .ok()
-                                        .and_then(|arc| arc.read_header().ok().flatten());
-                                } else {
-                                    cursor = e
-                                        .skip()
-                                        .ok()
-                                        .and_then(|arc| arc.read_header().ok().flatten());
-                                }
-                            }
-                            None => break None,
-                        }
-                    }
-                });
-        }
-        None
-    }
-
     pub(super) fn current_image_processing_spec(&self, ctx: &egui::Context) -> ImageProcessingSpec {
         let container_size = self.effective_image_container_size(ctx);
         ImageProcessingSpec {
@@ -179,48 +123,7 @@ impl MangaReader {
         spec: ImageProcessingSpec,
     ) -> egui::ColorImage {
         let resize_start = Instant::now();
-        let filter = spec.resize_method.to_filter();
-        let processed_img = if let Some(filter_type) = filter {
-            if spec.image_sizing_mode == ImageSizingMode::OriginalSize {
-                img
-            } else {
-                let container_size = egui::vec2(spec.container_size[0], spec.container_size[1]);
-                let aspect_ratio = img.width() as f32 / img.height() as f32;
-                let factor = if (spec.zoom_factor - 1.0).abs() > 0.01 {
-                    3
-                } else {
-                    1
-                };
-                let (target_w, target_h) = match spec.image_sizing_mode {
-                    ImageSizingMode::FitHeight => {
-                        let target_h = container_size.y.max(1.0) as u32;
-                        let target_w = (target_h as f32 * aspect_ratio) as u32;
-                        (target_w, target_h)
-                    }
-                    ImageSizingMode::FitWidth => {
-                        let target_w = container_size.x.max(1.0) as u32;
-                        let target_h = (target_w as f32 / aspect_ratio) as u32;
-                        (target_w, target_h)
-                    }
-                    ImageSizingMode::FitBoth => {
-                        let width_scale = container_size.x.max(1.0) / img.width() as f32;
-                        let height_scale = container_size.y.max(1.0) / img.height() as f32;
-                        let scale = width_scale.min(height_scale);
-                        let target_w = (img.width() as f32 * scale) as u32;
-                        let target_h = (img.height() as f32 * scale) as u32;
-                        (target_w, target_h)
-                    }
-                    ImageSizingMode::OriginalSize => unreachable!(),
-                };
-                img.resize(
-                    target_w.max(1) * factor,
-                    target_h.max(1) * factor,
-                    filter_type,
-                )
-            }
-        } else {
-            img
-        };
+        let processed_img = resize_for_display(img, &spec);
 
         let _resize_time = resize_start.elapsed();
         let process_start = Instant::now();
@@ -241,7 +144,7 @@ impl MangaReader {
             println!("resize_time: {:?}", _resize_time);
             println!("process_time: {:?}", _process_time);
             println!("total: {:?}", _process_time + _resize_time);
-            println!("filter: {:?}", filter);
+            println!("filter: {:?}", spec.resize_method.to_filter());
             println!("----------------------------------");
         }
 
@@ -272,7 +175,7 @@ impl MangaReader {
 
     pub(super) fn read_source_bytes(&self, filename: &str) -> Option<Vec<u8>> {
         let source_path = self.zip_path.as_ref()?;
-        Self::read_source_bytes_from(self.source_mode, source_path, filename)
+        read_entry(self.source_mode, source_path, filename)
     }
 
     pub(super) fn load_pair(
@@ -290,14 +193,7 @@ impl MangaReader {
         let mut pair: [Option<egui::TextureHandle>; 2] = [None, None];
         let source_path = self.zip_path.clone().unwrap();
 
-        let mut archive = if self.source_mode == SourceMode::Zip {
-            let path = source_path.clone();
-            File::open(path)
-                .ok()
-                .and_then(|f| zip::ZipArchive::new(f).ok())
-        } else {
-            None
-        };
+        let mut reader = SourceReader::open(self.source_mode, &source_path);
 
         for i in 0..2 {
             let current_target = start_idx + i;
@@ -313,47 +209,7 @@ impl MangaReader {
                         pair[i] = self.load_texture(img, filename.clone(), ctx);
                     }
                 } else {
-                    let bytes = if self.source_mode == SourceMode::Folder {
-                        fs::read(filename).ok() // Load directly from path
-                    } else if let Some(ref mut arc) = archive {
-                        arc.by_name(filename).ok().and_then(|mut f| {
-                            let mut b = Vec::new();
-                            f.read_to_end(&mut b).ok().map(|_| b)
-                        })
-                    } else if self.source_mode == SourceMode::Rar {
-                        unrar::Archive::new(&source_path)
-                            .open_for_processing()
-                            .ok()
-                            .and_then(|rar_achive| {
-                                let mut cursor = rar_achive.read_header().ok().flatten();
-                                loop {
-                                    match cursor {
-                                        Some(e) => {
-                                            // Use .entry() before reference filename
-                                            let current_name = e.entry().filename.to_str();
-
-                                            if let Some(name_str) = current_name {
-                                                if name_str == filename {
-                                                    break e.read().ok().map(|(bytes, _arc)| bytes);
-                                                } else {
-                                                    cursor = e.skip().ok().and_then(|arc| {
-                                                        arc.read_header().ok().flatten()
-                                                    });
-                                                }
-                                            } else {
-                                                // Filename wasn't valid UTF-8, skip it
-                                                cursor = e.skip().ok().and_then(|arc| {
-                                                    arc.read_header().ok().flatten()
-                                                });
-                                            }
-                                        }
-                                        None => break None,
-                                    }
-                                }
-                            })
-                    } else {
-                        None
-                    };
+                    let bytes = reader.read(filename);
 
                     if let Some(mut buffer) = bytes {
                         if self.config.enable_auto_image_byte_fix {
@@ -477,100 +333,35 @@ impl MangaReader {
     pub(super) fn load_source(&mut self, path: PathBuf, ctx: &egui::Context) {
         self.stop_auto_scroll();
         self.clear_pdf_document_cache();
-        let mut target_path = path.clone();
-        let mut start_at_filename: Option<String> = None;
-
-        let mut images = Vec::new();
-        let exts = [
-            "png", "jpg", "jpeg", "bmp", "webp", "gif", "tiff", "tga", "avif",
-        ];
         let extension = path
             .extension()
             .map_or("".to_string(), |ext| ext.to_string_lossy().to_lowercase());
-        match extension.as_str() {
-            "zip" | "cbz" => {
-                let file = match File::open(&target_path) {
-                    Ok(f) => f,
-                    Err(_) => return,
-                };
-                if let Ok(mut archive) = zip::ZipArchive::new(file) {
-                    for i in 0..archive.len() {
-                        if let Ok(f) = archive.by_index(i) {
-                            let name = f.name().to_lowercase();
-                            if exts.iter().any(|&e| name.ends_with(&format!(".{}", e))) {
-                                images.push(f.name().to_string());
-                            }
-                        }
-                    }
-                    self.source_mode = SourceMode::Zip;
-                }
-                self.source_mode = SourceMode::Zip;
-                // ... existing zip logic
-            }
-            "cbr" | "rar" => {
-                self.source_mode = SourceMode::Rar;
-                if let Ok(archive) = unrar::Archive::new(&path).open_for_listing() {
-                    for entry in archive {
-                        if let Ok(e) = entry {
-                            // Convert Option<&str> to String safely
-                            if let Some(name_str) = e.filename.to_str() {
-                                let name = name_str.to_string();
-                                // Check if it's an image extension
-                                if exts
-                                    .iter()
-                                    .any(|&e_ext| name.to_lowercase().ends_with(e_ext))
-                                {
-                                    images.push(name);
-                                }
-                            }
-                        }
-                    }
+        let listing = if extension == "pdf" {
+            let mut images = Vec::new();
+            if let Some(page_count) = self.ensure_pdf_document_loaded(&path) {
+                for i in 0..page_count {
+                    // We use a virtual naming scheme for PDF pages in our image_files list
+                    images.push(format!("pdf_page_{}", i));
                 }
             }
-            "pdf" => {
-                // --- PDF MODE ---
-                match self.ensure_pdf_document_loaded(&path) {
-                    Some(page_count) => {
-                        for i in 0..page_count {
-                            // We use a virtual naming scheme for PDF pages in our image_files list
-                            images.push(format!("pdf_page_{}", i));
-                        }
-                    }
-                    None => {}
-                }
-                self.source_mode = SourceMode::Pdf;
+            Listing {
+                mode: SourceMode::Pdf,
+                root: path.clone(),
+                images,
+                start_at: None,
             }
-            _ => {
-                if path.is_file() {
-                    // Pivot: Use the folder containing this image as the source
-                    if let Some(parent) = path.parent() {
-                        start_at_filename = Some(path.to_string_lossy().to_string());
-                        target_path = parent.to_path_buf();
-                    }
-                }
+        } else {
+            match list_images(&path) {
+                Some(listing) => listing,
+                None => return,
+            }
+        };
+        self.source_mode = listing.mode;
+        let target_path = listing.root;
+        let start_at_filename = listing.start_at;
+        let mut images = listing.images;
 
-                if target_path.is_dir() {
-                    // --- FOLDER MODE ---
-                    if let Ok(entries) = fs::read_dir(&target_path) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if p.is_file()
-                                && exts.iter().any(|&e| {
-                                    p.extension().map_or(false, |ext| {
-                                        ext.to_string_lossy().to_lowercase() == e
-                                    })
-                                })
-                            {
-                                images.push(p.to_string_lossy().to_string());
-                            }
-                        }
-                    }
-                }
-                self.source_mode = SourceMode::Folder;
-            }
-        }
-
-        windows_natural_sort_strings(&mut images);
+        natural_sort_strings(&mut images);
 
         if images.is_empty() {
             let msg = tr("error.no_images_found").to_owned();

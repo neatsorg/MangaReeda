@@ -1,6 +1,7 @@
-use super::loader::ImageProcessingSpec;
 use super::{ANIMATION_SCAN_AHEAD_PAGES, MangaReader};
 use crate::config::{PageViewOptions, SourceMode};
+use crate::engine::imaging::ImageProcessingSpec;
+use crate::engine::source::read_entry;
 use eframe::egui;
 use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
@@ -158,9 +159,7 @@ impl MangaReader {
                 if epoch.load(Ordering::Relaxed) != generation {
                     return;
                 }
-                let Some(bytes) =
-                    Self::read_source_bytes_from(source_mode, &source_path, &filename)
-                else {
+                let Some(bytes) = read_entry(source_mode, &source_path, &filename) else {
                     continue;
                 };
                 let Some(status) = Self::detect_animation_scan_status(format, &bytes) else {

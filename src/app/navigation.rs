@@ -1,25 +1,10 @@
 use super::{AUTO_SCROLL_MAX_DELAY_MS, AUTO_SCROLL_MIN_DELAY_MS, MangaReader};
 use crate::config::{LastPageAction, MangaAction, PageViewOptions};
+use crate::engine::layout::{automatic_pair_count, is_portrait};
+use crate::engine::library::{get_adjacent_directories, scan_folder};
 use crate::localize::tr;
-use crate::utils::{get_adjacent_directories, scan_folder};
 use eframe::egui;
 use std::time::{Duration, Instant};
-
-pub(super) fn is_portrait(size: [u32; 2]) -> bool {
-    size[1] > size[0]
-}
-
-pub(super) fn automatic_pair_count(
-    first: Option<[u32; 2]>,
-    second: Option<[u32; 2]>,
-    cover: bool,
-) -> usize {
-    if !cover && first.is_some_and(is_portrait) && second.is_some_and(is_portrait) {
-        2
-    } else {
-        1
-    }
-}
 
 impl MangaReader {
     pub(super) fn auto_scroll_delay_ms(&self) -> u64 {

@@ -9,6 +9,7 @@ mod toolbar;
 mod view;
 
 use crate::config::{AppSettings, MangaAction, SourceMode};
+use crate::engine::settings_store;
 use crate::font;
 use crate::localize::{set_language, tr};
 use animation::{AnimatedFrame, AnimatedPage, AnimationScanEvent, AnimationScanStatus};
@@ -16,17 +17,11 @@ use eframe::egui;
 use gilrs::Gilrs;
 use pdfium_render::prelude::{PdfDocument, Pdfium};
 use settings_panel::{BindingTarget, ControlProfile};
-use std::env;
-use std::fs::{self};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
-#[cfg(windows)]
-use windows::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE;
-#[cfg(windows)]
-use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
 
 const LONG_CLICK_DURATION: Duration = Duration::from_millis(450);
 const GAMEPAD_INITIAL_REPEAT_DELAY: Duration = Duration::from_millis(800);
@@ -41,42 +36,6 @@ const ZOOM_STEP: f32 = 1.1;
 const ZOOM_RELOAD_DELAY: Duration = Duration::from_secs(1);
 const FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT: f32 = 20.0;
 const FULLSCREEN_TITLE_BAR_HEIGHT: f32 = 28.0;
-
-#[cfg(not(windows))]
-fn settings_path() -> PathBuf {
-    let base = env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let dir = base.join("RustMangaReader");
-    let _ = fs::create_dir_all(&dir);
-    dir.join("settings.json")
-}
-
-#[cfg(windows)]
-fn settings_path() -> PathBuf {
-    if is_packaged_app() {
-        let base = env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let dir = base.join("RustMangaReader");
-        let _ = fs::create_dir_all(&dir);
-        return dir.join("settings.json");
-    }
-
-    let mut exe_path = env::current_exe().expect("Failed to get current exe path");
-    exe_path.pop();
-    exe_path.push("settings.json");
-    exe_path
-}
-
-#[cfg(windows)]
-fn is_packaged_app() -> bool {
-    let mut length = 0;
-    let result = unsafe { GetCurrentPackageFullName(&mut length, None) };
-    result != APPMODEL_ERROR_NO_PACKAGE
-}
 
 pub struct MangaReader {
     zip_path: Option<PathBuf>,
@@ -141,18 +100,7 @@ pub struct MangaReader {
 impl MangaReader {
     pub fn new(_cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
         font::setup_custom_fonts(&_cc.egui_ctx);
-        let exe_path = settings_path();
-        eprintln!("Loading setting from : {:?}", exe_path.to_str());
-        let config: AppSettings = if let Ok(data) = std::fs::read_to_string(exe_path) {
-            // add |_| here to accept the error argument but ignore it
-            serde_json::from_str(&data).unwrap_or_else(|e| {
-                eprintln!("Error is : {:?}", e);
-                eprintln!("Failed to parse settings.json, using defaults.");
-                AppSettings::default()
-            })
-        } else {
-            AppSettings::default()
-        };
+        let config = settings_store::load();
         set_language(config.language);
 
         Self::with_settings(config, initial_path)
@@ -222,11 +170,7 @@ impl MangaReader {
     }
 
     fn save_settings(&self) {
-        if let Ok(json) = serde_json::to_string_pretty(&self.config) {
-            // write the config file in executable directory
-            let exe_path = settings_path();
-            let _ = std::fs::write(exe_path, json);
-        }
+        settings_store::save(&self.config);
     }
 
     fn show_fading_error(&mut self, msg: &str) {
@@ -288,9 +232,9 @@ impl eframe::App for MangaReader {
 
 #[cfg(test)]
 mod tests {
-    use super::navigation::automatic_pair_count;
     use super::*;
     use crate::config::{AppSettings, LastPageAction, PageViewOptions, ResizeMethod};
+    use crate::engine::layout::automatic_pair_count;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};

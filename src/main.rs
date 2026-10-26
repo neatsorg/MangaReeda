@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod engine;
 mod font;
 mod localize;
 mod utils;
