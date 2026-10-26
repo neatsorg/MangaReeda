@@ -401,6 +401,20 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_pdf_never_panics() {
+        // Holds without a pdfium library (it reports that) and with one (the
+        // file is not a valid PDF).
+        let pages = TestPages::new(&[]);
+        let pdf = pages.0.join("book.pdf");
+        fs::write(&pdf, b"not a pdf").unwrap();
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(AppSettings::default(), None);
+        reader.load_source(pdf, &ctx);
+        assert!(reader.image_files.is_empty());
+        assert!(reader.error_msg.is_some());
+    }
+
+    #[test]
     fn settings_missing_fields_fall_back_to_defaults() {
         let mut json = serde_json::to_value(AppSettings::default()).unwrap();
         let object = json.as_object_mut().unwrap();

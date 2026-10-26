@@ -7,6 +7,7 @@
   "language.japanese": "Japanese",
   "dialog.manga_files": "Manga Files",
   "error.no_images_found": "No images found in selection.",
+  "error.pdfium_missing": "Opening PDF files needs the pdfium library (libpdfium), which was not found.",
   "error.no_more_pages": "No more page in files",
   "error.first_page": "This is the first page in files",
   "error.no_more_zip_files": "No more zip files in folder.",

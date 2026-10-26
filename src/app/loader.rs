@@ -54,7 +54,27 @@ impl MangaReader {
             return Some(pdfium);
         }
 
-        let pdfium = Box::leak(Box::new(Pdfium::default()));
+        // Pdfium::default() panics when no library is found. Look in the working
+        // directory (as it does), next to the executable, then system-wide, and
+        // report a missing library instead.
+        let mut dirs = vec![PathBuf::from("./")];
+        if let Some(exe_dir) = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        {
+            dirs.push(exe_dir);
+        }
+        let bindings = dirs
+            .iter()
+            .find_map(|dir| {
+                Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(dir)).ok()
+            })
+            .or_else(|| Pdfium::bind_to_system_library().ok());
+        let Some(bindings) = bindings else {
+            eprintln!("pdfium library not found; PDF files cannot be opened.");
+            return None;
+        };
+        let pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
         self.pdfium = Some(pdfium);
         Some(pdfium)
     }
@@ -343,6 +363,9 @@ impl MangaReader {
                     // We use a virtual naming scheme for PDF pages in our image_files list
                     images.push(format!("pdf_page_{}", i));
                 }
+            } else if self.pdfium.is_none() {
+                self.show_fading_error(tr("error.pdfium_missing"));
+                return;
             }
             Listing {
                 mode: SourceMode::Pdf,
