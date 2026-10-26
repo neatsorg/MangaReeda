@@ -464,6 +464,7 @@ fn default_enable_animated_images() -> bool {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppSettings {
     pub resize_method: ResizeMethod,
     pub page_view_options: PageViewOptions,

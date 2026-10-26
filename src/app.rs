@@ -85,6 +85,19 @@ fn control_mapping_header(base_label: &'static str, profile: ControlProfile) -> 
     )
 }
 
+#[cfg(not(windows))]
+fn settings_path() -> PathBuf {
+    let base = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let dir = base.join("RustMangaReader");
+    let _ = fs::create_dir_all(&dir);
+    dir.join("settings.json")
+}
+
+#[cfg(windows)]
 fn settings_path() -> PathBuf {
     if is_packaged_app() {
         let base = env::var_os("LOCALAPPDATA")
@@ -101,8 +114,6 @@ fn settings_path() -> PathBuf {
     exe_path
 }
 
-#[cfg(not(windows))]
-fn is_packaged_app() -> bool { false }
 #[cfg(windows)]
 fn is_packaged_app() -> bool {
     let mut length = 0;
@@ -4281,6 +4292,23 @@ mod tests {
         assert_view(&reader, 0, PageViewOptions::DoubleRL, 1);
         reader.prev_page(&ctx, false);
         assert_view(&reader, 0, PageViewOptions::DoubleRL, 1);
+    }
+
+    #[test]
+    fn settings_missing_fields_fall_back_to_defaults() {
+        let mut json = serde_json::to_value(AppSettings::default()).unwrap();
+        let object = json.as_object_mut().unwrap();
+        object.remove("last_page_action");
+        object.remove("show_top_bar");
+        let config: AppSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(config.last_page_action, LastPageAction::GotoNextFile);
+        assert!(config.show_top_bar);
+    }
+
+    #[test]
+    fn bundled_settings_json_parses() {
+        let data = include_str!("../settings.json");
+        serde_json::from_str::<AppSettings>(data).unwrap();
     }
 
     #[test]
