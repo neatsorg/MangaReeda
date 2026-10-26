@@ -15,10 +15,7 @@ fn main() {
         target_dir.pop();
     }
 
-    let mut required_files = vec![
-        ("settings.json", "settings.json"),
-        ("LICENSE", "LICENSE"),
-    ];
+    let mut required_files = vec![("settings.json", "settings.json"), ("LICENSE", "LICENSE")];
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         required_files.push(("pdfium.dll", "pdfium.dll"));
         required_files.push(("dav1d.dll", "dav1d.dll"));

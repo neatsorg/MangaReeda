@@ -441,25 +441,62 @@ fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             (None, _) => return std::cmp::Ordering::Less,
             (_, None) => return std::cmp::Ordering::Greater,
             (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
-                let mut n1 = String::new(); while let Some(&c) = x.peek() { if c.is_ascii_digit() { n1.push(c); x.next(); } else { break } }
-                let mut n2 = String::new(); while let Some(&c) = y.peek() { if c.is_ascii_digit() { n2.push(c); y.next(); } else { break } }
+                let mut n1 = String::new();
+                while let Some(&c) = x.peek() {
+                    if c.is_ascii_digit() {
+                        n1.push(c);
+                        x.next();
+                    } else {
+                        break;
+                    }
+                }
+                let mut n2 = String::new();
+                while let Some(&c) = y.peek() {
+                    if c.is_ascii_digit() {
+                        n2.push(c);
+                        y.next();
+                    } else {
+                        break;
+                    }
+                }
                 let (t1, t2) = (n1.trim_start_matches('0'), n2.trim_start_matches('0'));
                 let o = t1.len().cmp(&t2.len()).then(t1.cmp(t2));
-                if o != std::cmp::Ordering::Equal { return o; }
+                if o != std::cmp::Ordering::Equal {
+                    return o;
+                }
             }
             (Some(c), Some(d)) => {
                 let o = c.to_lowercase().cmp(d.to_lowercase());
-                if o != std::cmp::Ordering::Equal { return o; }
-                x.next(); y.next();
+                if o != std::cmp::Ordering::Equal {
+                    return o;
+                }
+                x.next();
+                y.next();
             }
         }
     }
 }
 #[cfg(not(windows))]
 pub fn windows_natural_sort(paths: &mut [PathBuf]) {
-    paths.sort_by(|a, b| nat_cmp(&a.file_name().unwrap_or_default().to_string_lossy(), &b.file_name().unwrap_or_default().to_string_lossy()));
+    paths.sort_by(|a, b| {
+        nat_cmp(
+            &a.file_name().unwrap_or_default().to_string_lossy(),
+            &b.file_name().unwrap_or_default().to_string_lossy(),
+        )
+    });
 }
 #[cfg(not(windows))]
 pub fn windows_natural_sort_strings(strings: &mut [String]) {
-    strings.sort_by(|a, b| nat_cmp(&Path::new(a).file_name().unwrap_or_default().to_string_lossy(), &Path::new(b).file_name().unwrap_or_default().to_string_lossy()));
+    strings.sort_by(|a, b| {
+        nat_cmp(
+            &Path::new(a)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            &Path::new(b)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+        )
+    });
 }
