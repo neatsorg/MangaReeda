@@ -1061,6 +1061,63 @@ mod tests {
     }
 
     #[test]
+    fn match_height_gives_both_pages_of_a_spread_the_same_height() {
+        use crate::config::ImageSizingMode;
+        // 縦横比 0.5 と 0.7 の2枚
+        let pages = TestPages::new(&[[50, 100], [70, 100]]);
+        let ctx = egui::Context::default();
+        let half = egui::vec2(100.0, 160.0);
+        let sizes = |mode| {
+            let reader = pages.reader(
+                AppSettings {
+                    page_view_options: PageViewOptions::DoubleRL,
+                    image_sizing_mode: mode,
+                    enable_animated_images: false,
+                    resize_method: ResizeMethod::None,
+                    ..AppSettings::default()
+                },
+                &ctx,
+            );
+            reader.spread_draw_sizes(half, 1.0)
+        };
+        // 幅と高さに合わせると、それぞれ半分に収めるので高さが違う
+        let [first, second] = sizes(ImageSizingMode::FitBoth);
+        assert_eq!(first, egui::vec2(80.0, 160.0));
+        assert_ne!(first.y, second.y);
+        // 縦サイズを揃えると、どちらも収まる高さにそろう
+        let [first, second] = sizes(ImageSizingMode::MatchHeight);
+        assert_eq!(first.y, second.y);
+        assert!((second.x - 100.0).abs() < 1e-3);
+        assert!(first.x <= half.x && first.y <= half.y);
+    }
+
+    #[test]
+    fn shrink_only_keeps_small_pages_at_their_original_size() {
+        use crate::config::ImageSizingMode;
+        let pages = TestPages::new(&[[40, 60], [400, 600]]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                image_sizing_mode: ImageSizingMode::ShrinkOnly,
+                enable_animated_images: false,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        let container = egui::vec2(200.0, 200.0);
+        let tex = reader.textures[0].clone().unwrap();
+        assert_eq!(
+            reader.image_draw_size(&tex, container, 1.0),
+            egui::vec2(40.0, 60.0)
+        );
+        reader.next_page(&ctx, false);
+        let tex = reader.textures[0].clone().unwrap();
+        let size = reader.image_draw_size(&tex, container, 1.0);
+        assert!((size.y - 200.0).abs() < 1e-3 && size.x < 200.0);
+    }
+
+    #[test]
     fn reopening_a_book_resumes_at_its_bookmark() {
         let parent = TestPages::new(&[]);
         for book in ["a", "b"] {

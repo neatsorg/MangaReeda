@@ -1,6 +1,6 @@
 use super::MangaReader;
 use super::view::paint_page;
-use crate::config::{ImageSizingMode, MangaAction, PageViewOptions};
+use crate::config::{MangaAction, PageViewOptions};
 use crate::localize::tr;
 use eframe::egui;
 use egui::Align;
@@ -132,25 +132,15 @@ impl MangaReader {
                             (rect.width() * 0.5 - self.config.spread_center_offset.abs()).max(1.0),
                             rect.height(),
                         );
-                        let left_size = self.textures[1]
-                            .as_ref()
-                            .map(|tex| {
-                                self.image_draw_size(tex, page_container_size, self.zoom_factor)
-                            })
-                            .unwrap_or(egui::Vec2::ZERO);
-                        let right_size = self.textures[0]
-                            .as_ref()
-                            .map(|tex| {
-                                self.image_draw_size(tex, page_container_size, self.zoom_factor)
-                            })
-                            .unwrap_or(egui::Vec2::ZERO);
+                        let [right_size, left_size] =
+                            self.spread_draw_sizes(page_container_size, self.zoom_factor);
 
                         let center_axis = rect.center().x + self.pan_offset.x;
                         let offset = self.config.spread_center_offset;
                         let top_y = rect.center().y - left_size.y.max(right_size.y) * 0.5
                             + self.pan_offset.y;
                         let image_top_y = |size: egui::Vec2| {
-                            if self.config.image_sizing_mode == ImageSizingMode::FitBoth {
+                            if self.config.image_sizing_mode.centers_vertically() {
                                 rect.center().y - size.y * 0.5 + self.pan_offset.y
                             } else {
                                 top_y
@@ -253,14 +243,9 @@ impl MangaReader {
                         } else {
                             right_visible_half
                         };
-                        let left_image_size = self.textures[1]
-                            .as_ref()
-                            .map(|tex| self.image_draw_size(tex, left_half.size(), 1.0))
-                            .unwrap_or(egui::Vec2::ZERO);
-                        let right_image_size = self.textures[0]
-                            .as_ref()
-                            .map(|tex| self.image_draw_size(tex, right_half.size(), 1.0))
-                            .unwrap_or(egui::Vec2::ZERO);
+                        // 左右の領域は同じ大きさなので、まとめて計算する（縦サイズを揃えるときは2枚が組になる）
+                        let [right_image_size, left_image_size] =
+                            self.spread_draw_sizes(left_half.size(), 1.0);
 
                         let left_response = self.create_image_rect(
                             ui,

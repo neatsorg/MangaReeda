@@ -852,6 +852,26 @@ impl MangaReader {
                                 image_sizing_changed |= ui
                                     .radio_value(
                                         &mut self.config.image_sizing_mode,
+                                        ImageSizingMode::MatchHeight,
+                                        egui::RichText::new(tr(
+                                            "settings.image_sizing.match_height",
+                                        )),
+                                    )
+                                    .on_hover_text(tr("settings.image_sizing.match_height.tooltip"))
+                                    .clicked();
+                                image_sizing_changed |= ui
+                                    .radio_value(
+                                        &mut self.config.image_sizing_mode,
+                                        ImageSizingMode::ShrinkOnly,
+                                        egui::RichText::new(tr(
+                                            "settings.image_sizing.shrink_only",
+                                        )),
+                                    )
+                                    .on_hover_text(tr("settings.image_sizing.shrink_only.tooltip"))
+                                    .clicked();
+                                image_sizing_changed |= ui
+                                    .radio_value(
+                                        &mut self.config.image_sizing_mode,
                                         ImageSizingMode::OriginalSize,
                                         egui::RichText::new(tr("settings.image_sizing.original")),
                                     )

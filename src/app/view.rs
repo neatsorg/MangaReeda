@@ -5,6 +5,7 @@ const COVER_BLANK_MAX_SIDE: f32 = 64.0;
 /// ルーペの円を近似する多角形の頂点数
 const LOUPE_SEGMENTS: usize = 96;
 use crate::config::{ImageSizingMode, PageViewOptions};
+use crate::engine::imaging::{matched_height, shrink_only_scale};
 use crate::engine::loupe;
 use crate::engine::scroll::{self, Span};
 use eframe::egui;
@@ -145,12 +146,46 @@ impl MangaReader {
                 let width = container_size.x * zoom_factor;
                 egui::vec2(width, width / aspect_ratio)
             }
-            ImageSizingMode::FitBoth => {
+            // 1枚だけを見るときの「縦サイズを揃える」は幅と高さに合わせると同じ
+            ImageSizingMode::FitBoth | ImageSizingMode::MatchHeight => {
                 let scale = (container_size.x / tex_size.x).min(container_size.y / tex_size.y);
                 tex_size * scale * zoom_factor
             }
+            ImageSizingMode::ShrinkOnly => {
+                let original = self.original_size(tex);
+                let scale = shrink_only_scale(original.into(), container_size.into());
+                original * scale * zoom_factor
+            }
             ImageSizingMode::OriginalSize => tex_size * zoom_factor,
         }
+    }
+
+    /// 元画像の大きさ。テクスチャは表示用に縮めてあることがあるので、読み込み時の記録を使う
+    fn original_size(&self, tex: &egui::TextureHandle) -> egui::Vec2 {
+        self.image_dimensions.get(&tex.name()).map_or_else(
+            || tex.size_vec2(),
+            |&[width, height]| egui::vec2(width as f32, height as f32),
+        )
+    }
+
+    /// 見開きの2枚（textures[0], textures[1]）の描画サイズ。`half` は1枚ぶんの領域。
+    /// 「縦サイズを揃える」では2枚を同じ高さにする
+    pub(super) fn spread_draw_sizes(&self, half: egui::Vec2, zoom_factor: f32) -> [egui::Vec2; 2] {
+        if self.config.image_sizing_mode == ImageSizingMode::MatchHeight
+            && let [Some(first), Some(second)] = &self.textures
+        {
+            let aspect = |tex: &egui::TextureHandle| tex.size_vec2().x / tex.size_vec2().y;
+            let aspects = [aspect(first), aspect(second)];
+            let height = matched_height(aspects, half.into()) * zoom_factor;
+            return aspects.map(|aspect| egui::vec2(height * aspect, height));
+        }
+        [0, 1].map(|index| {
+            self.textures[index]
+                .as_ref()
+                .map_or(egui::Vec2::ZERO, |tex| {
+                    self.image_draw_size(tex, half, zoom_factor)
+                })
+        })
     }
 
     pub(super) fn top_down_image_draw_size(
@@ -169,10 +204,15 @@ impl MangaReader {
                 let width = container_size.x.max(1.0) * self.zoom_factor;
                 egui::vec2(width, width / aspect_ratio)
             }
-            ImageSizingMode::FitBoth => {
+            ImageSizingMode::FitBoth | ImageSizingMode::MatchHeight => {
                 let scale = (container_size.x.max(1.0) / tex_size.x)
                     .min(container_size.y.max(1.0) / tex_size.y);
                 tex_size * scale * self.zoom_factor
+            }
+            ImageSizingMode::ShrinkOnly => {
+                let original = self.original_size(tex);
+                let container = [container_size.x.max(1.0), container_size.y.max(1.0)];
+                original * shrink_only_scale(original.into(), container) * self.zoom_factor
             }
             ImageSizingMode::OriginalSize => tex_size * self.zoom_factor,
         }
@@ -299,16 +339,10 @@ impl MangaReader {
         }
         let offset = self.config.spread_center_offset;
         let container = egui::vec2((rect.width() * 0.5 - offset.abs()).max(1.0), rect.height());
-        let size = |index: usize| {
-            self.textures[index]
-                .as_ref()
-                .map(|tex| self.image_draw_size(tex, container, self.zoom_factor))
-        };
-        let (first, second) = (size(0), size(1));
-        if first.is_none() && second.is_none() {
+        if self.textures.iter().all(Option::is_none) {
             return None;
         }
-        let (first, second) = (first.unwrap_or_default(), second.unwrap_or_default());
+        let [first, second] = self.spread_draw_sizes(container, self.zoom_factor);
         // 右開きでは textures[0] が右、左開きでは左に来る
         let (left, right) = if self.config.page_view_options == PageViewOptions::DoubleLR {
             (first, second)
@@ -335,14 +369,9 @@ impl MangaReader {
 
     pub(super) fn double_page_needs_drag(&self, rect: Rect) -> bool {
         let page_size = egui::vec2(rect.width() * 0.5, rect.height());
-        self.textures[1]
-            .as_ref()
-            .map(|tex| self.image_draw_size(tex, page_size, self.zoom_factor))
-            .is_some_and(|size| size.x > page_size.x || size.y > page_size.y)
-            || self.textures[0]
-                .as_ref()
-                .map(|tex| self.image_draw_size(tex, page_size, self.zoom_factor))
-                .is_some_and(|size| size.x > page_size.x || size.y > page_size.y)
+        self.spread_draw_sizes(page_size, self.zoom_factor)
+            .iter()
+            .any(|size| size.x > page_size.x || size.y > page_size.y)
     }
 
     pub(super) fn create_image_rect(
@@ -361,7 +390,7 @@ impl MangaReader {
             if let Some(tex) = &self.textures[tex_index] {
                 let previous_clip_rect = ui.clip_rect();
                 ui.set_clip_rect(previous_clip_rect.intersect(visible_rect));
-                if self.config.image_sizing_mode == ImageSizingMode::FitBoth {
+                if self.config.image_sizing_mode.centers_vertically() {
                     let image_x = match align {
                         egui::Align::RIGHT => rect.right() - image_size.x,
                         egui::Align::Center => rect.center().x - image_size.x * 0.5,

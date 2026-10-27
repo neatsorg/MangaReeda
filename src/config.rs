@@ -73,6 +73,17 @@ pub enum ImageSizingMode {
     FitWidth,
     FitBoth,
     OriginalSize,
+    /// 縦サイズを揃える（MM-SCALE-02）: 見開きの2枚を同じ高さにして、ウインドウに収める
+    MatchHeight,
+    /// 縮小はするが拡大はしない（MM-SCALE-03）: 幅と高さに合わせるが、原寸より大きくしない
+    ShrinkOnly,
+}
+
+impl ImageSizingMode {
+    /// ページを縦方向の中央に置くモードか（高さいっぱいに広げないモード）
+    pub fn centers_vertically(self) -> bool {
+        matches!(self, Self::FitBoth | Self::MatchHeight | Self::ShrinkOnly)
+    }
 }
 
 impl Default for ImageSizingMode {
