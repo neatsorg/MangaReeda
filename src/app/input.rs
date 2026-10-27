@@ -87,6 +87,10 @@ impl MangaReader {
                                     "Thumbnails Large" => {
                                         keys.thumbnails_large = Some(new_shortcut)
                                     }
+                                    "Cover Thumbnails" => {
+                                        keys.cover_thumbnails = Some(new_shortcut)
+                                    }
+                                    "Upper Folder" => keys.upper_folder = Some(new_shortcut),
                                     _ => {}
                                 }
                                 self.binding_action = None;
@@ -211,6 +215,12 @@ impl MangaReader {
                 }
                 if is_triggered(&keys.thumbnails_large) {
                     action_to_run = MangaAction::ThumbnailsLarge;
+                }
+                if is_triggered(&keys.cover_thumbnails) {
+                    action_to_run = MangaAction::CoverThumbnails;
+                }
+                if is_triggered(&keys.upper_folder) {
+                    action_to_run = MangaAction::UpperFolder;
                 }
             });
         }
@@ -585,6 +595,8 @@ impl MangaReader {
             MangaAction::ToggleSplitPages => self.toggle_split_landscape_pages(ctx),
             MangaAction::ThumbnailsFitAll => self.open_thumbnails(ThumbnailMode::FitAll),
             MangaAction::ThumbnailsLarge => self.open_thumbnails(ThumbnailMode::Large),
+            MangaAction::CoverThumbnails => self.toggle_cover_thumbnails(),
+            MangaAction::UpperFolder => self.go_to_upper_folder(),
             MangaAction::SlideImageDown => {
                 if self.config.page_view_options == PageViewOptions::TopDown {
                     self.top_down_scroll_offset -=

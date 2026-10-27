@@ -179,10 +179,12 @@ pub enum MangaAction {
     ToggleSplitPages,
     ThumbnailsFitAll,
     ThumbnailsLarge,
+    CoverThumbnails,
+    UpperFolder,
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 37] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -218,6 +220,8 @@ impl MangaAction {
         Self::ToggleSplitPages,
         Self::ThumbnailsFitAll,
         Self::ThumbnailsLarge,
+        Self::CoverThumbnails,
+        Self::UpperFolder,
     ];
 }
 
@@ -344,6 +348,10 @@ pub struct KeyConfig {
     pub thumbnails_fit_all: Option<Shortcut>,
     #[serde(default)]
     pub thumbnails_large: Option<Shortcut>,
+    #[serde(default)]
+    pub cover_thumbnails: Option<Shortcut>,
+    #[serde(default)]
+    pub upper_folder: Option<Shortcut>,
 }
 
 // 既存の設定ファイルにこの項目が無いときもミーヤと同じ F8 を割り当てる
@@ -386,6 +394,8 @@ impl Default for KeyConfig {
             toggle_split_pages: None,
             thumbnails_fit_all: None,
             thumbnails_large: None,
+            cover_thumbnails: None,
+            upper_folder: None,
         }
     }
 }
@@ -434,6 +444,9 @@ impl KeyConfig {
             // MM-IN-K09: A = サムネイル（1画面）、H = サムネイル（8列）
             thumbnails_fit_all: Some(Shortcut::new(egui::Key::A, false, false, false)),
             thumbnails_large: Some(Shortcut::new(egui::Key::H, false, false, false)),
+            // MM-IN-K12: Shift+↑ = 上のフォルダへ、Shift+↓ = 表紙サムネイル
+            cover_thumbnails: Some(Shortcut::new(egui::Key::ArrowDown, false, false, true)),
+            upper_folder: Some(Shortcut::new(egui::Key::ArrowUp, false, false, true)),
         }
     }
 
@@ -479,6 +492,8 @@ impl KeyConfig {
             toggle_split_pages: None,
             thumbnails_fit_all: None,
             thumbnails_large: None,
+            cover_thumbnails: None,
+            upper_folder: None,
         }
     }
 }

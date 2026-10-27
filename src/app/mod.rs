@@ -264,7 +264,10 @@ impl eframe::App for MangaReader {
             // 一覧を開いているあいだは、一覧の切り替え以外の操作を受け付けない
             if !matches!(
                 action_to_run,
-                MangaAction::ThumbnailsFitAll | MangaAction::ThumbnailsLarge
+                MangaAction::ThumbnailsFitAll
+                    | MangaAction::ThumbnailsLarge
+                    | MangaAction::CoverThumbnails
+                    | MangaAction::UpperFolder
             ) {
                 action_to_run = MangaAction::None;
             }
@@ -696,6 +699,104 @@ mod tests {
         reader.load_source(other.0.clone(), false, &ctx);
         assert!(reader.thumbnails.is_none());
         assert!(reader.thumbnail_cache.textures.is_empty());
+    }
+
+    #[test]
+    fn cover_thumbnails_list_the_books_beside_the_current_one() {
+        use std::io::Write;
+        let shelf = TestPages::new(&[]);
+        let png = |width, height| {
+            let mut bytes = Vec::new();
+            image::RgbaImage::new(width, height)
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .unwrap();
+            bytes
+        };
+        let write_zip = |path: PathBuf, pages: usize| {
+            let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+            for page in 0..pages {
+                zip.start_file(
+                    format!("{page:02}.png"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+                zip.write_all(&png(10, 20)).unwrap();
+            }
+            zip.finish().unwrap();
+        };
+        // 実機 の shelf と同じ形: 書庫 2 冊、画像のフォルダ、冊の入ったフォルダ
+        let (a, b) = (shelf.0.join("01 A.zip"), shelf.0.join("02 B.zip"));
+        write_zip(a.clone(), 3);
+        write_zip(b.clone(), 3);
+        let c = shelf.0.join("03 C");
+        fs::create_dir(&c).unwrap();
+        fs::write(c.join("01.png"), png(10, 20)).unwrap();
+        let nested = shelf.0.join("04 shelf");
+        fs::create_dir(&nested).unwrap();
+        write_zip(nested.join("D.zip"), 2);
+
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            None,
+        );
+        reader.open_source(b.clone(), &ctx);
+        reader.go_to_page(1, &ctx);
+
+        // フォルダが先。今の冊（B）が選ばれている
+        reader.toggle_cover_thumbnails();
+        let view = reader.thumbnails.as_ref().unwrap();
+        assert_eq!(
+            view.cover_paths(),
+            [c.clone(), nested.clone(), a.clone(), b.clone()]
+        );
+        assert_eq!(view.selected(), 3);
+
+        // 冊を選ぶとしおりから開く（ミーヤと同じ）
+        reader.choose_thumbnail(2, &ctx);
+        assert!(reader.thumbnails.is_none());
+        assert_eq!(reader.zip_path, Some(a.clone()));
+        reader.toggle_cover_thumbnails();
+        reader.choose_thumbnail(3, &ctx);
+        assert_eq!(reader.zip_path, Some(b.clone()));
+        assert_eq!(reader.current_index, 1);
+
+        // 冊の入ったフォルダを選ぶと、その中の冊の一覧に移る。上のフォルダへで戻る
+        reader.toggle_cover_thumbnails();
+        reader.choose_thumbnail(1, &ctx);
+        let view = reader.thumbnails.as_ref().unwrap();
+        assert_eq!(view.cover_paths(), [nested.join("D.zip")]);
+        reader.go_to_upper_folder();
+        let view = reader.thumbnails.as_ref().unwrap();
+        assert_eq!(view.cover_paths().len(), 4);
+        assert_eq!(view.selected(), 1);
+
+        // 画像のフォルダは冊として開く。その表紙サムネイルは、入っているフォルダの冊を並べる
+        reader.choose_thumbnail(0, &ctx);
+        assert_eq!(reader.zip_path, Some(c.clone()));
+        reader.toggle_cover_thumbnails();
+        assert_eq!(reader.thumbnails.as_ref().unwrap().selected(), 0);
+        // もう一度で閉じる
+        reader.toggle_cover_thumbnails();
+        assert!(reader.thumbnails.is_none());
+
+        // 開いている冊からの上のフォルダへは、冊が入っているフォルダの一覧
+        reader.go_to_upper_folder();
+        assert_eq!(reader.thumbnails.as_ref().unwrap().cover_paths().len(), 4);
+
+        for path in [a, b] {
+            fs::remove_file(path).unwrap();
+        }
+        fs::remove_dir_all(c).unwrap();
+        fs::remove_dir_all(nested).unwrap();
     }
 
     #[test]
@@ -1821,6 +1922,11 @@ mod tests {
         assert_eq!(parts(keys.jump_backward), alt(egui::Key::ArrowLeft));
         assert_eq!(parts(keys.thumbnails_fit_all), key(egui::Key::A, false));
         assert_eq!(parts(keys.thumbnails_large), key(egui::Key::H, false));
+        assert_eq!(
+            parts(keys.cover_thumbnails),
+            key(egui::Key::ArrowDown, true)
+        );
+        assert_eq!(parts(keys.upper_folder), key(egui::Key::ArrowUp, true));
 
         // 同じキーに2つの操作が割り当てられていないこと
         let all = [
@@ -1856,6 +1962,8 @@ mod tests {
             keys.toggle_split_pages,
             keys.thumbnails_fit_all,
             keys.thumbnails_large,
+            keys.cover_thumbnails,
+            keys.upper_folder,
         ];
         let assigned: Vec<_> = all.into_iter().filter_map(parts).collect();
         for (index, shortcut) in assigned.iter().enumerate() {

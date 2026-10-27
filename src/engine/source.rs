@@ -145,14 +145,15 @@ pub fn has_image_subfolders(folder: &Path) -> bool {
 }
 
 /// Reads page bytes out of a source, keeping a ZIP archive open across reads.
-pub struct SourceReader<'a> {
+/// パスは自分で持つので、別スレッドに渡して使える
+pub struct SourceReader {
     mode: SourceMode,
-    path: &'a Path,
+    path: PathBuf,
     zip: Option<zip::ZipArchive<File>>,
 }
 
-impl<'a> SourceReader<'a> {
-    pub fn open(mode: SourceMode, path: &'a Path) -> Self {
+impl SourceReader {
+    pub fn open(mode: SourceMode, path: &Path) -> Self {
         let zip = if mode == SourceMode::Zip {
             File::open(path)
                 .ok()
@@ -160,7 +161,11 @@ impl<'a> SourceReader<'a> {
         } else {
             None
         };
-        Self { mode, path, zip }
+        Self {
+            mode,
+            path: path.to_path_buf(),
+            zip,
+        }
     }
 
     /// `name` is an entry of [`Listing::images`]. PDF pages are rendered, not read.
@@ -173,7 +178,7 @@ impl<'a> SourceReader<'a> {
                 entry.read_to_end(&mut buffer).ok()?;
                 Some(buffer)
             }
-            SourceMode::Rar => read_rar_entry(self.path, name),
+            SourceMode::Rar => read_rar_entry(&self.path, name),
             SourceMode::Pdf => None,
         }
     }

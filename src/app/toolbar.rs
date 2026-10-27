@@ -285,6 +285,13 @@ impl MangaReader {
                             {
                                 self.open_thumbnails(ThumbnailMode::FitAll);
                             }
+                            if ui
+                                .add_enabled(self.zip_path.is_some(), egui::Button::new("📚"))
+                                .on_hover_text(tr("toolbar.cover_thumbnails"))
+                                .clicked()
+                            {
+                                self.toggle_cover_thumbnails();
+                            }
 
                             ui.separator();
                             let auto_scroll_label = if self.auto_scroll_enabled {

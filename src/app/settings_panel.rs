@@ -312,6 +312,16 @@ pub(super) fn render_control_mapping_settings(
                         "Thumbnails Large",
                         &mut keys.thumbnails_large,
                     ),
+                    (
+                        tr("settings.key.cover_thumbnails"),
+                        "Cover Thumbnails",
+                        &mut keys.cover_thumbnails,
+                    ),
+                    (
+                        tr("settings.key.upper_folder"),
+                        "Upper Folder",
+                        &mut keys.upper_folder,
+                    ),
                 ] {
                     ui.label(label);
                     render_binding_button(

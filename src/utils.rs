@@ -104,6 +104,8 @@ pub fn action_label(action: MangaAction) -> &'static str {
         MangaAction::ToggleSplitPages => tr("action.toggle_split_pages"),
         MangaAction::ThumbnailsFitAll => tr("action.thumbnails_fit_all"),
         MangaAction::ThumbnailsLarge => tr("action.thumbnails_large"),
+        MangaAction::CoverThumbnails => tr("action.cover_thumbnails"),
+        MangaAction::UpperFolder => tr("action.upper_folder"),
     }
 }
 

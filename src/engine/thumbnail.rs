@@ -3,9 +3,10 @@
 
 use crate::config::SourceMode;
 use crate::engine::imaging::strip_adobe_app14_if_invalid;
-use crate::engine::source::SourceReader;
+use crate::engine::library::{natural_sort_strings, scan_folder};
+use crate::engine::source::{SourceReader, list_images};
 use image::{ImageFormat, RgbaImage};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel};
@@ -15,6 +16,10 @@ use std::thread;
 pub const THUMBNAIL_MAX_SIDE: u32 = 320;
 /// 大きいマスの一覧で、画面の高さに入るおよその行数（ミーヤの「8列」の見た目に合わせた）
 const LARGE_ROWS_PER_SCREEN: f32 = 3.0;
+/// 表紙サムネイルのマスの一辺（ミーヤの見た目に合わせた）。下に冊の名前を出す
+pub const COVER_CELL: f32 = 180.0;
+/// 冊の入ったフォルダの表紙を、中の冊からたどって探す深さ
+const COVER_SEARCH_DEPTH: usize = 3;
 
 /// 一覧の種類
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +28,8 @@ pub enum ThumbnailMode {
     FitAll,
     /// 大きいマスで並べ、スクロールする（ミーヤの「8列」）
     Large,
+    /// フォルダの中の冊を表紙で並べる（MM-THUMB-03）。決まった大きさのマスを中央に置く
+    Covers,
 }
 
 /// 正方形のマスの並べ方
@@ -59,6 +66,14 @@ impl Grid {
                     }
                 }
                 best
+            }
+            ThumbnailMode::Covers => {
+                let columns = ((width / COVER_CELL).floor() as usize).clamp(1, count);
+                Grid {
+                    columns,
+                    rows: count.div_ceil(columns),
+                    cell: COVER_CELL,
+                }
             }
             ThumbnailMode::Large => {
                 // 高さの 1/3 ほどのマスを、横幅いっぱいに並べる
@@ -149,7 +164,124 @@ pub fn decode_thumbnail(bytes: &[u8], max_side: u32, fix_adobe: bool) -> Option<
         // 判別できないものは TGA として読んでみる（ページの読み込みと同じ）
         Err(_) => image::load_from_memory_with_format(bytes, ImageFormat::Tga).ok()?,
     };
+    // thumbnail は小さい画像を拡大もするので、収まっているものはそのまま使う
+    if image.width() <= max_side && image.height() <= max_side {
+        return Some(image.to_rgba8());
+    }
     Some(image.thumbnail(max_side, max_side).to_rgba8())
+}
+
+/// 表紙サムネイルに並べる冊（MM-THUMB-03）
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoverEntry {
+    pub path: PathBuf,
+    pub is_folder: bool,
+}
+
+/// フォルダの中の冊（書庫・PDF・フォルダ）。ミーヤと同じく、フォルダを先に、それぞれ名前順に並べる。
+/// 冊でないファイルは選んでも開けないので入れない（ミーヤは出す）
+pub fn cover_entries(folder: &Path) -> Vec<CoverEntry> {
+    let mut books = scan_folder(folder);
+    // 並べ替えは安定なので、名前順のままフォルダが先になる
+    books.sort_by_key(|path| !path.is_dir());
+    books
+        .into_iter()
+        .map(|path| CoverEntry {
+            is_folder: path.is_dir(),
+            path,
+        })
+        .collect()
+}
+
+/// 冊の表紙のバイト列。表紙は並び順で最初のページ。画像の無いフォルダは、中の最初の冊の表紙。
+/// PDF は描けないので None
+fn cover_bytes(path: &Path, depth: usize) -> Option<Vec<u8>> {
+    let is_pdf = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
+    if is_pdf {
+        return None;
+    }
+    if let Some(listing) = list_images(path, false)
+        && !listing.images.is_empty()
+    {
+        let mut images = listing.images;
+        natural_sort_strings(&mut images);
+        return SourceReader::open(listing.mode, &listing.root).read(&images[0]);
+    }
+    if !path.is_dir() || depth == 0 {
+        return None;
+    }
+    cover_entries(path)
+        .iter()
+        .find_map(|entry| cover_bytes(&entry.path, depth - 1))
+}
+
+/// 冊の表紙のサムネイル
+pub fn cover_thumbnail(path: &Path, fix_adobe: bool) -> Option<RgbaImage> {
+    let bytes = cover_bytes(path, COVER_SEARCH_DEPTH)?;
+    decode_thumbnail(&bytes, THUMBNAIL_MAX_SIDE, fix_adobe)
+}
+
+/// `indices` の順に、`make_worker` で作った処理でサムネイルを作って送る。処理はスレッドごとに作る
+/// （書庫を開いたまま続けて読めるように）。`cancel` を立てるか受け手を捨てると止まる
+fn spawn_workers<F, W>(
+    indices: Vec<usize>,
+    cancel: Arc<AtomicBool>,
+    make_worker: F,
+) -> Receiver<(usize, RgbaImage)>
+where
+    F: Fn() -> W + Send + Sync + 'static,
+    W: FnMut(usize) -> Option<RgbaImage>,
+{
+    let (tx, rx) = channel();
+    let indices = Arc::new(indices);
+    let next = Arc::new(AtomicUsize::new(0));
+    let make_worker = Arc::new(make_worker);
+    let workers = thread::available_parallelism()
+        .map_or(2, |n| n.get())
+        .clamp(1, 4);
+    for _ in 0..workers {
+        let (tx, indices, next, cancel, make_worker) = (
+            tx.clone(),
+            indices.clone(),
+            next.clone(),
+            cancel.clone(),
+            make_worker.clone(),
+        );
+        thread::spawn(move || {
+            let mut work = make_worker();
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let Some(&index) = indices.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                    return;
+                };
+                let Some(image) = work(index) else {
+                    continue;
+                };
+                if tx.send((index, image)).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    rx
+}
+
+/// 冊の表紙のサムネイルを、別スレッドで作って送る。(冊の番号, 画像) を送る
+pub fn spawn_cover_loader(
+    books: Vec<PathBuf>,
+    fix_adobe: bool,
+    cancel: Arc<AtomicBool>,
+) -> Receiver<(usize, RgbaImage)> {
+    let indices = (0..books.len()).collect();
+    let books = Arc::new(books);
+    spawn_workers(indices, cancel, move || {
+        let books = books.clone();
+        move |index| cover_thumbnail(books.get(index)?, fix_adobe)
+    })
 }
 
 /// 書庫やフォルダのページのサムネイルを、別スレッドで作って送る。
@@ -163,49 +295,19 @@ pub fn spawn_loader(
     fix_adobe: bool,
     cancel: Arc<AtomicBool>,
 ) -> Receiver<(usize, RgbaImage)> {
-    let (tx, rx) = channel();
     if mode == SourceMode::Pdf {
-        return rx;
+        return channel().1;
     }
     let names = Arc::new(names);
-    let indices = Arc::new(indices);
-    let next = Arc::new(AtomicUsize::new(0));
-    let workers = thread::available_parallelism()
-        .map_or(2, |n| n.get())
-        .clamp(1, 4);
-    for _ in 0..workers {
-        let (tx, root, names, indices, next, cancel) = (
-            tx.clone(),
-            root.clone(),
-            names.clone(),
-            indices.clone(),
-            next.clone(),
-            cancel.clone(),
-        );
-        thread::spawn(move || {
-            // 書庫は開いたまま続けて読む
-            let mut reader = SourceReader::open(mode, &root);
-            loop {
-                if cancel.load(Ordering::Relaxed) {
-                    return;
-                }
-                let Some(&index) = indices.get(next.fetch_add(1, Ordering::Relaxed)) else {
-                    return;
-                };
-                let Some(image) = names
-                    .get(index)
-                    .and_then(|name| reader.read(name))
-                    .and_then(|bytes| decode_thumbnail(&bytes, THUMBNAIL_MAX_SIDE, fix_adobe))
-                else {
-                    continue;
-                };
-                if tx.send((index, image)).is_err() {
-                    return;
-                }
-            }
-        });
-    }
-    rx
+    spawn_workers(indices, cancel, move || {
+        let names = names.clone();
+        // 書庫は開いたまま続けて読む
+        let mut reader = SourceReader::open(mode, &root);
+        move |index| {
+            let bytes = reader.read(names.get(index)?)?;
+            decode_thumbnail(&bytes, THUMBNAIL_MAX_SIDE, fix_adobe)
+        }
+    })
 }
 
 #[cfg(test)]
@@ -267,6 +369,87 @@ mod tests {
         assert_eq!(move_selection(0, Down, 4, 0), 0);
     }
 
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::RgbaImage::new(width, height)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, Vec<u8>)]) {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, data) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn cover_entries_put_folders_first_and_covers_are_first_pages() {
+        let root = std::env::temp_dir().join(format!("manga-cover-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("03 C")).unwrap();
+        std::fs::create_dir_all(root.join("04 shelf")).unwrap();
+        // 書庫の中では後に入れたものが並び順で先（表紙）になる
+        write_zip(
+            &root.join("01 A.zip"),
+            &[("02.png", png(30, 10)), ("01.png", png(10, 20))],
+        );
+        write_zip(&root.join("02 B.zip"), &[("01.png", png(10, 30))]);
+        std::fs::write(root.join("03 C/01.png"), png(40, 10)).unwrap();
+        write_zip(&root.join("04 shelf/D.zip"), &[("01.png", png(10, 50))]);
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        // 実機 で、フォルダが先、それぞれ名前順だった（2026-10-27）。冊でないファイルは入れない
+        let names: Vec<_> = cover_entries(&root)
+            .iter()
+            .map(|entry| {
+                (
+                    entry
+                        .path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string(),
+                    entry.is_folder,
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("03 C".to_string(), true),
+                ("04 shelf".to_string(), true),
+                ("01 A.zip".to_string(), false),
+                ("02 B.zip".to_string(), false),
+            ]
+        );
+        let size = |path: &str| cover_thumbnail(&root.join(path), false).map(|t| t.dimensions());
+        assert_eq!(size("01 A.zip"), Some((10, 20)));
+        assert_eq!(size("03 C"), Some((40, 10)));
+        // 画像の無いフォルダは、中の最初の冊の表紙
+        assert_eq!(size("04 shelf"), Some((10, 50)));
+        assert_eq!(size("memo.txt"), None);
+
+        // 別スレッドでも同じものが届く
+        let books: Vec<_> = cover_entries(&root).into_iter().map(|e| e.path).collect();
+        let rx = spawn_cover_loader(books, false, Arc::new(AtomicBool::new(false)));
+        let mut received: Vec<_> = rx
+            .iter()
+            .map(|(index, image)| (index, image.dimensions()))
+            .collect();
+        received.sort();
+        assert_eq!(
+            received,
+            [(0, (40, 10)), (1, (10, 50)), (2, (10, 20)), (3, (10, 30))]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn thumbnails_keep_the_aspect_ratio() {
         let mut bytes = Vec::new();
@@ -275,6 +458,15 @@ mod tests {
             .unwrap();
         let thumb = decode_thumbnail(&bytes, 300, false).unwrap();
         assert_eq!(thumb.dimensions(), (200, 300));
+        // 小さい画像は拡大しない
+        let mut small = Vec::new();
+        image::RgbaImage::new(10, 20)
+            .write_to(&mut std::io::Cursor::new(&mut small), ImageFormat::Png)
+            .unwrap();
+        assert_eq!(
+            decode_thumbnail(&small, 300, false).unwrap().dimensions(),
+            (10, 20)
+        );
         assert!(decode_thumbnail(b"not an image", 300, false).is_none());
     }
 }
