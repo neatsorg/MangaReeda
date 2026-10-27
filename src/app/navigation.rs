@@ -99,7 +99,8 @@ impl MangaReader {
     /// 固定の見開き（自動見開きでない）では、見開きの組の先頭に位置を合わせる。
     /// 1ページ表示から切り替えたときなどに、組が1枚ずれたままになるのを防ぐ
     fn align_to_spread_start(&mut self) {
-        if self.automatic_page_direction().is_some() {
+        if std::mem::take(&mut self.keep_spread_start) || self.automatic_page_direction().is_some()
+        {
             return;
         }
         self.current_index = self.fixed_spread_start(self.current_index);
@@ -542,6 +543,21 @@ impl MangaReader {
             LastPageAction::GotoNextFile => tr("mode.repeat_folder"),
         };
         self.show_fading_error(msg);
+    }
+
+    /// サムネイル一覧で選んだページを表示する。ミーヤと同じく、見開きでもそのページから始まる組にする
+    pub(super) fn show_page_from_thumbnail(&mut self, index: usize, ctx: &egui::Context) {
+        if index >= self.image_files.len() {
+            return;
+        }
+        self.manual_page_view = false;
+        self.split_second_half_of = None;
+        self.reset_buffer();
+        self.reset_pan();
+        self.current_index = index;
+        self.keep_spread_start = true;
+        self.load_current_pair(ctx);
+        self.page_indicator_time = Some(Instant::now());
     }
 
     /// 前へ戻って横長のページに来たら、後に読む半分から見せる（MM-VIEW-05）

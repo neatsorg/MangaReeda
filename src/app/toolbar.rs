@@ -2,6 +2,7 @@ use super::{
     AUTO_SCROLL_MAX_DELAY_MS, AUTO_SCROLL_MIN_DELAY_MS, FULLSCREEN_TITLE_BAR_HEIGHT,
     FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT, MangaReader,
 };
+use crate::engine::thumbnail::ThumbnailMode;
 use crate::localize::tr;
 use eframe::egui;
 
@@ -277,6 +278,13 @@ impl MangaReader {
                                 self.open_file_dialog();
                             }
                             self.render_history_menu(ui, ctx);
+                            if ui
+                                .add_enabled(!self.image_files.is_empty(), egui::Button::new("🖼"))
+                                .on_hover_text(tr("toolbar.thumbnails"))
+                                .clicked()
+                            {
+                                self.open_thumbnails(ThumbnailMode::FitAll);
+                            }
 
                             ui.separator();
                             let auto_scroll_label = if self.auto_scroll_enabled {

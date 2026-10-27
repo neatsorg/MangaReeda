@@ -177,10 +177,12 @@ pub enum MangaAction {
     JumpForward,
     JumpBackward,
     ToggleSplitPages,
+    ThumbnailsFitAll,
+    ThumbnailsLarge,
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 35] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -214,6 +216,8 @@ impl MangaAction {
         Self::JumpForward,
         Self::JumpBackward,
         Self::ToggleSplitPages,
+        Self::ThumbnailsFitAll,
+        Self::ThumbnailsLarge,
     ];
 }
 
@@ -336,6 +340,10 @@ pub struct KeyConfig {
     pub jump_backward: Option<Shortcut>,
     #[serde(default)]
     pub toggle_split_pages: Option<Shortcut>,
+    #[serde(default)]
+    pub thumbnails_fit_all: Option<Shortcut>,
+    #[serde(default)]
+    pub thumbnails_large: Option<Shortcut>,
 }
 
 // 既存の設定ファイルにこの項目が無いときもミーヤと同じ F8 を割り当てる
@@ -376,6 +384,8 @@ impl Default for KeyConfig {
             jump_forward: None,
             jump_backward: None,
             toggle_split_pages: None,
+            thumbnails_fit_all: None,
+            thumbnails_large: None,
         }
     }
 }
@@ -421,6 +431,9 @@ impl KeyConfig {
             jump_backward: Some(Shortcut::new(egui::Key::ArrowLeft, false, true, false)),
             // ミーヤでもキーは割り当てられていない（CMD139=0）
             toggle_split_pages: None,
+            // MM-IN-K09: A = サムネイル（1画面）、H = サムネイル（8列）
+            thumbnails_fit_all: Some(Shortcut::new(egui::Key::A, false, false, false)),
+            thumbnails_large: Some(Shortcut::new(egui::Key::H, false, false, false)),
         }
     }
 
@@ -464,6 +477,8 @@ impl KeyConfig {
             jump_forward: None,
             jump_backward: None,
             toggle_split_pages: None,
+            thumbnails_fit_all: None,
+            thumbnails_large: None,
         }
     }
 }

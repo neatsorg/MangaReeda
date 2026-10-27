@@ -302,6 +302,16 @@ pub(super) fn render_control_mapping_settings(
                         "Toggle Split Pages",
                         &mut keys.toggle_split_pages,
                     ),
+                    (
+                        tr("settings.key.thumbnails_fit_all"),
+                        "Thumbnails Fit All",
+                        &mut keys.thumbnails_fit_all,
+                    ),
+                    (
+                        tr("settings.key.thumbnails_large"),
+                        "Thumbnails Large",
+                        &mut keys.thumbnails_large,
+                    ),
                 ] {
                     ui.label(label);
                     render_binding_button(

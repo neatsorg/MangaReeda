@@ -5,6 +5,7 @@ mod navigation;
 mod overlay;
 mod pageview;
 mod settings_panel;
+mod thumbnails;
 mod toolbar;
 mod view;
 
@@ -117,6 +118,11 @@ pub struct MangaReader {
     manual_page_view: bool,
     /// 左右に分けて見せている横長のページで、後に読む半分を見せているページ（MM-VIEW-05）
     split_second_half_of: Option<usize>,
+    /// 開いているサムネイル一覧（MM-THUMB-01）
+    thumbnails: Option<thumbnails::ThumbnailView>,
+    thumbnail_cache: thumbnails::ThumbnailCache,
+    /// 次に表示し直すとき、見開きの組を合わせ直さない（サムネイルで選んだページから見開きにする）
+    keep_spread_start: bool,
 }
 
 impl MangaReader {
@@ -201,6 +207,9 @@ impl MangaReader {
             subfolder_question: None,
             manual_page_view: false,
             split_second_half_of: None,
+            thumbnails: None,
+            thumbnail_cache: Default::default(),
+            keep_spread_start: false,
         }
     }
 
@@ -251,7 +260,18 @@ impl eframe::App for MangaReader {
         self.render_top_toolbar(ctx);
         self.tick_auto_scroll(ctx, action_to_run);
 
-        self.render_page_view(ctx, &mut action_to_run);
+        if self.thumbnails.is_some() {
+            // 一覧を開いているあいだは、一覧の切り替え以外の操作を受け付けない
+            if !matches!(
+                action_to_run,
+                MangaAction::ThumbnailsFitAll | MangaAction::ThumbnailsLarge
+            ) {
+                action_to_run = MangaAction::None;
+            }
+            self.render_thumbnails(ctx);
+        } else {
+            self.render_page_view(ctx, &mut action_to_run);
+        }
         self.render_subfolder_question(ctx);
         // ダイアログに答えるまでは、ページの操作を受け付けない
         if self.subfolder_question.is_some() {
@@ -628,6 +648,54 @@ mod tests {
         assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
         assert_eq!(reader.config.page_view_options, PageViewOptions::Single);
         assert!(reader.config.reads_right_to_left());
+    }
+
+    #[test]
+    fn thumbnails_load_in_the_background_and_open_the_chosen_page() {
+        use crate::engine::thumbnail::ThumbnailMode;
+        let pages = TestPages::new(&[[10, 20]; 10]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        reader.go_to_page(2, &ctx);
+        reader.open_thumbnails(ThumbnailMode::FitAll);
+        assert!(reader.thumbnails.is_some());
+        // 別スレッドが作り終えるまで受け取る
+        for _ in 0..500 {
+            let _ = ctx.run(Default::default(), |ctx| reader.render_thumbnails(ctx));
+            if reader.thumbnail_cache.textures.iter().all(Option::is_some) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(reader.thumbnail_cache.textures.iter().all(Option::is_some));
+
+        // 同じ種類をもう一度開くと閉じる。開き直しても作り直さない
+        reader.open_thumbnails(ThumbnailMode::FitAll);
+        assert!(reader.thumbnails.is_none());
+        reader.open_thumbnails(ThumbnailMode::Large);
+        assert!(reader.thumbnails.as_ref().unwrap().rx_is_idle());
+
+        // 見開きでも、選んだページから始まる組にする（ミーヤと同じ。6 なら (6,7)）
+        reader.thumbnails = None;
+        reader.show_page_from_thumbnail(5, &ctx);
+        assert_view(&reader, 5, PageViewOptions::DoubleRL, 2);
+        reader.update_buffers(&ctx);
+        reader.next_page(&ctx, false);
+        assert_view(&reader, 7, PageViewOptions::DoubleRL, 2);
+
+        // 冊が変わると、前の冊のサムネイルは捨てる
+        let other = TestPages::new(&[[10, 20]; 3]);
+        reader.open_thumbnails(ThumbnailMode::FitAll);
+        reader.load_source(other.0.clone(), false, &ctx);
+        assert!(reader.thumbnails.is_none());
+        assert!(reader.thumbnail_cache.textures.is_empty());
     }
 
     #[test]
@@ -1751,6 +1819,8 @@ mod tests {
         let alt = |k| Some((k, false, true, false));
         assert_eq!(parts(keys.jump_forward), alt(egui::Key::ArrowRight));
         assert_eq!(parts(keys.jump_backward), alt(egui::Key::ArrowLeft));
+        assert_eq!(parts(keys.thumbnails_fit_all), key(egui::Key::A, false));
+        assert_eq!(parts(keys.thumbnails_large), key(egui::Key::H, false));
 
         // 同じキーに2つの操作が割り当てられていないこと
         let all = [
@@ -1783,6 +1853,9 @@ mod tests {
             keys.toggle_auto_page_layout,
             keys.jump_forward,
             keys.jump_backward,
+            keys.toggle_split_pages,
+            keys.thumbnails_fit_all,
+            keys.thumbnails_large,
         ];
         let assigned: Vec<_> = all.into_iter().filter_map(parts).collect();
         for (index, shortcut) in assigned.iter().enumerate() {

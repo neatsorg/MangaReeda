@@ -513,6 +513,7 @@ impl MangaReader {
             self.remember_current_book();
             self.manual_page_view = false;
             self.split_second_half_of = None;
+            self.forget_thumbnails();
             self.reset_buffer();
             self.texture_cache.clear();
             self.image_dimensions.clear();

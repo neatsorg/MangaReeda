@@ -10,3 +10,4 @@ pub mod loupe;
 pub mod scroll;
 pub mod settings_store;
 pub mod source;
+pub mod thumbnail;

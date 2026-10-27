@@ -3,6 +3,7 @@ use super::{GAMEPAD_INITIAL_REPEAT_DELAY, LONG_CLICK_DURATION, MOUSE_DRAG_THRESH
 use crate::config::{
     GamepadButton, MangaAction, MouseButton, MouseConfig, MouseGesture, PageViewOptions, Shortcut,
 };
+use crate::engine::thumbnail::ThumbnailMode;
 use crate::utils::{
     gamepad_action_for_button, gamepad_button_index, is_repeatable_gamepad_action,
     map_gamepad_button, mouse_button_index, mouse_button_to_pointer,
@@ -79,6 +80,12 @@ impl MangaReader {
                                     "Jump Backward" => keys.jump_backward = Some(new_shortcut),
                                     "Toggle Split Pages" => {
                                         keys.toggle_split_pages = Some(new_shortcut)
+                                    }
+                                    "Thumbnails Fit All" => {
+                                        keys.thumbnails_fit_all = Some(new_shortcut)
+                                    }
+                                    "Thumbnails Large" => {
+                                        keys.thumbnails_large = Some(new_shortcut)
                                     }
                                     _ => {}
                                 }
@@ -198,6 +205,12 @@ impl MangaReader {
                 }
                 if is_triggered(&keys.toggle_split_pages) {
                     action_to_run = MangaAction::ToggleSplitPages;
+                }
+                if is_triggered(&keys.thumbnails_fit_all) {
+                    action_to_run = MangaAction::ThumbnailsFitAll;
+                }
+                if is_triggered(&keys.thumbnails_large) {
+                    action_to_run = MangaAction::ThumbnailsLarge;
                 }
             });
         }
@@ -570,6 +583,8 @@ impl MangaReader {
             MangaAction::JumpForward => self.jump_pages(true, ctx),
             MangaAction::JumpBackward => self.jump_pages(false, ctx),
             MangaAction::ToggleSplitPages => self.toggle_split_landscape_pages(ctx),
+            MangaAction::ThumbnailsFitAll => self.open_thumbnails(ThumbnailMode::FitAll),
+            MangaAction::ThumbnailsLarge => self.open_thumbnails(ThumbnailMode::Large),
             MangaAction::SlideImageDown => {
                 if self.config.page_view_options == PageViewOptions::TopDown {
                     self.top_down_scroll_offset -=
