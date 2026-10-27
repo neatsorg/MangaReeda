@@ -22,10 +22,22 @@ pub struct HistoryEntry {
     pub last_access: u64,
 }
 
+/// サブフォルダを含むフォルダで、利用者が選んだ読み方（MM-SRC-06）
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SubfolderChoice {
+    /// フォルダの絶対パス
+    pub path: PathBuf,
+    /// サブフォルダの画像も読むか
+    pub include: bool,
+}
+
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
 pub struct History {
     /// 新しいものが先頭
     pub entries: Vec<HistoryEntry>,
+    /// 新しいものが先頭。冊の履歴と同じ数まで覚える
+    #[serde(default)]
+    pub subfolder_choices: Vec<SubfolderChoice>,
 }
 
 /// 同じ冊を別の書き方のパスで開いても同じ記録になるよう、正規化したパスを使う
@@ -73,6 +85,23 @@ impl History {
                 .position(|name| *name == entry.page_name)
                 .unwrap_or(entry.page_index.min(pages.len() - 1)),
         )
+    }
+
+    /// フォルダで覚えたサブフォルダの読み方
+    pub fn subfolder_choice(&self, folder: &Path) -> Option<bool> {
+        let folder = normalize(folder);
+        self.subfolder_choices
+            .iter()
+            .find(|choice| choice.path == folder)
+            .map(|choice| choice.include)
+    }
+
+    pub fn remember_subfolder_choice(&mut self, folder: &Path, include: bool) {
+        let path = normalize(folder);
+        self.subfolder_choices.retain(|choice| choice.path != path);
+        self.subfolder_choices
+            .insert(0, SubfolderChoice { path, include });
+        self.subfolder_choices.truncate(HISTORY_LIMIT);
     }
 
     /// 読めなかったときは空の履歴にする（壊れたファイルで起動できなくならないように）
@@ -143,6 +172,30 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn subfolder_choices_are_remembered_per_folder() {
+        let mut history = History::default();
+        let folder = Path::new("/no/such/folder");
+        assert_eq!(history.subfolder_choice(folder), None);
+        history.remember_subfolder_choice(folder, true);
+        history.remember_subfolder_choice(Path::new("/other"), false);
+        assert_eq!(history.subfolder_choice(folder), Some(true));
+        assert_eq!(history.subfolder_choice(Path::new("/other")), Some(false));
+        // 選び直したら上書きする
+        history.remember_subfolder_choice(folder, false);
+        assert_eq!(history.subfolder_choice(folder), Some(false));
+        assert_eq!(history.subfolder_choices.len(), 2);
+
+        for index in 0..HISTORY_LIMIT + 5 {
+            history.remember_subfolder_choice(Path::new(&format!("/f{index}")), true);
+        }
+        assert_eq!(history.subfolder_choices.len(), HISTORY_LIMIT);
+
+        // この項目が無い古い履歴ファイルも読める
+        let old: History = serde_json::from_str(r#"{"entries": []}"#).unwrap();
+        assert!(old.subfolder_choices.is_empty());
     }
 
     #[test]

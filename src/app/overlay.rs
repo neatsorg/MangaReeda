@@ -1,4 +1,5 @@
 use super::MangaReader;
+use crate::localize::tr;
 use eframe::egui;
 
 impl MangaReader {
@@ -123,6 +124,50 @@ impl MangaReader {
             } else {
                 self.page_indicator_time = None;
             }
+        }
+    }
+}
+
+impl MangaReader {
+    /// サブフォルダを読むかを聞くダイアログ（MM-SRC-06）。外側のクリックや Esc はキャンセル
+    pub(super) fn render_subfolder_question(&mut self, ctx: &egui::Context) {
+        let Some(question) = self.subfolder_question.as_mut() else {
+            return;
+        };
+        let name = question
+            .folder
+            .file_name()
+            .map_or_else(
+                || question.folder.to_string_lossy(),
+                |name| name.to_string_lossy(),
+            )
+            .to_string();
+        let mut answer = None;
+        let response = egui::Modal::new(egui::Id::new("subfolder_question")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(tr("subfolder.title"));
+            ui.add_space(8.0);
+            ui.label(tr("subfolder.message").replace("{name}", &name));
+            ui.add_space(8.0);
+            ui.checkbox(&mut question.remember, tr("subfolder.remember"));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr("subfolder.include")).clicked() {
+                    answer = Some(Some(true));
+                }
+                if ui.button(tr("subfolder.exclude")).clicked() {
+                    answer = Some(Some(false));
+                }
+                if ui.button(tr("subfolder.cancel")).clicked() {
+                    answer = Some(None);
+                }
+            });
+        });
+        if answer.is_none() && response.should_close() {
+            answer = Some(None);
+        }
+        if let Some(include) = answer {
+            self.answer_subfolder_question(include, ctx);
         }
     }
 }

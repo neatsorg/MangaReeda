@@ -1,18 +1,40 @@
 use super::MangaReader;
 use super::animation::AnimationScanStatus;
-use crate::config::{PageViewOptions, SourceMode};
+use crate::config::{PageViewOptions, SourceMode, SubfolderMode};
 use crate::engine::imaging::{
     ImageProcessingSpec, resize_for_display, strip_adobe_app14_if_invalid,
 };
 use crate::engine::layout::is_portrait;
 use crate::engine::library::{natural_sort_strings, scan_folder};
-use crate::engine::source::{Listing, SourceReader, list_images, read_entry};
+use crate::engine::source::{
+    Listing, SourceReader, book_folder, has_image_subfolders, list_images, read_entry,
+};
 use crate::localize::tr;
 use eframe::egui;
 use image::{DynamicImage, ImageFormat};
 use pdfium_render::prelude::{Pdfium, Pixels};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// 冊を開いたあと、どのページから表示するか
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum OpenAt {
+    First,
+    /// 先頭ページから前の冊へ戻ったとき（MM-NAV-22）
+    Last,
+    /// 履歴にしおりがあればそのページ（MM-LIST-01）
+    Bookmark,
+}
+
+/// サブフォルダを読むかを利用者に聞いている冊（MM-SRC-06）
+pub(super) struct SubfolderQuestion {
+    pub(super) path: PathBuf,
+    /// 冊になるフォルダ。選択はこのフォルダについて覚える
+    pub(super) folder: PathBuf,
+    pub(super) open_at: OpenAt,
+    /// 選択を覚えるか（ダイアログのチェックボックス）
+    pub(super) remember: bool,
+}
 
 impl MangaReader {
     pub(super) fn reload_current_image(&mut self, ctx: &egui::Context) {
@@ -353,15 +375,81 @@ impl MangaReader {
 
     /// 利用者が冊を開くとき（ファイル選択・ドロップ・起動引数・履歴）に使う。
     /// 履歴にしおりがあればそのページから表示する（MM-LIST-01）。
-    /// 冊の移動（次／前のファイル）は先頭や最終ページから開くので、load_source を直接使う
+    /// 冊の移動（次／前のファイル）は先頭や最終ページから開くので、open_book を直接使う
     pub(super) fn open_source(&mut self, path: PathBuf, ctx: &egui::Context) {
-        self.load_source(path.clone(), ctx);
+        self.open_book(path, OpenAt::Bookmark, ctx);
+    }
+
+    /// 冊を開く。サブフォルダを含むフォルダで、読み方が決まっていなければ
+    /// ダイアログで聞き、答えが出てから開く（MM-SRC-06）
+    pub(super) fn open_book(&mut self, path: PathBuf, open_at: OpenAt, ctx: &egui::Context) {
+        let include_subfolders = match book_folder(&path) {
+            Some(folder) if has_image_subfolders(&folder) => {
+                match self.history.subfolder_choice(&folder) {
+                    Some(include) => include,
+                    None => match self.config.subfolder_mode {
+                        SubfolderMode::Include => true,
+                        SubfolderMode::Exclude => false,
+                        SubfolderMode::Ask => {
+                            self.subfolder_question = Some(SubfolderQuestion {
+                                path,
+                                folder,
+                                open_at,
+                                remember: true,
+                            });
+                            return;
+                        }
+                    },
+                }
+            }
+            _ => false,
+        };
+        self.open_book_with(path, include_subfolders, open_at, ctx);
+    }
+
+    fn open_book_with(
+        &mut self,
+        path: PathBuf,
+        include_subfolders: bool,
+        open_at: OpenAt,
+        ctx: &egui::Context,
+    ) {
+        self.load_source(path.clone(), include_subfolders, ctx);
+        // 読み込みに失敗したときは元の冊のままなので、ページを動かさない。
         // 画像ファイルを指定して開いたとき（冊はそのフォルダになる）は、その画像から読む
         if self.zip_path.as_ref() != Some(&path) {
             return;
         }
-        if let Some(index) = self.history.bookmark(&path, &self.image_files) {
-            self.go_to_page(index, ctx);
+        match open_at {
+            OpenAt::First => {}
+            OpenAt::Last => self.go_to_last_page(ctx),
+            OpenAt::Bookmark => {
+                if let Some(index) = self.history.bookmark(&path, &self.image_files) {
+                    self.go_to_page(index, ctx);
+                }
+            }
+        }
+    }
+
+    /// サブフォルダのダイアログの答え。`include` が None ならキャンセルで、冊を開かない
+    pub(super) fn answer_subfolder_question(&mut self, include: Option<bool>, ctx: &egui::Context) {
+        let Some(question) = self.subfolder_question.take() else {
+            return;
+        };
+        let Some(include) = include else {
+            return;
+        };
+        if question.remember {
+            self.history
+                .remember_subfolder_choice(&question.folder, include);
+            self.save_history();
+        }
+        self.open_book_with(question.path, include, question.open_at, ctx);
+    }
+
+    fn save_history(&self) {
+        if let Some(history_path) = &self.history_path {
+            self.history.save(history_path);
         }
     }
 
@@ -372,12 +460,17 @@ impl MangaReader {
         };
         self.history
             .record(path, &self.image_files, self.current_index);
-        if let Some(history_path) = &self.history_path {
-            self.history.save(history_path);
-        }
+        self.save_history();
     }
 
-    pub(super) fn load_source(&mut self, path: PathBuf, ctx: &egui::Context) {
+    /// 冊を読み込んで先頭（画像ファイルを指定したときはその画像）から表示する。
+    /// サブフォルダの扱いを決めてから呼ぶ。ふだんは open_book を使う
+    pub(super) fn load_source(
+        &mut self,
+        path: PathBuf,
+        include_subfolders: bool,
+        ctx: &egui::Context,
+    ) {
         self.stop_auto_scroll();
         self.clear_pdf_document_cache();
         let extension = path
@@ -401,7 +494,7 @@ impl MangaReader {
                 start_at: None,
             }
         } else {
-            match list_images(&path) {
+            match list_images(&path, include_subfolders) {
                 Some(listing) => listing,
                 None => return,
             }

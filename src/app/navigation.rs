@@ -1,3 +1,4 @@
+use super::loader::OpenAt;
 use super::{
     AUTO_SCROLL_MAX_DELAY_MS, AUTO_SCROLL_MIN_DELAY_MS, JUMP_PAGE_COUNT, MangaReader,
     SCROLL_STEP_RATIO,
@@ -340,7 +341,7 @@ impl MangaReader {
             if pos + 1 < self.all_zips_in_folder.len() {
                 // There is a next file
                 let next_path = self.all_zips_in_folder[pos + 1].clone();
-                self.load_source(next_path, ctx);
+                self.open_book(next_path, OpenAt::First, ctx);
             } else {
                 // NO MORE FILES - This is the fix
                 let msg = tr("error.no_more_zip_files").to_owned();
@@ -359,11 +360,12 @@ impl MangaReader {
         {
             if pos > 0 {
                 let prev_path = self.all_zips_in_folder[pos - 1].clone();
-                self.load_source(prev_path.clone(), ctx);
-                // 読み込みに失敗したときは元の冊のままなので、ページを動かさない
-                if open_at_last_page && self.zip_path.as_ref() == Some(&prev_path) {
-                    self.go_to_last_page(ctx);
-                }
+                let open_at = if open_at_last_page {
+                    OpenAt::Last
+                } else {
+                    OpenAt::First
+                };
+                self.open_book(prev_path, open_at, ctx);
             } else {
                 let msg = tr("error.no_previous_zip_files").to_owned();
                 self.show_fading_error(&msg);
@@ -381,7 +383,7 @@ impl MangaReader {
                 let msg = tr("error.no_archive_next_folder").to_owned();
                 self.show_fading_error(&msg);
             } else {
-                self.load_source(zips[0].clone(), ctx);
+                self.open_book(zips[0].clone(), OpenAt::First, ctx);
             }
         } else {
             let msg = tr("error.no_next_directory").to_owned();
@@ -399,7 +401,7 @@ impl MangaReader {
                 let msg = tr("error.no_archive_prev_folder").to_owned();
                 self.show_fading_error(&msg);
             } else {
-                self.load_source(zips[0].clone(), ctx);
+                self.open_book(zips[0].clone(), OpenAt::First, ctx);
             }
         } else {
             let msg = tr("error.no_previous_directory").to_owned();

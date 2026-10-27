@@ -3,7 +3,7 @@ use super::{
 };
 use crate::config::{
     AppSettings, GamepadButton, GamepadConfig, ImageSizingMode, KeyConfig, LastPageAction,
-    MangaAction, MouseConfig, PageViewOptions, ResizeMethod, Shortcut, UiLanguage,
+    MangaAction, MouseConfig, PageViewOptions, ResizeMethod, Shortcut, SubfolderMode, UiLanguage,
 };
 use crate::localize::tr;
 use crate::utils::{
@@ -776,6 +776,35 @@ impl MangaReader {
                                     if changed {
                                         self.reset_buffer();
                                         self.load_current_pair(ctx);
+                                        self.save_settings();
+                                    }
+                                }
+
+                                ui.add_space(20.0);
+                                ui.label(
+                                    egui::RichText::new(tr("settings.subfolder"))
+                                        .size(20.0)
+                                        .strong(),
+                                )
+                                .on_hover_text(tr("settings.subfolder.tooltip"));
+                                separator_pct(ui);
+
+                                {
+                                    let mut changed = false;
+                                    for (mode, label) in [
+                                        (SubfolderMode::Ask, "settings.subfolder.ask"),
+                                        (SubfolderMode::Include, "settings.subfolder.include"),
+                                        (SubfolderMode::Exclude, "settings.subfolder.exclude"),
+                                    ] {
+                                        changed |= ui
+                                            .radio_value(
+                                                &mut self.config.subfolder_mode,
+                                                mode,
+                                                tr(label),
+                                            )
+                                            .clicked();
+                                    }
+                                    if changed {
                                         self.save_settings();
                                     }
                                 }

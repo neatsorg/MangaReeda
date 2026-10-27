@@ -21,7 +21,8 @@ pub struct Listing {
 /// Lists the pages of `path`. A single image file opens its whole folder.
 /// PDFs are not handled here: their pages come from the loaded document.
 /// Returns `None` when a ZIP archive cannot be opened at all.
-pub fn list_images(path: &Path) -> Option<Listing> {
+/// `include_subfolders` が真なら、フォルダの下のサブフォルダの画像もページにする（MM-SRC-06）
+pub fn list_images(path: &Path, include_subfolders: bool) -> Option<Listing> {
     let mut root = path.to_path_buf();
     let mut start_at = None;
     let mut images = Vec::new();
@@ -76,19 +77,7 @@ pub fn list_images(path: &Path) -> Option<Listing> {
             }
 
             if root.is_dir() {
-                if let Ok(entries) = fs::read_dir(&root) {
-                    for entry in entries.flatten() {
-                        let p = entry.path();
-                        if p.is_file()
-                            && IMAGE_EXTENSIONS.iter().any(|&e| {
-                                p.extension()
-                                    .map_or(false, |ext| ext.to_string_lossy().to_lowercase() == e)
-                            })
-                        {
-                            images.push(p.to_string_lossy().to_string());
-                        }
-                    }
-                }
+                collect_folder_images(&root, include_subfolders, &mut images);
             }
             SourceMode::Folder
         }
@@ -98,6 +87,60 @@ pub fn list_images(path: &Path) -> Option<Listing> {
         root,
         images,
         start_at,
+    })
+}
+
+fn is_image_file(path: &Path) -> bool {
+    path.is_file()
+        && path.extension().is_some_and(|ext| {
+            let ext = ext.to_string_lossy().to_lowercase();
+            IMAGE_EXTENSIONS.contains(&ext.as_str())
+        })
+}
+
+/// サブフォルダとして読むフォルダか。隠しフォルダと、ループのおそれがあるシンボリックリンクは読まない
+fn is_readable_subfolder(entry: &fs::DirEntry) -> bool {
+    entry.file_type().is_ok_and(|kind| kind.is_dir())
+        && !entry.file_name().to_string_lossy().starts_with('.')
+}
+
+fn collect_folder_images(folder: &Path, include_subfolders: bool, images: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_image_file(&path) {
+            images.push(path.to_string_lossy().to_string());
+        } else if include_subfolders && is_readable_subfolder(&entry) {
+            collect_folder_images(&path, true, images);
+        }
+    }
+}
+
+/// `path` を開いたときに冊になるフォルダ。画像ファイルならそのフォルダ。書庫や PDF なら None
+pub fn book_folder(path: &Path) -> Option<PathBuf> {
+    if path.is_dir() {
+        Some(path.to_path_buf())
+    } else if is_image_file(path) {
+        path.parent().map(Path::to_path_buf)
+    } else {
+        None
+    }
+}
+
+/// フォルダの下に、画像の入ったサブフォルダがあるか（孫以下のフォルダも含む）
+pub fn has_image_subfolders(folder: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        if !is_readable_subfolder(&entry) {
+            return false;
+        }
+        let mut images = Vec::new();
+        collect_folder_images(&entry.path(), true, &mut images);
+        !images.is_empty()
     })
 }
 
@@ -210,7 +253,7 @@ mod tests {
             ],
         );
 
-        let listing = list_images(&archive).unwrap();
+        let listing = list_images(&archive, false).unwrap();
         assert!(listing.mode == SourceMode::Zip);
         assert_eq!(listing.root, archive);
         assert_eq!(listing.images, ["p2.PNG", "sub/p1.jpg"]);
@@ -229,7 +272,7 @@ mod tests {
     #[test]
     fn missing_zip_cannot_be_listed() {
         let dir = TempDir::new();
-        assert!(list_images(&dir.0.join("missing.zip")).is_none());
+        assert!(list_images(&dir.0.join("missing.zip"), false).is_none());
     }
 
     #[test]
@@ -241,7 +284,7 @@ mod tests {
         fs::create_dir(dir.0.join("nested.png")).unwrap();
 
         let opened = dir.0.join("b.webp");
-        let listing = list_images(&opened).unwrap();
+        let listing = list_images(&opened, false).unwrap();
         assert!(listing.mode == SourceMode::Folder);
         assert_eq!(listing.root, dir.0);
         let mut images = listing.images.clone();
@@ -255,5 +298,45 @@ mod tests {
 
         let mut reader = SourceReader::open(SourceMode::Folder, &dir.0);
         assert_eq!(reader.read(&expected[0]).as_deref(), Some(&b"a.png"[..]));
+    }
+
+    #[test]
+    fn subfolders_are_read_only_when_asked() {
+        let dir = TempDir::new();
+        for name in ["a.png", "vol1/b.png", "vol1/sub/c.png", ".hidden/d.png"] {
+            let path = dir.0.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, name).unwrap();
+        }
+        fs::create_dir(dir.0.join("empty")).unwrap();
+        let names = |include| {
+            let mut images: Vec<String> = list_images(&dir.0, include)
+                .unwrap()
+                .images
+                .iter()
+                .map(|p| {
+                    Path::new(p)
+                        .strip_prefix(&dir.0)
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .collect();
+            images.sort();
+            images
+        };
+        assert_eq!(names(false), ["a.png"]);
+        // 隠しフォルダは読まない
+        assert_eq!(names(true), ["a.png", "vol1/b.png", "vol1/sub/c.png"]);
+
+        assert!(has_image_subfolders(&dir.0));
+        assert!(!has_image_subfolders(&dir.0.join("vol1/sub")));
+        // 画像の無いサブフォルダや隠しフォルダだけなら、サブフォルダは無いのと同じ
+        fs::remove_dir_all(dir.0.join("vol1")).unwrap();
+        assert!(!has_image_subfolders(&dir.0));
+
+        assert_eq!(book_folder(&dir.0), Some(dir.0.clone()));
+        assert_eq!(book_folder(&dir.0.join("a.png")), Some(dir.0.clone()));
+        assert_eq!(book_folder(&dir.0.join("book.zip")), None);
     }
 }

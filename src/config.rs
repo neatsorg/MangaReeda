@@ -34,6 +34,19 @@ impl LastPageAction {
     }
 }
 
+/// サブフォルダを含むフォルダを開いたときの扱い（MM-SRC-06）。
+/// 冊ごとに覚えた選択があれば、そちらを優先する
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Default, Serialize, Deserialize)]
+pub enum SubfolderMode {
+    /// 開くたびに確認する
+    #[default]
+    Ask,
+    /// サブフォルダの画像も読む
+    Include,
+    /// フォルダの直下の画像だけ読む
+    Exclude,
+}
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
 pub enum UiLanguage {
     English,
@@ -748,6 +761,8 @@ pub struct AppSettings {
     pub show_top_bar: bool,
     pub enable_auto_image_byte_fix: bool,
     pub last_page_action: LastPageAction,
+    #[serde(default)]
+    pub subfolder_mode: SubfolderMode,
 }
 
 impl AppSettings {
@@ -841,6 +856,7 @@ impl Default for AppSettings {
             show_top_bar: true,
             enable_auto_image_byte_fix: true,
             last_page_action: LastPageAction::GotoNextFile,
+            subfolder_mode: SubfolderMode::Ask,
         }
     }
 }

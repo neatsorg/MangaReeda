@@ -112,6 +112,8 @@ pub struct MangaReader {
     history: History,
     /// 履歴の保存先。None なら保存しない（テスト用）
     history_path: Option<PathBuf>,
+    /// サブフォルダを読むかを聞いているあいだの、開こうとしている冊
+    subfolder_question: Option<loader::SubfolderQuestion>,
 }
 
 impl MangaReader {
@@ -194,6 +196,7 @@ impl MangaReader {
             fullscreen_top_chrome_visible: false,
             history: History::default(),
             history_path: None,
+            subfolder_question: None,
         }
     }
 
@@ -245,6 +248,11 @@ impl eframe::App for MangaReader {
         self.tick_auto_scroll(ctx, action_to_run);
 
         self.render_page_view(ctx, &mut action_to_run);
+        self.render_subfolder_question(ctx);
+        // ダイアログに答えるまでは、ページの操作を受け付けない
+        if self.subfolder_question.is_some() {
+            action_to_run = MangaAction::None;
+        }
 
         if action_to_run != MangaAction::None {
             self.execute_action(action_to_run, ctx);
@@ -290,7 +298,7 @@ mod tests {
 
         fn reader(&self, config: AppSettings, ctx: &egui::Context) -> MangaReader {
             let mut reader = MangaReader::with_settings(config, None);
-            reader.load_source(self.0.clone(), ctx);
+            reader.load_source(self.0.clone(), false, ctx);
             reader
         }
     }
@@ -486,13 +494,13 @@ mod tests {
                 },
                 None,
             );
-            reader.load_source(parent.0.join("b"), &ctx);
+            reader.load_source(parent.0.join("b"), false, &ctx);
             reader.prev_page(&ctx, false);
             assert_eq!(reader.zip_path, Some(parent.0.join("a")));
             assert_eq!(reader.current_index, 4, "auto_layout={auto_layout}");
 
             // 明示的な「前のファイル」は従来どおり先頭から開く
-            reader.load_source(parent.0.join("b"), &ctx);
+            reader.load_source(parent.0.join("b"), false, &ctx);
             reader.prev_zip(&ctx, false);
             assert_eq!(reader.zip_path, Some(parent.0.join("a")));
             assert_eq!(reader.current_index, 0);
@@ -1287,6 +1295,70 @@ mod tests {
     }
 
     #[test]
+    fn folders_with_subfolders_ask_once_and_remember_the_choice() {
+        use crate::config::SubfolderMode;
+        // 直下に2枚、サブフォルダ vol1 に1枚
+        let pages = TestPages::new(&[[10, 20], [10, 20]]);
+        fs::create_dir(pages.0.join("vol1")).unwrap();
+        image::RgbaImage::new(10, 20)
+            .save(pages.0.join("vol1/000.png"))
+            .unwrap();
+        let ctx = egui::Context::default();
+        let reader = |mode| {
+            MangaReader::with_settings(
+                AppSettings {
+                    page_view_options: PageViewOptions::Single,
+                    enable_animated_images: false,
+                    resize_method: ResizeMethod::None,
+                    subfolder_mode: mode,
+                    ..AppSettings::default()
+                },
+                None,
+            )
+        };
+
+        // 確認する設定では、答えるまで開かない。キャンセルなら開かない
+        let mut asking = reader(SubfolderMode::Ask);
+        asking.open_source(pages.0.clone(), &ctx);
+        assert!(asking.subfolder_question.is_some());
+        assert_eq!(asking.zip_path, None);
+        asking.answer_subfolder_question(None, &ctx);
+        assert!(asking.subfolder_question.is_none());
+        assert_eq!(asking.zip_path, None);
+
+        // 「サブフォルダも読む」と答えると、サブフォルダのページも入る
+        asking.open_source(pages.0.clone(), &ctx);
+        asking.answer_subfolder_question(Some(true), &ctx);
+        assert_eq!(asking.zip_path, Some(pages.0.clone()));
+        assert_eq!(asking.image_files.len(), 3);
+        assert!(asking.image_files[2].ends_with("vol1/000.png"));
+
+        // 覚えた選択に従い、次からは聞かない
+        asking.open_source(pages.0.clone(), &ctx);
+        assert!(asking.subfolder_question.is_none());
+        assert_eq!(asking.image_files.len(), 3);
+
+        // 覚えないと答えたときは、次もまた聞く
+        let mut forgetful = reader(SubfolderMode::Ask);
+        forgetful.open_source(pages.0.clone(), &ctx);
+        forgetful.subfolder_question.as_mut().unwrap().remember = false;
+        forgetful.answer_subfolder_question(Some(false), &ctx);
+        assert_eq!(forgetful.image_files.len(), 2);
+        forgetful.open_source(pages.0.clone(), &ctx);
+        assert!(forgetful.subfolder_question.is_some());
+
+        // 読む／読まないの設定では聞かない
+        for (mode, count) in [(SubfolderMode::Include, 3), (SubfolderMode::Exclude, 2)] {
+            let mut fixed = reader(mode);
+            fixed.open_source(pages.0.clone(), &ctx);
+            assert!(fixed.subfolder_question.is_none());
+            assert_eq!(fixed.image_files.len(), count, "{mode:?}");
+        }
+
+        fs::remove_dir_all(pages.0.join("vol1")).unwrap();
+    }
+
+    #[test]
     fn opening_a_pdf_never_panics() {
         // Holds without a pdfium library (it reports that) and with one (the
         // file is not a valid PDF).
@@ -1295,7 +1367,7 @@ mod tests {
         fs::write(&pdf, b"not a pdf").unwrap();
         let ctx = egui::Context::default();
         let mut reader = MangaReader::with_settings(AppSettings::default(), None);
-        reader.load_source(pdf, &ctx);
+        reader.load_source(pdf, false, &ctx);
         assert!(reader.image_files.is_empty());
         assert!(reader.error_msg.is_some());
     }
