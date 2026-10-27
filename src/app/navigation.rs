@@ -362,6 +362,15 @@ impl MangaReader {
         }
     }
 
+    pub(super) fn go_to_page(&mut self, index: usize, ctx: &egui::Context) {
+        if index < self.image_files.len() && self.current_index != index {
+            self.reset_buffer();
+            self.current_index = index;
+            self.load_current_pair(ctx);
+            self.page_indicator_time = Some(Instant::now());
+        }
+    }
+
     pub(super) fn go_to_last_page(&mut self, ctx: &egui::Context) {
         if !self.image_files.is_empty() {
             // Find the start of the final view using the active layout's grouping.

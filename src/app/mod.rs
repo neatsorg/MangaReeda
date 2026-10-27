@@ -9,6 +9,7 @@ mod toolbar;
 mod view;
 
 use crate::config::{AppSettings, MangaAction, SourceMode};
+use crate::engine::history::History;
 use crate::engine::settings_store;
 use crate::font;
 use crate::localize::{set_language, tr};
@@ -95,6 +96,9 @@ pub struct MangaReader {
     selected_control_profile: ControlProfile,
     settings_toggle_last_visible_at: Instant,
     fullscreen_top_chrome_visible: bool,
+    history: History,
+    /// 履歴の保存先。None なら保存しない（テスト用）
+    history_path: Option<PathBuf>,
 }
 
 impl MangaReader {
@@ -103,7 +107,11 @@ impl MangaReader {
         let config = settings_store::load();
         set_language(config.language);
 
-        Self::with_settings(config, initial_path)
+        let mut reader = Self::with_settings(config, initial_path);
+        let history_path = settings_store::history_path();
+        reader.history = History::load(&history_path);
+        reader.history_path = Some(history_path);
+        reader
     }
 
     fn with_settings(config: AppSettings, initial_path: Option<PathBuf>) -> Self {
@@ -166,6 +174,8 @@ impl MangaReader {
             selected_control_profile: ControlProfile::Default,
             settings_toggle_last_visible_at: Instant::now(),
             fullscreen_top_chrome_visible: false,
+            history: History::default(),
+            history_path: None,
         }
     }
 
@@ -188,7 +198,7 @@ impl eframe::App for MangaReader {
         let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(df) = dropped_files.first() {
             if let Some(path) = &df.path {
-                self.load_source(path.clone(), ctx);
+                self.open_source(path.clone(), ctx);
             } else if let Some(_bytes) = &df.bytes {
                 self.show_fading_error(tr("error.dropped_bytes_only"));
             }
@@ -198,7 +208,7 @@ impl eframe::App for MangaReader {
 
         // Load file if passed as program parameter
         if let Some(p) = self.initial_path.as_ref() {
-            self.load_source(p.clone(), ctx);
+            self.open_source(p.clone(), ctx);
             self.initial_path = None;
         }
 
@@ -206,7 +216,7 @@ impl eframe::App for MangaReader {
         if let Ok(result) = self.dialog_rx.try_recv() {
             self.is_dialog_open = false;
             if let Some(path) = result {
-                self.load_source(path, ctx);
+                self.open_source(path, ctx);
             }
         }
         self.reload_zoom_textures_if_settled(ctx);
@@ -226,6 +236,7 @@ impl eframe::App for MangaReader {
         self.update_buffers(ctx);
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.remember_current_book();
         self.save_settings();
     }
 }
@@ -234,6 +245,7 @@ impl eframe::App for MangaReader {
 mod tests {
     use super::*;
     use crate::config::{AppSettings, LastPageAction, PageViewOptions, ResizeMethod, Shortcut};
+    use crate::engine::history;
     use crate::engine::layout::automatic_pair_count;
     use std::fs;
     use std::path::PathBuf;
@@ -467,6 +479,58 @@ mod tests {
             assert_eq!(reader.zip_path, Some(parent.0.join("a")));
             assert_eq!(reader.current_index, 0);
         }
+        for book in ["a", "b"] {
+            fs::remove_dir_all(parent.0.join(book)).unwrap();
+        }
+    }
+
+    #[test]
+    fn reopening_a_book_resumes_at_its_bookmark() {
+        let parent = TestPages::new(&[]);
+        for book in ["a", "b"] {
+            let dir = parent.0.join(book);
+            fs::create_dir(&dir).unwrap();
+            for index in 0..6 {
+                image::RgbaImage::new(10, 20)
+                    .save(dir.join(format!("{index:03}.png")))
+                    .unwrap();
+            }
+        }
+        let (a, b) = (parent.0.join("a"), parent.0.join("b"));
+        let ctx = egui::Context::default();
+        // history_path が None なので、履歴はファイルに保存されない
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            None,
+        );
+        reader.open_source(a.clone(), &ctx);
+        assert_eq!(reader.current_index, 0);
+        reader.go_to_page(3, &ctx);
+
+        // 別の冊に移ると、離れた冊の位置が記録される
+        reader.open_source(b.clone(), &ctx);
+        assert_eq!(reader.current_index, 0);
+        assert_eq!(reader.history.entries[0].path, history::normalize(&a));
+        assert_eq!(reader.history.entries[0].page_index, 3);
+
+        // 開き直すとしおりのページから
+        reader.open_source(a.clone(), &ctx);
+        assert_eq!(reader.current_index, 3);
+
+        // 冊の移動（次のファイル）はしおりを使わず先頭から
+        reader.next_zip(&ctx);
+        assert_eq!(reader.zip_path, Some(b.clone()));
+        assert_eq!(reader.current_index, 0);
+
+        // 画像を指定して開いたときは、しおりよりその画像を優先する
+        reader.open_source(a.join("001.png"), &ctx);
+        assert_eq!(reader.current_index, 1);
+
         for book in ["a", "b"] {
             fs::remove_dir_all(parent.0.join(book)).unwrap();
         }

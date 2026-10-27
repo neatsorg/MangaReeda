@@ -56,6 +56,11 @@ fn is_packaged_app() -> bool {
     result != APPMODEL_ERROR_NO_PACKAGE
 }
 
+/// 履歴ファイルの場所。設定ファイルと同じフォルダに置く
+pub fn history_path() -> PathBuf {
+    settings_path().with_file_name("history.json")
+}
+
 /// Loads settings, falling back to defaults when the file is missing or invalid.
 pub fn load() -> AppSettings {
     let path = settings_path();

@@ -5,6 +5,9 @@ use super::{
 use crate::localize::tr;
 use eframe::egui;
 
+/// 履歴メニューに出す冊の数
+const HISTORY_MENU_ITEMS: usize = 20;
+
 impl MangaReader {
     pub(super) fn set_fullscreen(&mut self, fullscreen: bool, ctx: &egui::Context) {
         self.is_fullscreen = fullscreen;
@@ -82,6 +85,40 @@ impl MangaReader {
                     }
                 });
             });
+    }
+
+    /// 履歴から冊を選んで、しおりのページから開くメニュー
+    fn render_history_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let mut chosen = None;
+        ui.menu_button("🕘", |ui| {
+            if self.history.entries.is_empty() {
+                ui.label(tr("toolbar.history.empty"));
+            }
+            for entry in self.history.entries.iter().take(HISTORY_MENU_ITEMS) {
+                let name = entry
+                    .path
+                    .file_name()
+                    .map_or_else(|| entry.path.to_string_lossy(), |n| n.to_string_lossy());
+                let label = format!("{name}  ({}/{})", entry.page_index + 1, entry.page_count);
+                if ui
+                    .button(label)
+                    .on_hover_text(entry.path.to_string_lossy())
+                    .clicked()
+                {
+                    chosen = Some(entry.path.clone());
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text(tr("toolbar.history"));
+        if let Some(path) = chosen {
+            if path.exists() {
+                self.open_source(path, ctx);
+            } else {
+                self.show_fading_error(tr("error.history_missing"));
+            }
+        }
     }
 
     pub(super) fn render_top_toolbar(&mut self, ctx: &egui::Context) {
@@ -239,6 +276,7 @@ impl MangaReader {
                             {
                                 self.open_file_dialog();
                             }
+                            self.render_history_menu(ui, ctx);
 
                             ui.separator();
                             let auto_scroll_label = if self.auto_scroll_enabled {

@@ -350,6 +350,32 @@ impl MangaReader {
         Some(handle)
     }
 
+    /// 利用者が冊を開くとき（ファイル選択・ドロップ・起動引数・履歴）に使う。
+    /// 履歴にしおりがあればそのページから表示する（MM-LIST-01）。
+    /// 冊の移動（次／前のファイル）は先頭や最終ページから開くので、load_source を直接使う
+    pub(super) fn open_source(&mut self, path: PathBuf, ctx: &egui::Context) {
+        self.load_source(path.clone(), ctx);
+        // 画像ファイルを指定して開いたとき（冊はそのフォルダになる）は、その画像から読む
+        if self.zip_path.as_ref() != Some(&path) {
+            return;
+        }
+        if let Some(index) = self.history.bookmark(&path, &self.image_files) {
+            self.go_to_page(index, ctx);
+        }
+    }
+
+    /// 今開いている冊の表示位置を履歴に記録して保存する
+    pub(super) fn remember_current_book(&mut self) {
+        let Some(path) = self.zip_path.as_ref() else {
+            return;
+        };
+        self.history
+            .record(path, &self.image_files, self.current_index);
+        if let Some(history_path) = &self.history_path {
+            self.history.save(history_path);
+        }
+    }
+
     pub(super) fn load_source(&mut self, path: PathBuf, ctx: &egui::Context) {
         self.stop_auto_scroll();
         self.clear_pdf_document_cache();
@@ -390,6 +416,7 @@ impl MangaReader {
             let msg = tr("error.no_images_found").to_owned();
             self.show_fading_error(&msg);
         } else {
+            self.remember_current_book();
             self.reset_buffer();
             self.texture_cache.clear();
             self.image_dimensions.clear();

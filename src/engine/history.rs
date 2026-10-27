@@ -1,0 +1,160 @@
+//! 読んだ冊の履歴としおり（MM-LIST-01）。
+//! 冊ごとに最後に表示していたページを覚え、次に開いたときにそこから読めるようにする。
+
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// 履歴に残す冊の数（ミーヤの履歴の既定と同じ。MM-LIST-02）
+pub const HISTORY_LIMIT: usize = 100;
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct HistoryEntry {
+    /// 冊（書庫・フォルダ・PDF）の絶対パス
+    pub path: PathBuf,
+    /// しおりのページのファイル名。ページが増減しても同じ画像を探せるようにする
+    pub page_name: String,
+    /// しおりのページ番号（0始まり）。ファイル名で見つからないときに使う
+    pub page_index: usize,
+    pub page_count: usize,
+    /// 最終アクセス日時（UNIX 秒）
+    pub last_access: u64,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
+pub struct History {
+    /// 新しいものが先頭
+    pub entries: Vec<HistoryEntry>,
+}
+
+/// 同じ冊を別の書き方のパスで開いても同じ記録になるよう、正規化したパスを使う
+pub fn normalize(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+impl History {
+    /// 冊を読んでいた位置を記録し、その冊を履歴の先頭に移す。上限を超えたら古いものから消す
+    pub fn record(&mut self, path: &Path, pages: &[String], page_index: usize) {
+        let Some(page_name) = pages.get(page_index) else {
+            return;
+        };
+        let path = normalize(path);
+        self.entries.retain(|entry| entry.path != path);
+        self.entries.insert(
+            0,
+            HistoryEntry {
+                path,
+                page_name: page_name.clone(),
+                page_index,
+                page_count: pages.len(),
+                last_access: now(),
+            },
+        );
+        self.entries.truncate(HISTORY_LIMIT);
+    }
+
+    /// しおりのページ番号を返す。同じ名前のページがあればそれを、無ければ記録した番号を範囲内に収めて使う
+    pub fn bookmark(&self, path: &Path, pages: &[String]) -> Option<usize> {
+        if pages.is_empty() {
+            return None;
+        }
+        let path = normalize(path);
+        let entry = self.entries.iter().find(|entry| entry.path == path)?;
+        Some(
+            pages
+                .iter()
+                .position(|name| *name == entry.page_name)
+                .unwrap_or(entry.page_index.min(pages.len() - 1)),
+        )
+    }
+
+    /// 読めなかったときは空の履歴にする（壊れたファイルで起動できなくならないように）
+    pub fn load(path: &Path) -> Self {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|data| serde_json::from_str(&data).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, path: &Path) {
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = fs::write(path, json);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pages(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn bookmark_follows_the_page_name_when_pages_change() {
+        let mut history = History::default();
+        let book = Path::new("/no/such/book.zip");
+        history.record(book, &pages(&["a.png", "b.png", "c.png"]), 1);
+        assert_eq!(
+            history.bookmark(book, &pages(&["a.png", "b.png", "c.png"])),
+            Some(1)
+        );
+        // 前にページが足されても同じ画像から読む
+        assert_eq!(
+            history.bookmark(book, &pages(&["0.png", "a.png", "b.png", "c.png"])),
+            Some(2)
+        );
+        // 同じ名前が無ければ番号を範囲内に収める
+        assert_eq!(history.bookmark(book, &pages(&["x.png"])), Some(0));
+        assert_eq!(history.bookmark(book, &[]), None);
+        assert_eq!(
+            history.bookmark(Path::new("/other.zip"), &pages(&["a.png"])),
+            None
+        );
+    }
+
+    #[test]
+    fn recording_moves_the_book_to_the_front_and_keeps_the_limit() {
+        let mut history = History::default();
+        let names = pages(&["a.png", "b.png"]);
+        for index in 0..HISTORY_LIMIT + 5 {
+            history.record(Path::new(&format!("/book{index}")), &names, 0);
+        }
+        assert_eq!(history.entries.len(), HISTORY_LIMIT);
+        assert_eq!(history.entries[0].path, Path::new("/book104"));
+
+        history.record(Path::new("/book50"), &names, 1);
+        assert_eq!(history.entries.len(), HISTORY_LIMIT);
+        assert_eq!(history.entries[0].path, Path::new("/book50"));
+        assert_eq!(history.entries[0].page_name, "b.png");
+        assert_eq!(
+            history
+                .entries
+                .iter()
+                .filter(|e| e.path == Path::new("/book50"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn broken_history_file_loads_as_empty() {
+        let path = std::env::temp_dir().join(format!("manga-history-test-{}", std::process::id()));
+        fs::write(&path, "not json").unwrap();
+        assert_eq!(History::load(&path), History::default());
+
+        let mut history = History::default();
+        history.record(Path::new("/book"), &pages(&["a.png"]), 0);
+        history.save(&path);
+        assert_eq!(History::load(&path), history);
+        fs::remove_file(&path).unwrap();
+    }
+}
