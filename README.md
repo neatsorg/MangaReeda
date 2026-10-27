@@ -43,6 +43,8 @@ cargo build --release
 
 PDF を開くには `libpdfium.so` が必要です。カレントディレクトリ、実行ファイルと同じフォルダ、システムのライブラリの順に探します。見つからない場合は、PDF を開こうとしたときにメッセージを表示します（PDF 以外には影響しません）。
 
+Arch Linux / Manjaro では、AUR の `pdfium-binaries-bin` を入れると `/usr/lib/libpdfium.so` に置かれ、そのまま使えます（chromium/7749 で動作を確認）。ほかの環境では、[pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) の Linux 版を展開し、`lib/libpdfium.so` を実行ファイルと同じフォルダに置いてください。
+
 設定は `~/.config/MangaReeda/settings.json`（`XDG_CONFIG_HOME` があればその下）に保存します。
 
 ## 注意事項
@@ -82,6 +84,8 @@ cargo build --release
 ```
 
 Opening PDFs needs `libpdfium.so`, looked up in the working directory, next to the executable, then system-wide. Without it, only PDFs are unavailable and a message says so.
+
+On Arch Linux / Manjaro, the AUR package `pdfium-binaries-bin` installs it as `/usr/lib/libpdfium.so`, which works as is (tested with chromium/7749). Elsewhere, extract the Linux build from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and put `lib/libpdfium.so` next to the executable.
 
 Settings are stored in `~/.config/MangaReeda/settings.json` (under `XDG_CONFIG_HOME` when set).
 
