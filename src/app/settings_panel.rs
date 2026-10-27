@@ -2,8 +2,9 @@ use super::{
     AUTO_SCROLL_MAX_DELAY_MS, MangaReader, SETTINGS_TOGGLE_FADE_DURATION, ZOOM_MAX, ZOOM_MIN,
 };
 use crate::config::{
-    GamepadButton, GamepadConfig, ImageSizingMode, KeyConfig, LastPageAction, MangaAction,
-    MouseConfig, PageViewOptions, ResizeMethod, Shortcut, UiLanguage,
+    AppSettings, GamepadButton, GamepadConfig, ImageSizingMode, KeyConfig, LastPageAction,
+    MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS, MangaAction, MouseConfig, PageViewOptions, ResizeMethod,
+    Shortcut, UiLanguage,
 };
 use crate::localize::tr;
 use crate::utils::{
@@ -105,6 +106,45 @@ pub(super) fn render_control_mapping_settings(
 ) -> bool {
     let mut changed = false;
     let listening_text = tr("common.listening").to_owned();
+
+    // 操作の割り当てをまとめて差し替えるボタン
+    ui.horizontal_wrapped(|ui| {
+        if profile == ControlProfile::Default
+            && ui
+                .button(tr("settings.control.preset_mangameeya"))
+                .on_hover_text(tr("settings.control.preset_mangameeya.tooltip"))
+                .clicked()
+        {
+            *keys = KeyConfig::mangameeya();
+            *mouse = MouseConfig::mangameeya();
+            *double_click_threshold_ms = MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS;
+            *binding_action = None;
+            changed = true;
+        }
+        if ui
+            .button(tr("settings.control.preset_reset"))
+            .on_hover_text(tr("settings.control.preset_reset.tooltip"))
+            .clicked()
+        {
+            let defaults = AppSettings::default();
+            match profile {
+                ControlProfile::Default => {
+                    *keys = defaults.keys;
+                    *mouse = defaults.mouse;
+                    *gamepad = defaults.gamepad;
+                    *double_click_threshold_ms = defaults.double_click_threshold_ms;
+                }
+                ControlProfile::TopDown => {
+                    *keys = defaults.top_down_keys;
+                    *mouse = defaults.top_down_mouse;
+                    *gamepad = defaults.top_down_gamepad;
+                    *double_click_threshold_ms = defaults.top_down_double_click_threshold_ms;
+                }
+            }
+            *binding_action = None;
+            changed = true;
+        }
+    });
 
     egui::CollapsingHeader::new(
         egui::RichText::new(control_mapping_header("settings.key_config", profile))

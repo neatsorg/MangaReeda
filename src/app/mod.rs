@@ -533,6 +533,58 @@ mod tests {
     }
 
     #[test]
+    fn mangameeya_key_preset_matches_the_spec_without_conflicts() {
+        use crate::config::KeyConfig;
+        let keys = KeyConfig::mangameeya();
+        let parts = |s: Option<Shortcut>| s.map(|s| (s.key, s.ctrl, s.alt, s.shift));
+        let key = |k, shift| Some((k, false, false, shift));
+        // 仕様 13.3 節（MM-IN-K01〜K03, K06, K13, K18）
+        assert_eq!(parts(keys.next_page), key(egui::Key::ArrowRight, false));
+        assert_eq!(parts(keys.prev_page), key(egui::Key::ArrowLeft, false));
+        assert_eq!(parts(keys.one_next_page), key(egui::Key::ArrowDown, false));
+        assert_eq!(parts(keys.one_prev_page), key(egui::Key::ArrowUp, false));
+        assert_eq!(parts(keys.last_page), key(egui::Key::End, false));
+        assert_eq!(parts(keys.first_page), key(egui::Key::Home, false));
+        assert_eq!(parts(keys.fullscreen), key(egui::Key::Enter, false));
+        assert_eq!(parts(keys.next_file), key(egui::Key::ArrowRight, true));
+        assert_eq!(parts(keys.prev_file), key(egui::Key::ArrowLeft, true));
+        assert_eq!(
+            parts(keys.cycle_last_page_action),
+            key(egui::Key::F8, false)
+        );
+
+        // 同じキーに2つの操作が割り当てられていないこと
+        let all = [
+            keys.slide_image_down,
+            keys.slide_image_up,
+            keys.toggle_auto_scroll,
+            keys.reload_current_image,
+            keys.next_page,
+            keys.prev_page,
+            keys.one_next_page,
+            keys.one_prev_page,
+            keys.first_page,
+            keys.last_page,
+            keys.next_file,
+            keys.prev_file,
+            keys.next_folder,
+            keys.prev_folder,
+            keys.fullscreen,
+            keys.view_mode,
+            keys.open_file,
+            keys.quit_app,
+            keys.cycle_last_page_action,
+        ];
+        let assigned: Vec<_> = all.into_iter().filter_map(parts).collect();
+        for (index, shortcut) in assigned.iter().enumerate() {
+            assert!(
+                !assigned[index + 1..].contains(shortcut),
+                "{shortcut:?} が重複している"
+            );
+        }
+    }
+
+    #[test]
     fn bundled_settings_json_parses() {
         let data = include_str!("../../settings.json");
         serde_json::from_str::<AppSettings>(data).unwrap();

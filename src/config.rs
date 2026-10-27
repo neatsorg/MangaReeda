@@ -302,6 +302,33 @@ impl Default for KeyConfig {
 }
 
 impl KeyConfig {
+    /// マンガミーヤのマンガ用設定に近いキー配置（仕様 13.3 節）。
+    /// 対応する操作がまだ無いキーは割り当てない
+    pub fn mangameeya() -> Self {
+        Self {
+            slide_image_down: None,
+            slide_image_up: None,
+            toggle_auto_scroll: None,
+            reload_current_image: None,
+            next_page: Some(Shortcut::new(egui::Key::ArrowRight, false, false, false)),
+            prev_page: Some(Shortcut::new(egui::Key::ArrowLeft, false, false, false)),
+            one_next_page: Some(Shortcut::new(egui::Key::ArrowDown, false, false, false)),
+            one_prev_page: Some(Shortcut::new(egui::Key::ArrowUp, false, false, false)),
+            first_page: Some(Shortcut::new(egui::Key::Home, false, false, false)),
+            last_page: Some(Shortcut::new(egui::Key::End, false, false, false)),
+            next_file: Some(Shortcut::new(egui::Key::ArrowRight, false, false, true)),
+            prev_file: Some(Shortcut::new(egui::Key::ArrowLeft, false, false, true)),
+            next_folder: None,
+            prev_folder: None,
+            fullscreen: Some(Shortcut::new(egui::Key::Enter, false, false, false)),
+            // ミーヤではテンキー0が「先頭ページ挿入」。いちばん近い「奇数／偶数」切り替えを当てる
+            view_mode: Some(Shortcut::new(egui::Key::Num0, false, false, false)),
+            open_file: Some(Shortcut::new(egui::Key::O, false, false, false)),
+            quit_app: Some(Shortcut::new(egui::Key::Escape, false, false, false)),
+            cycle_last_page_action: default_cycle_last_page_action_key(),
+        }
+    }
+
     pub fn top_down_default() -> Self {
         Self {
             slide_image_down: Some(Shortcut::new(egui::Key::ArrowDown, false, false, false)),
@@ -374,6 +401,30 @@ impl Default for MouseConfig {
 }
 
 impl MouseConfig {
+    /// マンガミーヤのマンガ用設定に近いマウス操作（仕様 13.1 節）。
+    /// ホイールはミーヤでは縦スクロールだが、まだスクロールが無いのでページ送りのままにする
+    pub fn mangameeya() -> Self {
+        Self {
+            scroll_up: MangaAction::PrevPage,
+            scroll_down: MangaAction::NextPage,
+            button1_click: MangaAction::NextPage,
+            button2_click: MangaAction::PrevPage,
+            button3_click: MangaAction::None,
+            button4_click: MangaAction::NextFile,
+            button5_click: MangaAction::PrevFile,
+            button1_double_click: MangaAction::ToggleAutoScroll,
+            button2_double_click: MangaAction::None,
+            button3_double_click: MangaAction::None,
+            button4_double_click: MangaAction::None,
+            button5_double_click: MangaAction::None,
+            button1_long_click: MangaAction::None,
+            button2_long_click: MangaAction::None,
+            button3_long_click: MangaAction::None,
+            button4_long_click: MangaAction::None,
+            button5_long_click: MangaAction::None,
+        }
+    }
+
     pub fn top_down_default() -> Self {
         Self {
             scroll_up: MangaAction::SlideImageUp,
@@ -440,6 +491,9 @@ impl GamepadConfig {
 fn default_double_click_threshold_ms() -> u64 {
     160
 }
+
+/// マンガミーヤのマンガ用設定のダブルクリック判定時間（ini の `DblClickInterval`）
+pub const MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS: u64 = 200;
 
 fn default_image_panel_background() -> [u8; 4] {
     [40, 40, 40, 255]
