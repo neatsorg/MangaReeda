@@ -253,6 +253,15 @@ impl MangaReader {
         } else {
             self.last_image_switch_time = Instant::now();
         }
+        // 横長のページを左右に分けて見せているときは、先に読む半分から後の半分へ（MM-VIEW-05）
+        if self.split_half_shows_right().is_some()
+            && self.split_second_half_of != Some(self.current_index)
+        {
+            self.split_second_half_of = Some(self.current_index);
+            self.reset_pan();
+            self.page_indicator_time = Some(Instant::now());
+            return;
+        }
         let step = if force_step_one {
             // reset the buffer when force step 1 to prevent 2 images copy from buffer to active
             self.buffer_next = [None, None];
@@ -317,6 +326,15 @@ impl MangaReader {
         } else {
             self.last_image_switch_time = Instant::now();
         }
+        // 後に読む半分から先に読む半分へ
+        if self.split_half_shows_right().is_some()
+            && self.split_second_half_of == Some(self.current_index)
+        {
+            self.split_second_half_of = None;
+            self.reset_pan();
+            self.page_indicator_time = Some(Instant::now());
+            return;
+        }
         let step = if force_step_one {
             // reset the buffer when force step 1 to prevent 2 images copy from buffer to active
             self.buffer_next = [None, None];
@@ -350,11 +368,18 @@ impl MangaReader {
                 self.load_current_pair(ctx);
             }
             self.buffer_prev = [None, None];
+            self.show_second_half_after_going_back();
         } else {
             // we are at the start of the Zip, do the last page action
             match self.config.last_page_action {
-                LastPageAction::GotoNextFile => self.prev_zip(ctx, true),
-                LastPageAction::ToFirstPage => self.go_to_last_page(ctx),
+                LastPageAction::GotoNextFile => {
+                    self.prev_zip(ctx, true);
+                    self.show_second_half_after_going_back();
+                }
+                LastPageAction::ToFirstPage => {
+                    self.go_to_last_page(ctx);
+                    self.show_second_half_after_going_back();
+                }
                 LastPageAction::Nothing => {
                     let msg = tr("error.first_page").to_owned();
                     self.show_fading_error(&msg)
@@ -449,6 +474,7 @@ impl MangaReader {
     pub(super) fn go_to_first_page(&mut self, ctx: &egui::Context) {
         if !self.image_files.is_empty() && self.current_index != 0 {
             self.manual_page_view = false;
+            self.split_second_half_of = None;
             self.reset_buffer();
             self.reset_pan();
             self.current_index = 0;
@@ -460,6 +486,7 @@ impl MangaReader {
     pub(super) fn go_to_page(&mut self, index: usize, ctx: &egui::Context) {
         if index < self.image_files.len() && self.current_index != index {
             self.manual_page_view = false;
+            self.split_second_half_of = None;
             self.reset_buffer();
             self.reset_pan();
             self.current_index = index;
@@ -471,6 +498,7 @@ impl MangaReader {
     pub(super) fn go_to_last_page(&mut self, ctx: &egui::Context) {
         if !self.image_files.is_empty() {
             self.manual_page_view = false;
+            self.split_second_half_of = None;
             // Find the start of the final view using the active layout's grouping.
             let last_idx = if self.automatic_page_direction().is_some() {
                 // Treat the position just past the end as a backward page turn.
@@ -512,6 +540,34 @@ impl MangaReader {
             LastPageAction::Nothing => tr("mode.repeat_off"),
             LastPageAction::ToFirstPage => tr("mode.repeat_on"),
             LastPageAction::GotoNextFile => tr("mode.repeat_folder"),
+        };
+        self.show_fading_error(msg);
+    }
+
+    /// 前へ戻って横長のページに来たら、後に読む半分から見せる（MM-VIEW-05）
+    fn show_second_half_after_going_back(&mut self) {
+        if self.split_half_shows_right().is_some() {
+            self.split_second_half_of = Some(self.current_index);
+        }
+    }
+
+    /// 自動単ページ表示（左右分割）を切り替えて、今のページから表示し直す（MM-VIEW-05）
+    pub(super) fn toggle_split_landscape_pages(&mut self, ctx: &egui::Context) {
+        if !self.config.toggle_split_landscape_pages() {
+            return;
+        }
+        self.manual_page_view = false;
+        self.split_second_half_of = None;
+        self.reset_buffer();
+        self.texture_cache.clear();
+        self.clear_animated_image_cache();
+        self.reset_pan();
+        self.load_current_pair(ctx);
+        self.save_settings();
+        let msg = if self.config.split_landscape_pages {
+            tr("mode.split_on")
+        } else {
+            tr("mode.split_off")
         };
         self.show_fading_error(msg);
     }

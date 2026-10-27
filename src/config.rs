@@ -176,10 +176,11 @@ pub enum MangaAction {
     ToggleAutoPageLayout,
     JumpForward,
     JumpBackward,
+    ToggleSplitPages,
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -212,6 +213,7 @@ impl MangaAction {
         Self::ToggleAutoPageLayout,
         Self::JumpForward,
         Self::JumpBackward,
+        Self::ToggleSplitPages,
     ];
 }
 
@@ -332,6 +334,8 @@ pub struct KeyConfig {
     pub jump_forward: Option<Shortcut>,
     #[serde(default)]
     pub jump_backward: Option<Shortcut>,
+    #[serde(default)]
+    pub toggle_split_pages: Option<Shortcut>,
 }
 
 // 既存の設定ファイルにこの項目が無いときもミーヤと同じ F8 を割り当てる
@@ -371,6 +375,7 @@ impl Default for KeyConfig {
             toggle_auto_page_layout: None,
             jump_forward: None,
             jump_backward: None,
+            toggle_split_pages: None,
         }
     }
 }
@@ -414,6 +419,8 @@ impl KeyConfig {
             // MM-IN-K04
             jump_forward: Some(Shortcut::new(egui::Key::ArrowRight, false, true, false)),
             jump_backward: Some(Shortcut::new(egui::Key::ArrowLeft, false, true, false)),
+            // ミーヤでもキーは割り当てられていない（CMD139=0）
+            toggle_split_pages: None,
         }
     }
 
@@ -456,6 +463,7 @@ impl KeyConfig {
             toggle_auto_page_layout: None,
             jump_forward: None,
             jump_backward: None,
+            toggle_split_pages: None,
         }
     }
 }
@@ -705,6 +713,9 @@ pub struct AppSettings {
     pub auto_page_layout_rl: bool,
     #[serde(default)]
     pub auto_page_layout_lr: bool,
+    /// 自動単ページ表示（左右分割。MM-VIEW-05）: 1ページ表示で、横長のページを左右に分けて半分ずつ見せる
+    #[serde(default)]
+    pub split_landscape_pages: bool,
     /// 左から右に読むか。1ページ表示のときの読む向きで、自動見開きをオフにしても向きを忘れないようにする
     #[serde(default)]
     pub left_to_right: bool,
@@ -810,6 +821,8 @@ impl AppSettings {
         let was_on = self.auto_page_layout_rl || self.auto_page_layout_lr;
         match right_to_left {
             Some(right_to_left) => {
+                // ミーヤと同じく、自動単ページ表示は1ページ表示でしか使えない
+                self.split_landscape_pages = false;
                 self.auto_page_layout_rl = right_to_left;
                 self.auto_page_layout_lr = !right_to_left;
                 self.left_to_right = !right_to_left;
@@ -850,7 +863,30 @@ impl AppSettings {
             }
         }
         self.page_view_options = view;
+        // ミーヤと同じく、1ページ表示以外を選ぶと自動単ページ表示は切れる
+        if view != PageViewOptions::Single {
+            self.split_landscape_pages = false;
+        }
         overrides_auto
+    }
+
+    /// 自動単ページ表示（左右分割）を切り替える（MM-VIEW-05）。ミーヤと同じく、オンにすると
+    /// 1ページ表示にする（自動見開きも切る）。縦スクロール表示では何もせず false を返す
+    pub fn toggle_split_landscape_pages(&mut self) -> bool {
+        if self.page_view_options == PageViewOptions::TopDown {
+            return false;
+        }
+        if self.split_landscape_pages {
+            self.split_landscape_pages = false;
+            return true;
+        }
+        if self.auto_page_layout_rl || self.auto_page_layout_lr {
+            self.set_auto_page_layout(None);
+        } else {
+            self.choose_page_view(PageViewOptions::Single);
+        }
+        self.split_landscape_pages = true;
+        true
     }
 }
 
@@ -862,6 +898,7 @@ impl Default for AppSettings {
             auto_page_layout_rl: false,
             auto_page_layout_lr: false,
             left_to_right: false,
+            split_landscape_pages: false,
             image_sizing_mode: ImageSizingMode::FitHeight,
             spread_center_offset: 0.0,
             cover_blank_page: false,

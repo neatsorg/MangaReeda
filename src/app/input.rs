@@ -77,6 +77,9 @@ impl MangaReader {
                                     }
                                     "Jump Forward" => keys.jump_forward = Some(new_shortcut),
                                     "Jump Backward" => keys.jump_backward = Some(new_shortcut),
+                                    "Toggle Split Pages" => {
+                                        keys.toggle_split_pages = Some(new_shortcut)
+                                    }
                                     _ => {}
                                 }
                                 self.binding_action = None;
@@ -192,6 +195,9 @@ impl MangaReader {
                 }
                 if is_triggered(&keys.jump_backward) {
                     action_to_run = MangaAction::JumpBackward;
+                }
+                if is_triggered(&keys.toggle_split_pages) {
+                    action_to_run = MangaAction::ToggleSplitPages;
                 }
             });
         }
@@ -563,6 +569,7 @@ impl MangaReader {
             MangaAction::ToggleAutoPageLayout => self.toggle_auto_page_layout(ctx),
             MangaAction::JumpForward => self.jump_pages(true, ctx),
             MangaAction::JumpBackward => self.jump_pages(false, ctx),
+            MangaAction::ToggleSplitPages => self.toggle_split_landscape_pages(ctx),
             MangaAction::SlideImageDown => {
                 if self.config.page_view_options == PageViewOptions::TopDown {
                     self.top_down_scroll_offset -=

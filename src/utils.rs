@@ -101,6 +101,7 @@ pub fn action_label(action: MangaAction) -> &'static str {
         MangaAction::ToggleAutoPageLayout => tr("action.toggle_auto_page_layout"),
         MangaAction::JumpForward => tr("action.jump_forward"),
         MangaAction::JumpBackward => tr("action.jump_backward"),
+        MangaAction::ToggleSplitPages => tr("action.toggle_split_pages"),
     }
 }
 

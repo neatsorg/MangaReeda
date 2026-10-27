@@ -56,10 +56,9 @@ impl MangaReader {
                     let is_zoomed = (self.zoom_factor - 1.0).abs() > 0.01;
                     let double_needs_drag = self.double_page_needs_drag(rect);
                     let viewing_single = self.is_single_page() || self.cover_shown_alone();
-                    let single_image_size = self.textures[0]
-                        .as_ref()
-                        .map(|tex| self.image_draw_size(tex, rect.size(), self.zoom_factor))
-                        .unwrap_or(egui::Vec2::ZERO);
+                    let single_image_size = self
+                        .single_page_rects(rect.center(), rect.size())
+                        .map_or(egui::Vec2::ZERO, |(_, visible)| visible.size());
                     let single_needs_drag =
                         single_image_size.x > rect.width() || single_image_size.y > rect.height();
 
@@ -73,14 +72,11 @@ impl MangaReader {
                                 *action_to_run = mouse_action;
                             }
                         }
-                        if let Some(tex) = &self.textures[0] {
-                            paint_page(
-                                ui,
-                                &mut self.drawn_pages,
-                                tex.id(),
-                                egui::Rect::from_center_size(rect.center(), single_image_size),
-                                ui.clip_rect(),
-                            );
+                        if let (Some(tex), Some((full, visible))) = (
+                            &self.textures[0],
+                            self.single_page_rects(rect.center(), rect.size()),
+                        ) {
+                            paint_page(ui, &mut self.drawn_pages, tex.id(), full, visible);
                         }
                     } else if viewing_single {
                         let pan_response = ui.interact(
@@ -99,17 +95,11 @@ impl MangaReader {
                                 *action_to_run = mouse_action;
                             }
                         }
-                        if let Some(tex) = &self.textures[0] {
-                            paint_page(
-                                ui,
-                                &mut self.drawn_pages,
-                                tex.id(),
-                                egui::Rect::from_center_size(
-                                    rect.center() + self.pan_offset,
-                                    single_image_size,
-                                ),
-                                ui.clip_rect(),
-                            );
+                        if let (Some(tex), Some((full, visible))) = (
+                            &self.textures[0],
+                            self.single_page_rects(rect.center() + self.pan_offset, rect.size()),
+                        ) {
+                            paint_page(ui, &mut self.drawn_pages, tex.id(), full, visible);
                         }
                     } else if is_zoomed || double_needs_drag {
                         let pan_response = ui.interact(

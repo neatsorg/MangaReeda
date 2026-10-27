@@ -115,6 +115,8 @@ pub struct MangaReader {
     /// 自動見開きがオンのまま利用者がページ表示を選んだ。次にページをめくるまで、
     /// 自動見開きより選んだ表示を優先する（ミーヤと同じ）
     manual_page_view: bool,
+    /// 左右に分けて見せている横長のページで、後に読む半分を見せているページ（MM-VIEW-05）
+    split_second_half_of: Option<usize>,
 }
 
 impl MangaReader {
@@ -198,6 +200,7 @@ impl MangaReader {
             history_path: None,
             subfolder_question: None,
             manual_page_view: false,
+            split_second_half_of: None,
         }
     }
 
@@ -546,6 +549,85 @@ mod tests {
         reader.prev_page(&ctx, false);
         assert!(reader.is_cover_blank(&reader.textures[0]));
         assert!(!reader.is_cover_blank(&reader.textures[1]));
+    }
+
+    #[test]
+    fn wide_pages_are_split_into_halves_like_mangameeya() {
+        // 実機 の split.zip（縦 横 縦 縦 横 横 縦）での観察（2026-10-27）
+        let (p, l) = ([10, 20], [20, 10]);
+        let pages = TestPages::new(&[p, l, p, p, l, l, p]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                split_landscape_pages: true,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                last_page_action: LastPageAction::Nothing,
+                image_delay: 0,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        // 見えている部分を「2右」のように書く。ページ番号は分けても増えない
+        let view = |reader: &MangaReader| {
+            let page = reader.current_index + 1;
+            match reader.split_half_shows_right() {
+                Some(true) => format!("{page}右"),
+                Some(false) => format!("{page}左"),
+                None => page.to_string(),
+            }
+        };
+        let expected = ["1", "2右", "2左", "3", "4", "5右", "5左", "6右", "6左", "7"];
+        let mut forward = vec![view(&reader)];
+        for _ in 1..expected.len() {
+            reader.update_buffers(&ctx);
+            reader.next_page(&ctx, false);
+            forward.push(view(&reader));
+        }
+        assert_eq!(forward, expected);
+        // 戻るときは逆の順（横長に戻ったら後に読む半分から）
+        let mut backward = vec![view(&reader)];
+        for _ in 1..expected.len() {
+            reader.update_buffers(&ctx);
+            reader.prev_page(&ctx, false);
+            backward.push(view(&reader));
+        }
+        backward.reverse();
+        assert_eq!(backward, expected);
+
+        // 見せる半分だけが画面の中央に来る。右半分なら画像全体は左にずれる
+        reader.go_to_page(1, &ctx);
+        let center = egui::pos2(500.0, 400.0);
+        let (full, visible) = reader
+            .single_page_rects(center, egui::vec2(1000.0, 800.0))
+            .unwrap();
+        assert_eq!(visible.center(), center);
+        assert!((full.width() - visible.width() * 2.0).abs() < 0.01);
+        assert!((full.max.x - visible.max.x).abs() < 0.01);
+
+        // 左開きなら左半分が先
+        reader.config.left_to_right = true;
+        assert_eq!(view(&reader), "2左");
+        reader.next_page(&ctx, false);
+        assert_eq!(view(&reader), "2右");
+        reader.config.left_to_right = false;
+
+        // 見開きを選ぶと切れる。オンにすると1ページ表示に戻る
+        reader.config.choose_page_view(PageViewOptions::DoubleRL);
+        assert!(!reader.config.split_landscape_pages);
+        reader.toggle_split_landscape_pages(&ctx);
+        assert!(reader.config.split_landscape_pages);
+        assert_eq!(reader.config.page_view_options, PageViewOptions::Single);
+        // 自動見開きをオンにしても切れる
+        reader.toggle_auto_page_layout(&ctx);
+        assert!(!reader.config.split_landscape_pages);
+        // 自動見開きのときにオンにすると、自動見開きが切れて1ページ表示になる
+        reader.toggle_split_landscape_pages(&ctx);
+        assert!(reader.config.split_landscape_pages);
+        assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+        assert_eq!(reader.config.page_view_options, PageViewOptions::Single);
+        assert!(reader.config.reads_right_to_left());
     }
 
     #[test]

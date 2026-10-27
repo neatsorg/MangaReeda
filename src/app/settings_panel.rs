@@ -297,6 +297,11 @@ pub(super) fn render_control_mapping_settings(
                         "Jump Backward",
                         &mut keys.jump_backward,
                     ),
+                    (
+                        tr("settings.key.toggle_split_pages"),
+                        "Toggle Split Pages",
+                        &mut keys.toggle_split_pages,
+                    ),
                 ] {
                     ui.label(label);
                     render_binding_button(
@@ -691,6 +696,14 @@ impl MangaReader {
                                     {
                                         self.sync_cover_blank(ctx);
                                         self.save_settings();
+                                    }
+                                    let mut split = self.config.split_landscape_pages;
+                                    if ui
+                                        .checkbox(&mut split, tr("settings.split_landscape_pages"))
+                                        .on_hover_text(tr("settings.split_landscape_pages.tooltip"))
+                                        .changed()
+                                    {
+                                        self.toggle_split_landscape_pages(ctx);
                                     }
                                     separator_pct(ui);
                                     ui.label(

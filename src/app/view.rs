@@ -136,7 +136,22 @@ impl MangaReader {
         container_size: egui::Vec2,
         zoom_factor: f32,
     ) -> egui::Vec2 {
-        let tex_size = tex.size_vec2();
+        self.draw_size_of(
+            tex.size_vec2(),
+            self.original_size(tex),
+            container_size,
+            zoom_factor,
+        )
+    }
+
+    /// テクスチャの大きさ `tex_size`、元画像の大きさ `original` の画像（またはその一部）の描画サイズ
+    fn draw_size_of(
+        &self,
+        tex_size: egui::Vec2,
+        original: egui::Vec2,
+        container_size: egui::Vec2,
+        zoom_factor: f32,
+    ) -> egui::Vec2 {
         let aspect_ratio = tex_size.x / tex_size.y;
 
         match self.config.image_sizing_mode {
@@ -154,12 +169,63 @@ impl MangaReader {
                 tex_size * scale * zoom_factor
             }
             ImageSizingMode::ShrinkOnly => {
-                let original = self.original_size(tex);
                 let scale = shrink_only_scale(original.into(), container_size.into());
                 original * scale * zoom_factor
             }
             ImageSizingMode::OriginalSize => tex_size * zoom_factor,
         }
+    }
+
+    /// 1ページ表示で、今のページを左右に分けて見せているとき（MM-VIEW-05）、右半分を見せているか。
+    /// 分けていなければ None。分けるのは、自動単ページ表示がオンで、1ページ表示で、横長のページ
+    pub(super) fn split_half_shows_right(&self) -> Option<bool> {
+        if !self.config.split_landscape_pages
+            || self.config.page_view_options != PageViewOptions::Single
+            || !self
+                .page_dimensions(self.current_index)
+                .is_some_and(|[w, h]| w > h)
+        {
+            return None;
+        }
+        // 先に読む半分は、右開きなら右、左開きなら左
+        let second = self.split_second_half_of == Some(self.current_index);
+        Some(self.config.reads_right_to_left() != second)
+    }
+
+    /// 1ページ表示で今のページを描く範囲。戻り値は（画像全体を描く範囲, 見せる範囲）。
+    /// 左右に分けて見せるときは、見せる半分が `center` に来るよう画像全体をずらし、半分だけを見せる
+    pub(super) fn single_page_rects(
+        &self,
+        center: egui::Pos2,
+        container: egui::Vec2,
+    ) -> Option<(Rect, Rect)> {
+        let tex = self.textures[0].as_ref()?;
+        let Some(shows_right) = self.split_half_shows_right() else {
+            let rect = Rect::from_center_size(
+                center,
+                self.image_draw_size(tex, container, self.zoom_factor),
+            );
+            return Some((rect, rect));
+        };
+        // 分割位置は幅の半分（ミーヤの既定 HalfPageVPos=@width/2）
+        let half = |size: egui::Vec2| egui::vec2(size.x * 0.5, size.y);
+        let half_size = self.draw_size_of(
+            half(tex.size_vec2()),
+            half(self.original_size(tex)),
+            container,
+            self.zoom_factor,
+        );
+        let visible = Rect::from_center_size(center, half_size);
+        let full_min_x = if shows_right {
+            visible.min.x - half_size.x
+        } else {
+            visible.min.x
+        };
+        let full = Rect::from_min_size(
+            egui::pos2(full_min_x, visible.min.y),
+            egui::vec2(half_size.x * 2.0, half_size.y),
+        );
+        Some((full, visible))
     }
 
     /// 元画像の大きさ。テクスチャは表示用に縮めてあることがあるので、読み込み時の記録を使う
@@ -370,9 +436,9 @@ impl MangaReader {
     pub(super) fn page_content_rect(&self, rect: Rect) -> Option<Rect> {
         let viewing_single = self.is_single_page() || self.cover_shown_alone();
         if viewing_single {
-            let tex = self.textures[0].as_ref()?;
-            let size = self.image_draw_size(tex, rect.size(), self.zoom_factor);
-            return Some(Rect::from_center_size(rect.center(), size));
+            return self
+                .single_page_rects(rect.center(), rect.size())
+                .map(|(_, visible)| visible);
         }
         let offset = self.config.spread_center_offset;
         let container = egui::vec2((rect.width() * 0.5 - offset.abs()).max(1.0), rect.height());
