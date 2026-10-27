@@ -138,7 +138,7 @@ impl MangaReader {
                                 .on_hover_text(tr("toolbar.prev_file"))
                                 .clicked()
                             {
-                                self.prev_zip(ctx);
+                                self.prev_zip(ctx, false);
                             }
                             if ui
                                 .button("⏭📦")

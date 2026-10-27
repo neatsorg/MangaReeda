@@ -401,6 +401,78 @@ mod tests {
     }
 
     #[test]
+    fn go_to_last_page_respects_single_and_shifted_layouts() {
+        // (表示モード, 奇数ずらし, ページ数, 期待する最終表示の先頭)
+        let cases = [
+            (PageViewOptions::Single, false, 6, 5),
+            (PageViewOptions::Single, false, 5, 4),
+            (PageViewOptions::DoubleRL, false, 6, 4),
+            (PageViewOptions::DoubleRL, false, 5, 4),
+            (PageViewOptions::DoubleRL, true, 6, 5),
+            (PageViewOptions::DoubleRL, true, 5, 3),
+            (PageViewOptions::DoubleRL, true, 1, 0),
+        ];
+        let ctx = egui::Context::default();
+        for (mode, shifted, len, expected) in cases {
+            let pages = TestPages::new(&vec![[10, 20]; len]);
+            let mut reader = pages.reader(
+                AppSettings {
+                    page_view_options: mode,
+                    enable_animated_images: false,
+                    resize_method: ResizeMethod::None,
+                    ..AppSettings::default()
+                },
+                &ctx,
+            );
+            reader.is_shifted = shifted;
+            reader.go_to_last_page(&ctx);
+            assert_eq!(reader.current_index, expected, "{mode:?} {shifted} {len}");
+        }
+    }
+
+    #[test]
+    fn going_back_from_the_first_page_opens_the_previous_book_at_its_last_page() {
+        // 隣り合う2冊を、他のフォルダが混ざらない専用の親フォルダに作る
+        let parent = TestPages::new(&[]);
+        for (book, count) in [("a", 5), ("b", 3)] {
+            let dir = parent.0.join(book);
+            fs::create_dir(&dir).unwrap();
+            for index in 0..count {
+                image::RgbaImage::new(10, 20)
+                    .save(dir.join(format!("{index:03}.png")))
+                    .unwrap();
+            }
+        }
+        let ctx = egui::Context::default();
+        for auto_layout in [false, true] {
+            let mut reader = MangaReader::with_settings(
+                AppSettings {
+                    page_view_options: PageViewOptions::DoubleRL,
+                    auto_page_layout_rl: auto_layout,
+                    last_page_action: LastPageAction::GotoNextFile,
+                    enable_animated_images: false,
+                    resize_method: ResizeMethod::None,
+                    ..AppSettings::default()
+                },
+                None,
+            );
+            reader.load_source(parent.0.join("b"), &ctx);
+            reader.prev_page(&ctx, false);
+            assert_eq!(reader.zip_path, Some(parent.0.join("a")));
+            assert_eq!(reader.current_index, 4, "auto_layout={auto_layout}");
+
+            // 明示的な「前のファイル」は従来どおり先頭から開く
+            reader.load_source(parent.0.join("b"), &ctx);
+            reader.prev_zip(&ctx, false);
+            assert_eq!(reader.zip_path, Some(parent.0.join("a")));
+            assert_eq!(reader.current_index, 0);
+        }
+        for book in ["a", "b"] {
+            fs::remove_dir_all(parent.0.join(book)).unwrap();
+        }
+    }
+
+    #[test]
     fn opening_a_pdf_never_panics() {
         // Holds without a pdfium library (it reports that) and with one (the
         // file is not a valid PDF).

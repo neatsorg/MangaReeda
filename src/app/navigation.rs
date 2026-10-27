@@ -262,7 +262,7 @@ impl MangaReader {
         } else {
             // we are at the start of the Zip, do the last page action
             match self.config.last_page_action {
-                LastPageAction::GotoNextFile => self.prev_zip(ctx),
+                LastPageAction::GotoNextFile => self.prev_zip(ctx, true),
                 LastPageAction::ToFirstPage => self.go_to_last_page(ctx),
                 LastPageAction::Nothing => {
                     let msg = tr("error.first_page").to_owned();
@@ -295,7 +295,9 @@ impl MangaReader {
         }
     }
 
-    pub(super) fn prev_zip(&mut self, ctx: &egui::Context) {
+    /// 前の冊を開く。`open_at_last_page` が真なら最終ページから表示する
+    /// （先頭ページから戻ったときの挙動。MM-NAV-22）
+    pub(super) fn prev_zip(&mut self, ctx: &egui::Context, open_at_last_page: bool) {
         if let Some(pos) = self
             .all_zips_in_folder
             .iter()
@@ -303,8 +305,11 @@ impl MangaReader {
         {
             if pos > 0 {
                 let prev_path = self.all_zips_in_folder[pos - 1].clone();
-                // We pass 'true' to load_zip so it knows to start at the end of the new file
-                self.load_source(prev_path, ctx);
+                self.load_source(prev_path.clone(), ctx);
+                // 読み込みに失敗したときは元の冊のままなので、ページを動かさない
+                if open_at_last_page && self.zip_path.as_ref() == Some(&prev_path) {
+                    self.go_to_last_page(ctx);
+                }
             } else {
                 let msg = tr("error.no_previous_zip_files").to_owned();
                 self.show_fading_error(&msg);
@@ -368,7 +373,19 @@ impl MangaReader {
                 self.current_index = current_index;
                 last_idx
             } else {
-                (self.image_files.len().saturating_sub(1) / 2) * 2
+                let last = self.image_files.len() - 1;
+                if self.is_single_page() {
+                    last
+                } else if self.is_shifted {
+                    // 1枚目だけ単独で、以降は (1,2), (3,4)… と組む
+                    if last == 0 {
+                        0
+                    } else {
+                        ((last - 1) / 2) * 2 + 1
+                    }
+                } else {
+                    (last / 2) * 2
+                }
             };
             if self.current_index != last_idx {
                 self.reset_buffer();

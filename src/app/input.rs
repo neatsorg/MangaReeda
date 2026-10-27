@@ -461,7 +461,7 @@ impl MangaReader {
             MangaAction::FirstPage => self.go_to_first_page(ctx),
             MangaAction::LastPage => self.go_to_last_page(ctx),
             MangaAction::NextFile => self.next_zip(ctx),
-            MangaAction::PrevFile => self.prev_zip(ctx),
+            MangaAction::PrevFile => self.prev_zip(ctx, false),
             MangaAction::NextFolder => self.next_folder(ctx),
             MangaAction::PrevFolder => self.prev_folder(ctx),
             MangaAction::FullScreen => {
