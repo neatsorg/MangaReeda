@@ -31,7 +31,7 @@ image = { version = "0.25.10", features = ["webp", "jpeg", "png", "bmp", "gif", 
 gilrs = "0.11.0"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_Packaging_Appx", "Win32_UI_Shell"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_Packaging_Appx"] }
 
 [dev-dependencies]
 # examples/sort_check_book.rs で文字を描くため（egui が既に使っている版）

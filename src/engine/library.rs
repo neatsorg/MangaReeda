@@ -1,67 +1,92 @@
+use std::cmp::Ordering;
 use std::fs;
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-#[cfg(windows)]
-use windows::Win32::UI::Shell::StrCmpLogicalW;
-#[cfg(windows)]
-use windows::core::PCWSTR;
 
-/// Natural alphanumeric sorting by file name ("page2" before "page10").
-/// Windows uses Explorer's own ordering; elsewhere `nat_cmp` approximates it.
-#[cfg(windows)]
+/// マンガミーヤの「パス[数字順]」に合わせた比較（MM-SORT-01）。
+/// spec/sort-check/mangameeya-order.txt の実物の並びから読み取った規則:
+///
+/// - フォルダの区切りも含めたパス全体で比べる（フォルダの中身がほかと混ざらない）
+/// - 文字の種類の順: 区切り（/ \）→ `-` → ほかの記号（ASCII 順）→ 全角・半角カナ
+///   → 数字 → 英字（大文字小文字は区別しない）→ ひらがな・カタカナ・漢字など（文字コード順）
+/// - 続いた数字は値で比べる（桁数に上限なし）。値が同じなら先頭のゼロが多いほうが先
+///   （`00` → `0`、`001` → `01` → `1`）
+///
+/// 全角文字と半角カナどうしの順は単純な規則で説明できなかったので、
+/// 文字コード順にしてある（観察リスト2）。
+pub fn mangameeya_cmp(a: &str, b: &str) -> Ordering {
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    // 値が同じ数字の桁数の違い。ほかに差が無ければこれで決める
+    let mut zeros_tie = Ordering::Equal;
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return zeros_tie.then_with(|| a.cmp(b)),
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let n1 = take_digits(&mut x);
+                let n2 = take_digits(&mut y);
+                let (t1, t2) = (n1.trim_start_matches('0'), n2.trim_start_matches('0'));
+                let by_value = t1.len().cmp(&t2.len()).then_with(|| t1.cmp(t2));
+                if by_value != Ordering::Equal {
+                    return by_value;
+                }
+                if zeros_tie == Ordering::Equal {
+                    // 桁数の多い（ゼロの多い）ほうが先
+                    zeros_tie = n2.len().cmp(&n1.len());
+                }
+            }
+            (Some(c), Some(d)) => {
+                let order = char_key(c).cmp(&char_key(d));
+                if order != Ordering::Equal {
+                    return order;
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
+}
+
+fn take_digits(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    let mut digits = String::new();
+    while let Some(&c) = chars.peek() {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        digits.push(c);
+        chars.next();
+    }
+    digits
+}
+
+/// 数字以外の1文字の並びの重み（種類, 種類の中での順）
+fn char_key(c: char) -> (u8, u32) {
+    match c {
+        '/' | '\\' => (0, 0),
+        '-' => (1, 0),
+        // 片方だけが数字のとき（数字どうしは mangameeya_cmp が値で比べる）
+        c if c.is_ascii_digit() => (4, 0),
+        c if c.is_ascii_alphabetic() => (5, c.to_ascii_lowercase() as u32),
+        c if c.is_ascii() => (2, c as u32),
+        // 全角英数・記号と半角カナ
+        '\u{FF00}'..='\u{FFEF}' => (3, c as u32),
+        c => (6, c as u32),
+    }
+}
+
+/// 本（書庫・フォルダ）の並び替え。同じフォルダの中なのでファイル名で比べる
 pub fn natural_sort(paths: &mut [PathBuf]) {
     paths.sort_by(|a, b| {
-        // Convert OsStr to null-terminated Wide Strings (UTF-16) for Windows API
-        let a_name: Vec<u16> = a
-            .file_name()
-            .unwrap_or_default()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        let b_name: Vec<u16> = b
-            .file_name()
-            .unwrap_or_default()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-
-        let result = unsafe { StrCmpLogicalW(PCWSTR(a_name.as_ptr()), PCWSTR(b_name.as_ptr())) };
-
-        match result {
-            r if r < 0 => std::cmp::Ordering::Less,
-            r if r > 0 => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        }
+        mangameeya_cmp(
+            &a.file_name().unwrap_or_default().to_string_lossy(),
+            &b.file_name().unwrap_or_default().to_string_lossy(),
+        )
     });
 }
 
-/// Natural alphanumeric sorting specifically for String vectors
-#[cfg(windows)]
+/// ページの並び替え。書庫の中のフォルダも含めたパス全体で比べる
 pub fn natural_sort_strings(strings: &mut [String]) {
-    strings.sort_by(|a, b| {
-        // Convert Strings to null-terminated UTF-16 for the Windows API
-        let a_name: Vec<u16> = Path::new(a)
-            .file_name()
-            .unwrap_or_default()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        let b_name: Vec<u16> = Path::new(b)
-            .file_name()
-            .unwrap_or_default()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-
-        let result = unsafe { StrCmpLogicalW(PCWSTR(a_name.as_ptr()), PCWSTR(b_name.as_ptr())) };
-
-        match result {
-            r if r < 0 => std::cmp::Ordering::Less,
-            r if r > 0 => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        }
-    });
+    strings.sort_by(|a, b| mangameeya_cmp(a, b));
 }
 
 pub fn scan_folder(current_parent: &Path) -> Vec<PathBuf> {
@@ -150,75 +175,6 @@ pub fn get_adjacent_directories(
     }
 }
 
-#[cfg(not(windows))]
-fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
-    loop {
-        match (x.peek().copied(), y.peek().copied()) {
-            (None, None) => return std::cmp::Ordering::Equal,
-            (None, _) => return std::cmp::Ordering::Less,
-            (_, None) => return std::cmp::Ordering::Greater,
-            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
-                let mut n1 = String::new();
-                while let Some(&c) = x.peek() {
-                    if c.is_ascii_digit() {
-                        n1.push(c);
-                        x.next();
-                    } else {
-                        break;
-                    }
-                }
-                let mut n2 = String::new();
-                while let Some(&c) = y.peek() {
-                    if c.is_ascii_digit() {
-                        n2.push(c);
-                        y.next();
-                    } else {
-                        break;
-                    }
-                }
-                let (t1, t2) = (n1.trim_start_matches('0'), n2.trim_start_matches('0'));
-                let o = t1.len().cmp(&t2.len()).then(t1.cmp(t2));
-                if o != std::cmp::Ordering::Equal {
-                    return o;
-                }
-            }
-            (Some(c), Some(d)) => {
-                let o = c.to_lowercase().cmp(d.to_lowercase());
-                if o != std::cmp::Ordering::Equal {
-                    return o;
-                }
-                x.next();
-                y.next();
-            }
-        }
-    }
-}
-#[cfg(not(windows))]
-pub fn natural_sort(paths: &mut [PathBuf]) {
-    paths.sort_by(|a, b| {
-        nat_cmp(
-            &a.file_name().unwrap_or_default().to_string_lossy(),
-            &b.file_name().unwrap_or_default().to_string_lossy(),
-        )
-    });
-}
-#[cfg(not(windows))]
-pub fn natural_sort_strings(strings: &mut [String]) {
-    strings.sort_by(|a, b| {
-        nat_cmp(
-            &Path::new(a)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
-            &Path::new(b)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
-        )
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,11 +208,22 @@ mod tests {
             }
             return;
         };
+        // 全角文字と半角カナを含む名前は、どこに来るか（記号と数字のあいだ）だけを比べる。
+        // マンガミーヤでのそれらどうしの順（２ → ｱ → ｐａｇｅ5 → １０）は規則が分からないため
+        fn wide(name: &str) -> &str {
+            if name.chars().any(|c| ('\u{FF00}'..='\u{FFEF}').contains(&c)) {
+                "（全角・半角カナ）"
+            } else {
+                name
+            }
+        }
         let expected: Vec<&str> = expected
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with("# "))
+            .map(wide)
             .collect();
+        let names: Vec<&str> = names.iter().map(|name| wide(name)).collect();
         assert_eq!(names, expected);
     }
 
@@ -300,12 +267,13 @@ mod tests {
             "第9話.jpg".to_string(),
         ];
         natural_sort_strings(&mut names);
+        // フォルダも含めたパス全体で比べるので、dir/ の中身は d の位置に来る（マンガミーヤと同じ）
         assert_eq!(
             names,
             [
+                "dir/page3.png",
                 "Page1.png",
                 "page2.png",
-                "dir/page3.png",
                 "page10.png",
                 "page11.png",
                 "第9話.jpg",
