@@ -224,6 +224,42 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// spec/sort-check/names.txt の名前（examples/sort_check_book.rs と同じ読み方）
+    fn sort_check_names() -> Vec<String> {
+        include_str!("../../spec/sort-check/names.txt")
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("# ") && *line != "#")
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// 書庫の中の並び順をマンガミーヤと比べる（MM-SORT-01、観察リスト2）。
+    /// マンガミーヤで確認した順番を spec/sort-check/mangameeya-order.txt に書くと比べる。
+    /// まだ無いときは MangaReeda の順番を表示するだけ
+    /// （cargo test sort_check -- --nocapture で見られる）
+    #[test]
+    fn sort_check_order_matches_mangameeya() {
+        let mut names = sort_check_names();
+        natural_sort_strings(&mut names);
+        let expected = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("spec/sort-check/mangameeya-order.txt"),
+        );
+        let Ok(expected) = expected else {
+            println!("MangaReeda の順番:");
+            for (index, name) in names.iter().enumerate() {
+                println!("{:>3} {name}", index + 1);
+            }
+            return;
+        };
+        let expected: Vec<&str> = expected
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("# "))
+            .collect();
+        assert_eq!(names, expected);
+    }
+
     struct TempDir(PathBuf);
 
     impl TempDir {
