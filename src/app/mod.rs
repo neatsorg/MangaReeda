@@ -34,6 +34,8 @@ const ANIMATION_SCAN_AHEAD_PAGES: usize = 5;
 const ZOOM_MIN: f32 = 0.1;
 const ZOOM_MAX: f32 = 3.0;
 const ZOOM_STEP: f32 = 1.1;
+/// スクロール1回で動かす量（表示領域の大きさに対する割合）
+const SCROLL_STEP_RATIO: f32 = 0.8;
 const ZOOM_RELOAD_DELAY: Duration = Duration::from_secs(1);
 const FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT: f32 = 20.0;
 const FULLSCREEN_TITLE_BAR_HEIGHT: f32 = 28.0;
@@ -92,6 +94,8 @@ pub struct MangaReader {
     mouse_drag_suppressed: [bool; 5],
     /// 押したまま他のボタンやホイールと組み合わせて使ったボタン。離したときにクリック扱いしない
     mouse_chord_used: [bool; 5],
+    /// reset_pan のあと、ページを読み始めの位置に合わせるのを待っている
+    pan_to_start_pending: bool,
     pending_mouse_click: [Option<(Instant, MangaAction)>; 5],
     gamepad: Option<Gilrs>,
     gamepad_repeat_deadlines: [Option<Instant>; 16],
@@ -171,6 +175,7 @@ impl MangaReader {
             mouse_long_triggered: [false; 5],
             mouse_drag_suppressed: [false; 5],
             mouse_chord_used: [false; 5],
+            pan_to_start_pending: false,
             pending_mouse_click: [None; 5],
             gamepad: Gilrs::new().ok(),
             gamepad_repeat_deadlines: [None; 16],
@@ -599,11 +604,11 @@ mod tests {
             None
         );
 
-        // 単独のクリックとホイールは従来どおり
+        // 単独のクリックとホイールは同時押しにならない（ホイールはスクロール兼次へ）
         assert_eq!(mouse_frame(&mut reader, &ctx, vec![]), None);
         assert_eq!(
             mouse_frame(&mut reader, &ctx, vec![wheel(-5.0)]),
-            Some(MangaAction::NextPage)
+            Some(MangaAction::ScrollNextPage)
         );
         assert_eq!(
             mouse_frame(&mut reader, &ctx, vec![button(Secondary, true)]),
@@ -663,6 +668,107 @@ mod tests {
             mouse_frame(&mut reader, &ctx, vec![button(Secondary, false)]),
             Some(MangaAction::PrevPage)
         );
+    }
+
+    fn pan(reader: &MangaReader) -> (f32, f32) {
+        (reader.pan_offset.x, reader.pan_offset.y)
+    }
+
+    #[test]
+    fn scroll_or_page_reads_a_tall_page_top_to_bottom_then_turns() {
+        use crate::config::ImageSizingMode;
+        // 幅に合わせると 100x200 になり、100x100 の画面から縦に2画面分はみ出す
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                image_sizing_mode: ImageSizingMode::FitWidth,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        reader.last_page_view_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(100.0, 100.0),
+        ));
+        // 開いたページは上端から表示する
+        reader.apply_pending_pan_start();
+        assert_eq!(pan(&reader), (0.0, 50.0));
+
+        reader.scroll_next_page(&ctx);
+        assert_eq!(pan(&reader), (0.0, -30.0));
+        reader.scroll_next_page(&ctx);
+        assert_eq!(pan(&reader), (0.0, -50.0));
+        // 下端まで読んだら次のページを上端から
+        reader.scroll_next_page(&ctx);
+        assert_eq!(reader.current_index, 1);
+        assert_eq!(pan(&reader), (0.0, 50.0));
+        reader.apply_pending_pan_start();
+        assert_eq!(pan(&reader), (0.0, 50.0));
+
+        // 上端から戻ると前のページを下端から
+        reader.scroll_prev_page(&ctx);
+        assert_eq!(reader.current_index, 0);
+        assert_eq!(pan(&reader), (0.0, -50.0));
+        reader.apply_pending_pan_start();
+        assert_eq!(pan(&reader), (0.0, -50.0));
+
+        // 方向を指定したスクロールは端で止まり、ページは送らない
+        reader.scroll_view(0.0, 1.0, &ctx);
+        assert_eq!(pan(&reader), (0.0, -50.0));
+        assert_eq!(reader.current_index, 0);
+        reader.scroll_view(0.0, -1.0, &ctx);
+        assert_eq!(pan(&reader), (0.0, 30.0));
+        reader.scroll_view(-1.0, 0.0, &ctx);
+        assert_eq!(pan(&reader), (0.0, 30.0));
+
+        // 普通の「次へ」で開いたページも上端から
+        reader.next_page(&ctx, false);
+        reader.apply_pending_pan_start();
+        assert_eq!(pan(&reader), (0.0, 50.0));
+    }
+
+    #[test]
+    fn scroll_or_page_on_a_zoomed_spread_starts_at_the_top_right_when_reading_right_to_left() {
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20], [10, 20]]);
+        let ctx = egui::Context::default();
+        for (mode, start_x) in [
+            (PageViewOptions::DoubleRL, -50.0),
+            (PageViewOptions::DoubleLR, 50.0),
+        ] {
+            let mut reader = pages.reader(
+                AppSettings {
+                    page_view_options: mode,
+                    enable_animated_images: false,
+                    resize_method: ResizeMethod::None,
+                    ..AppSettings::default()
+                },
+                &ctx,
+            );
+            reader.last_page_view_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(200.0, 100.0),
+            ));
+            // 高さに合わせて3倍: 1ページ 150x300、見開きで 300x300
+            reader.zoom_factor = 3.0;
+            reader.apply_pending_pan_start();
+            assert_eq!(pan(&reader), (start_x, 100.0), "{mode:?}");
+
+            // 縦を読み終えたら、読む方向の列へ移って上端に戻る
+            let mut steps = 0;
+            while pan(&reader).1 > -100.0 {
+                reader.scroll_next_page(&ctx);
+                steps += 1;
+                assert!(steps < 10);
+            }
+            reader.scroll_next_page(&ctx);
+            assert_eq!(reader.current_index, 0);
+            // 横は1回 160 動かすが、反対側の端（-start_x）で止まる
+            assert_eq!(pan(&reader), (-start_x, 100.0));
+        }
     }
 
     #[test]

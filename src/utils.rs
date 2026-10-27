@@ -91,6 +91,12 @@ pub fn action_label(action: MangaAction) -> &'static str {
         MangaAction::OpenFile => tr("action.open_file"),
         MangaAction::QuitApp => tr("action.quit_app"),
         MangaAction::CycleLastPageAction => tr("action.cycle_last_page_action"),
+        MangaAction::ScrollNextPage => tr("action.scroll_next_page"),
+        MangaAction::ScrollPrevPage => tr("action.scroll_prev_page"),
+        MangaAction::ScrollUp => tr("action.scroll_up"),
+        MangaAction::ScrollDown => tr("action.scroll_down"),
+        MangaAction::ScrollLeft => tr("action.scroll_left"),
+        MangaAction::ScrollRight => tr("action.scroll_right"),
     }
 }
 
@@ -214,5 +220,11 @@ pub fn is_repeatable_gamepad_action(action: MangaAction) -> bool {
             | MangaAction::PrevFile
             | MangaAction::NextFolder
             | MangaAction::PrevFolder
+            | MangaAction::ScrollNextPage
+            | MangaAction::ScrollPrevPage
+            | MangaAction::ScrollUp
+            | MangaAction::ScrollDown
+            | MangaAction::ScrollLeft
+            | MangaAction::ScrollRight
     )
 }

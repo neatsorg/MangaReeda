@@ -6,5 +6,6 @@ pub mod history;
 pub mod imaging;
 pub mod layout;
 pub mod library;
+pub mod scroll;
 pub mod settings_store;
 pub mod source;

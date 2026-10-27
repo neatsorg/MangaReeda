@@ -250,6 +250,36 @@ pub(super) fn render_control_mapping_settings(
                         "Cycle Last Page Action",
                         &mut keys.cycle_last_page_action,
                     ),
+                    (
+                        tr("settings.key.scroll_next_page"),
+                        "Scroll Next Page",
+                        &mut keys.scroll_next_page,
+                    ),
+                    (
+                        tr("settings.key.scroll_prev_page"),
+                        "Scroll Prev Page",
+                        &mut keys.scroll_prev_page,
+                    ),
+                    (
+                        tr("settings.key.scroll_up"),
+                        "Scroll Up",
+                        &mut keys.scroll_up,
+                    ),
+                    (
+                        tr("settings.key.scroll_down"),
+                        "Scroll Down",
+                        &mut keys.scroll_down,
+                    ),
+                    (
+                        tr("settings.key.scroll_left"),
+                        "Scroll Left",
+                        &mut keys.scroll_left,
+                    ),
+                    (
+                        tr("settings.key.scroll_right"),
+                        "Scroll Right",
+                        &mut keys.scroll_right,
+                    ),
                 ] {
                     ui.label(label);
                     render_binding_button(

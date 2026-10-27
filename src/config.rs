@@ -142,10 +142,16 @@ pub enum MangaAction {
     OpenFile,
     QuitApp,
     CycleLastPageAction,
+    ScrollNextPage,
+    ScrollPrevPage,
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 28] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -168,6 +174,12 @@ impl MangaAction {
         Self::OpenFile,
         Self::QuitApp,
         Self::CycleLastPageAction,
+        Self::ScrollNextPage,
+        Self::ScrollPrevPage,
+        Self::ScrollUp,
+        Self::ScrollDown,
+        Self::ScrollLeft,
+        Self::ScrollRight,
     ];
 }
 
@@ -268,6 +280,18 @@ pub struct KeyConfig {
     pub quit_app: Option<Shortcut>,
     #[serde(default = "default_cycle_last_page_action_key")]
     pub cycle_last_page_action: Option<Shortcut>,
+    #[serde(default)]
+    pub scroll_next_page: Option<Shortcut>,
+    #[serde(default)]
+    pub scroll_prev_page: Option<Shortcut>,
+    #[serde(default)]
+    pub scroll_up: Option<Shortcut>,
+    #[serde(default)]
+    pub scroll_down: Option<Shortcut>,
+    #[serde(default)]
+    pub scroll_left: Option<Shortcut>,
+    #[serde(default)]
+    pub scroll_right: Option<Shortcut>,
 }
 
 // 既存の設定ファイルにこの項目が無いときもミーヤと同じ F8 を割り当てる
@@ -297,6 +321,12 @@ impl Default for KeyConfig {
             open_file: Some(Shortcut::new(egui::Key::O, false, false, false)),
             quit_app: Some(Shortcut::new(egui::Key::Escape, false, false, false)),
             cycle_last_page_action: default_cycle_last_page_action_key(),
+            scroll_next_page: None,
+            scroll_prev_page: None,
+            scroll_up: None,
+            scroll_down: None,
+            scroll_left: None,
+            scroll_right: None,
         }
     }
 }
@@ -326,6 +356,13 @@ impl KeyConfig {
             open_file: Some(Shortcut::new(egui::Key::O, false, false, false)),
             quit_app: Some(Shortcut::new(egui::Key::Escape, false, false, false)),
             cycle_last_page_action: default_cycle_last_page_action_key(),
+            scroll_next_page: None,
+            scroll_prev_page: None,
+            // MM-IN-K14: Ctrl+方向キーで画面のスクロール
+            scroll_up: Some(Shortcut::new(egui::Key::ArrowUp, true, false, false)),
+            scroll_down: Some(Shortcut::new(egui::Key::ArrowDown, true, false, false)),
+            scroll_left: Some(Shortcut::new(egui::Key::ArrowLeft, true, false, false)),
+            scroll_right: Some(Shortcut::new(egui::Key::ArrowRight, true, false, false)),
         }
     }
 
@@ -350,6 +387,12 @@ impl KeyConfig {
             open_file: Some(Shortcut::new(egui::Key::O, false, false, false)),
             quit_app: Some(Shortcut::new(egui::Key::Escape, false, false, false)),
             cycle_last_page_action: default_cycle_last_page_action_key(),
+            scroll_next_page: None,
+            scroll_prev_page: None,
+            scroll_up: None,
+            scroll_down: None,
+            scroll_left: None,
+            scroll_right: None,
         }
     }
 }
@@ -413,11 +456,11 @@ impl Default for MouseConfig {
 
 impl MouseConfig {
     /// マンガミーヤのマンガ用設定に近いマウス操作（仕様 13.1 節）。
-    /// ホイールはミーヤでは縦スクロールだが、まだスクロールが無いのでページ送りのままにする
+    /// ホイールはスクロール兼ページ送りにする（はみ出していればスクロール、収まっていればページ送り）
     pub fn mangameeya() -> Self {
         Self {
-            scroll_up: MangaAction::PrevPage,
-            scroll_down: MangaAction::NextPage,
+            scroll_up: MangaAction::ScrollPrevPage,
+            scroll_down: MangaAction::ScrollNextPage,
             button1_click: MangaAction::NextPage,
             button2_click: MangaAction::PrevPage,
             button3_click: MangaAction::None,

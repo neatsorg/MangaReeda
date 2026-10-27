@@ -61,6 +61,16 @@ impl MangaReader {
                                     "Cycle Last Page Action" => {
                                         keys.cycle_last_page_action = Some(new_shortcut)
                                     }
+                                    "Scroll Next Page" => {
+                                        keys.scroll_next_page = Some(new_shortcut)
+                                    }
+                                    "Scroll Prev Page" => {
+                                        keys.scroll_prev_page = Some(new_shortcut)
+                                    }
+                                    "Scroll Up" => keys.scroll_up = Some(new_shortcut),
+                                    "Scroll Down" => keys.scroll_down = Some(new_shortcut),
+                                    "Scroll Left" => keys.scroll_left = Some(new_shortcut),
+                                    "Scroll Right" => keys.scroll_right = Some(new_shortcut),
                                     _ => {}
                                 }
                                 self.binding_action = None;
@@ -146,6 +156,24 @@ impl MangaReader {
                 }
                 if is_triggered(&keys.cycle_last_page_action) {
                     action_to_run = MangaAction::CycleLastPageAction;
+                }
+                if is_triggered(&keys.scroll_next_page) {
+                    action_to_run = MangaAction::ScrollNextPage;
+                }
+                if is_triggered(&keys.scroll_prev_page) {
+                    action_to_run = MangaAction::ScrollPrevPage;
+                }
+                if is_triggered(&keys.scroll_up) {
+                    action_to_run = MangaAction::ScrollUp;
+                }
+                if is_triggered(&keys.scroll_down) {
+                    action_to_run = MangaAction::ScrollDown;
+                }
+                if is_triggered(&keys.scroll_left) {
+                    action_to_run = MangaAction::ScrollLeft;
+                }
+                if is_triggered(&keys.scroll_right) {
+                    action_to_run = MangaAction::ScrollRight;
                 }
             });
         }
@@ -507,6 +535,12 @@ impl MangaReader {
 
     pub(super) fn execute_action(&mut self, action: MangaAction, ctx: &egui::Context) {
         match action {
+            MangaAction::ScrollNextPage => self.scroll_next_page(ctx),
+            MangaAction::ScrollPrevPage => self.scroll_prev_page(ctx),
+            MangaAction::ScrollUp => self.scroll_view(0.0, -1.0, ctx),
+            MangaAction::ScrollDown => self.scroll_view(0.0, 1.0, ctx),
+            MangaAction::ScrollLeft => self.scroll_view(-1.0, 0.0, ctx),
+            MangaAction::ScrollRight => self.scroll_view(1.0, 0.0, ctx),
             MangaAction::SlideImageDown => {
                 if self.config.page_view_options == PageViewOptions::TopDown {
                     self.top_down_scroll_offset -=

@@ -1,5 +1,6 @@
 use super::{MangaReader, ZOOM_MAX, ZOOM_MIN, ZOOM_RELOAD_DELAY, ZOOM_STEP};
 use crate::config::{ImageSizingMode, PageViewOptions};
+use crate::engine::scroll::{self, Span};
 use eframe::egui;
 use egui::Rect;
 use std::time::Instant;
@@ -10,8 +11,22 @@ impl MangaReader {
         egui::Color32::from_rgba_unmultiplied(r, g, b, a)
     }
 
+    /// 表示位置を戻す。はみ出すページは、次に描くときに読み始めの位置へ合わせる
     pub(super) fn reset_pan(&mut self) {
         self.pan_offset = egui::Vec2::ZERO;
+        self.pan_to_start_pending = true;
+    }
+
+    /// reset_pan のあと、ページが読み込まれていれば読み始めの位置へ合わせる
+    pub(super) fn apply_pending_pan_start(&mut self) {
+        if !self.pan_to_start_pending || self.textures[0].is_none() {
+            return;
+        }
+        self.pan_to_start_pending = false;
+        if let Some((x, y)) = self.scroll_spans() {
+            let (px, py) = scroll::start_position(x, y, self.reads_right_to_left());
+            self.pan_offset = egui::vec2(px, py);
+        }
     }
 
     pub(super) fn reload_zoom_textures(&mut self, ctx: &egui::Context) {
@@ -207,6 +222,51 @@ impl MangaReader {
         if self.current_index + 1 >= self.image_files.len() && self.top_down_scroll_offset < 0.0 {
             self.top_down_scroll_offset = 0.0;
         }
+    }
+
+    /// 今のページを pan_offset = 0 で描いたときに占める範囲（render_default_page_view と同じ計算）。
+    /// ページが無いときは None
+    pub(super) fn page_content_rect(&self, rect: Rect) -> Option<Rect> {
+        let viewing_single = self.is_single_page() || (self.is_shifted && self.current_index == 0);
+        if viewing_single {
+            let tex = self.textures[0].as_ref()?;
+            let size = self.image_draw_size(tex, rect.size(), self.zoom_factor);
+            return Some(Rect::from_center_size(rect.center(), size));
+        }
+        let offset = self.config.spread_center_offset;
+        let container = egui::vec2((rect.width() * 0.5 - offset.abs()).max(1.0), rect.height());
+        let size = |index: usize| {
+            self.textures[index]
+                .as_ref()
+                .map(|tex| self.image_draw_size(tex, container, self.zoom_factor))
+        };
+        let (first, second) = (size(0), size(1));
+        if first.is_none() && second.is_none() {
+            return None;
+        }
+        let (first, second) = (first.unwrap_or_default(), second.unwrap_or_default());
+        // 右開きでは textures[0] が右、左開きでは左に来る
+        let (left, right) = if self.config.page_view_options == PageViewOptions::DoubleLR {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let height = left.y.max(right.y);
+        let center = rect.center();
+        Some(Rect::from_min_max(
+            egui::pos2(center.x - offset - left.x, center.y - height * 0.5),
+            egui::pos2(center.x + offset + right.x, center.y + height * 0.5),
+        ))
+    }
+
+    /// 表示位置をずらせる範囲（横, 縦）
+    pub(super) fn scroll_spans(&self) -> Option<(Span, Span)> {
+        let rect = self.last_page_view_rect?;
+        let content = self.page_content_rect(rect)?;
+        Some((
+            Span::new(content.min.x, content.max.x, rect.min.x, rect.max.x),
+            Span::new(content.min.y, content.max.y, rect.min.y, rect.max.y),
+        ))
     }
 
     pub(super) fn double_page_needs_drag(&self, rect: Rect) -> bool {

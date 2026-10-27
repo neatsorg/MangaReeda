@@ -41,6 +41,7 @@ impl MangaReader {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 self.last_page_view_rect = Some(rect);
+                self.apply_pending_pan_start();
 
                 // Create a 'Response' for the entire background area first,
                 // but we check it at the END of the code.

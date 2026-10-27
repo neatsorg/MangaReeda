@@ -1,7 +1,8 @@
-use super::{AUTO_SCROLL_MAX_DELAY_MS, AUTO_SCROLL_MIN_DELAY_MS, MangaReader};
+use super::{AUTO_SCROLL_MAX_DELAY_MS, AUTO_SCROLL_MIN_DELAY_MS, MangaReader, SCROLL_STEP_RATIO};
 use crate::config::{LastPageAction, MangaAction, PageViewOptions};
 use crate::engine::layout::{automatic_pair_count, is_portrait};
 use crate::engine::library::{get_adjacent_directories, scan_folder};
+use crate::engine::scroll;
 use crate::localize::tr;
 use eframe::egui;
 use std::time::{Duration, Instant};
@@ -356,6 +357,7 @@ impl MangaReader {
     pub(super) fn go_to_first_page(&mut self, ctx: &egui::Context) {
         if !self.image_files.is_empty() && self.current_index != 0 {
             self.reset_buffer();
+            self.reset_pan();
             self.current_index = 0;
             self.load_current_pair(ctx);
             self.page_indicator_time = Some(Instant::now());
@@ -365,6 +367,7 @@ impl MangaReader {
     pub(super) fn go_to_page(&mut self, index: usize, ctx: &egui::Context) {
         if index < self.image_files.len() && self.current_index != index {
             self.reset_buffer();
+            self.reset_pan();
             self.current_index = index;
             self.load_current_pair(ctx);
             self.page_indicator_time = Some(Instant::now());
@@ -398,6 +401,7 @@ impl MangaReader {
             };
             if self.current_index != last_idx {
                 self.reset_buffer();
+                self.reset_pan();
                 self.current_index = last_idx;
                 self.load_current_pair(ctx);
                 self.page_indicator_time = Some(Instant::now());
@@ -415,6 +419,98 @@ impl MangaReader {
             LastPageAction::GotoNextFile => tr("mode.repeat_folder"),
         };
         self.show_fading_error(msg);
+    }
+
+    /// 右開きで読んでいるか。1ページ表示のときは自動見開きの向きに従い、決まっていなければ右開き
+    pub(super) fn reads_right_to_left(&self) -> bool {
+        match self.config.page_view_options {
+            PageViewOptions::DoubleLR => false,
+            PageViewOptions::DoubleRL => true,
+            _ => !self.config.auto_page_layout_lr || self.config.auto_page_layout_rl,
+        }
+    }
+
+    fn scroll_step(&self) -> scroll::Position {
+        let size = self
+            .last_page_view_rect
+            .map_or(egui::Vec2::ZERO, |rect| rect.size() * SCROLL_STEP_RATIO);
+        (size.x, size.y)
+    }
+
+    fn set_pan(&mut self, (x, y): scroll::Position, ctx: &egui::Context) {
+        self.pan_offset = egui::vec2(x, y);
+        self.pan_to_start_pending = false;
+        ctx.request_repaint();
+    }
+
+    /// 上下左右へ1回分スクロールする（MM-NAV-09）。端より先へは動かない。
+    /// `dx`・`dy` は見たい方向（右・下が正）
+    pub(super) fn scroll_view(&mut self, dx: f32, dy: f32, ctx: &egui::Context) {
+        if self.config.page_view_options == PageViewOptions::TopDown {
+            match dy {
+                dy if dy > 0.0 => self.execute_action(MangaAction::SlideImageDown, ctx),
+                dy if dy < 0.0 => self.execute_action(MangaAction::SlideImageUp, ctx),
+                _ => {}
+            }
+            return;
+        }
+        let Some((x, y)) = self.scroll_spans() else {
+            return;
+        };
+        let step = self.scroll_step();
+        // 下を見るには中身を上へずらすので、見たい方向と逆に動かす
+        let target = (
+            x.clamp(self.pan_offset.x - dx * step.0),
+            y.clamp(self.pan_offset.y - dy * step.1),
+        );
+        self.set_pan(target, ctx);
+    }
+
+    /// スクロール兼次へ（MM-NAV-08）: はみ出していれば読む順にスクロールし、
+    /// 読み終わりまで来ていたら次のページを読み始めの位置から表示する
+    pub(super) fn scroll_next_page(&mut self, ctx: &egui::Context) {
+        if self.config.page_view_options == PageViewOptions::TopDown {
+            self.execute_action(MangaAction::SlideImageDown, ctx);
+            return;
+        }
+        let rtl = self.reads_right_to_left();
+        if let Some((x, y)) = self.scroll_spans() {
+            let position = (self.pan_offset.x, self.pan_offset.y);
+            if let Some(next) = scroll::step_forward(position, x, y, self.scroll_step(), rtl) {
+                self.set_pan(next, ctx);
+                return;
+            }
+        }
+        let before = (self.zip_path.clone(), self.current_index);
+        self.next_page(ctx, false);
+        if before != (self.zip_path.clone(), self.current_index) {
+            if let Some((x, y)) = self.scroll_spans() {
+                self.set_pan(scroll::start_position(x, y, rtl), ctx);
+            }
+        }
+    }
+
+    /// スクロール兼前へ: scroll_next_page の逆。前のページは読み終わりの位置から表示する
+    pub(super) fn scroll_prev_page(&mut self, ctx: &egui::Context) {
+        if self.config.page_view_options == PageViewOptions::TopDown {
+            self.execute_action(MangaAction::SlideImageUp, ctx);
+            return;
+        }
+        let rtl = self.reads_right_to_left();
+        if let Some((x, y)) = self.scroll_spans() {
+            let position = (self.pan_offset.x, self.pan_offset.y);
+            if let Some(previous) = scroll::step_backward(position, x, y, self.scroll_step(), rtl) {
+                self.set_pan(previous, ctx);
+                return;
+            }
+        }
+        let before = (self.zip_path.clone(), self.current_index);
+        self.prev_page(ctx, false);
+        if before != (self.zip_path.clone(), self.current_index) {
+            if let Some((x, y)) = self.scroll_spans() {
+                self.set_pan(scroll::end_position(x, y, rtl), ctx);
+            }
+        }
     }
 
     pub(super) fn reset_buffer(&mut self) {
