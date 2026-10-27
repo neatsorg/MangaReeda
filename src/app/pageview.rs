@@ -1,4 +1,5 @@
 use super::MangaReader;
+use super::view::paint_page;
 use crate::config::{ImageSizingMode, MangaAction, PageViewOptions};
 use crate::localize::tr;
 use eframe::egui;
@@ -29,6 +30,7 @@ impl MangaReader {
         } else {
             self.render_default_page_view(ctx, action_to_run);
         }
+        self.render_loupe(ctx);
     }
 
     pub(super) fn render_default_page_view(
@@ -41,6 +43,7 @@ impl MangaReader {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 self.last_page_view_rect = Some(rect);
+                self.drawn_pages.clear();
                 self.apply_pending_pan_start();
 
                 // Create a 'Response' for the entire background area first,
@@ -71,11 +74,12 @@ impl MangaReader {
                             }
                         }
                         if let Some(tex) = &self.textures[0] {
-                            ui.painter().image(
+                            paint_page(
+                                ui,
+                                &mut self.drawn_pages,
                                 tex.id(),
                                 egui::Rect::from_center_size(rect.center(), single_image_size),
-                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
+                                ui.clip_rect(),
                             );
                         }
                     } else if viewing_single {
@@ -96,14 +100,15 @@ impl MangaReader {
                             }
                         }
                         if let Some(tex) = &self.textures[0] {
-                            ui.painter().image(
+                            paint_page(
+                                ui,
+                                &mut self.drawn_pages,
                                 tex.id(),
                                 egui::Rect::from_center_size(
                                     rect.center() + self.pan_offset,
                                     single_image_size,
                                 ),
-                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
+                                ui.clip_rect(),
                             );
                         }
                     } else if is_zoomed || double_needs_drag {
@@ -167,9 +172,10 @@ impl MangaReader {
 
                         if self.config.page_view_options == PageViewOptions::DoubleLR {
                             if let Some(tex) = &self.textures[0] {
-                                self.paint_image_clipped(
+                                paint_page(
                                     ui,
-                                    tex,
+                                    &mut self.drawn_pages,
+                                    tex.id(),
                                     egui::Rect::from_min_size(
                                         egui::pos2(visual_left_x, image_top_y(right_size)),
                                         right_size,
@@ -178,9 +184,10 @@ impl MangaReader {
                                 );
                             }
                             if let Some(tex) = &self.textures[1] {
-                                self.paint_image_clipped(
+                                paint_page(
                                     ui,
-                                    tex,
+                                    &mut self.drawn_pages,
+                                    tex.id(),
                                     egui::Rect::from_min_size(
                                         egui::pos2(visual_right_x, image_top_y(left_size)),
                                         left_size,
@@ -190,9 +197,10 @@ impl MangaReader {
                             }
                         } else {
                             if let Some(tex) = &self.textures[1] {
-                                self.paint_image_clipped(
+                                paint_page(
                                     ui,
-                                    tex,
+                                    &mut self.drawn_pages,
+                                    tex.id(),
                                     egui::Rect::from_min_size(
                                         egui::pos2(visual_left_x, image_top_y(left_size)),
                                         left_size,
@@ -201,9 +209,10 @@ impl MangaReader {
                                 );
                             }
                             if let Some(tex) = &self.textures[0] {
-                                self.paint_image_clipped(
+                                paint_page(
                                     ui,
-                                    tex,
+                                    &mut self.drawn_pages,
+                                    tex.id(),
                                     egui::Rect::from_min_size(
                                         egui::pos2(visual_right_x, image_top_y(right_size)),
                                         right_size,
@@ -349,6 +358,8 @@ impl MangaReader {
         ctx: &egui::Context,
         action_to_run: &mut MangaAction,
     ) {
+        // テクスチャをメソッド経由で借りるので、記録はいったんローカルに集める
+        let mut drawn = Vec::new();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(self.image_panel_background_color()))
             .show(ctx, |ui| {
@@ -462,11 +473,12 @@ impl MangaReader {
                             let size = self.top_down_image_draw_size(tex, container_size);
                             let center =
                                 egui::pos2(rect.center().x, current_center_y - prev_distance);
-                            ui.painter().image(
+                            paint_page(
+                                ui,
+                                &mut drawn,
                                 tex.id(),
                                 egui::Rect::from_center_size(center, size),
-                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
+                                ui.clip_rect(),
                             );
 
                             if let Some(prev_prev_index) = self.current_index.checked_sub(2) {
@@ -482,17 +494,15 @@ impl MangaReader {
                                         rect.center().x,
                                         current_center_y - prev_prev_distance,
                                     );
-                                    ui.painter().image(
+                                    paint_page(
+                                        ui,
+                                        &mut drawn,
                                         prev_prev_tex.id(),
                                         egui::Rect::from_center_size(
                                             prev_prev_center,
                                             prev_prev_size,
                                         ),
-                                        egui::Rect::from_min_max(
-                                            egui::Pos2::ZERO,
-                                            egui::pos2(1.0, 1.0),
-                                        ),
-                                        egui::Color32::WHITE,
+                                        ui.clip_rect(),
                                     );
                                 }
                             }
@@ -501,21 +511,23 @@ impl MangaReader {
                     if let Some(tex) = self.top_down_texture(self.current_index) {
                         let size = self.top_down_image_draw_size(tex, container_size);
                         let center = egui::pos2(rect.center().x, current_center_y);
-                        ui.painter().image(
+                        paint_page(
+                            ui,
+                            &mut drawn,
                             tex.id(),
                             egui::Rect::from_center_size(center, size),
-                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
+                            ui.clip_rect(),
                         );
                     }
                     if let Some(tex) = self.top_down_texture(self.current_index + 1) {
                         let size = self.top_down_image_draw_size(tex, container_size);
                         let center = egui::pos2(rect.center().x, current_center_y + next_distance);
-                        ui.painter().image(
+                        paint_page(
+                            ui,
+                            &mut drawn,
                             tex.id(),
                             egui::Rect::from_center_size(center, size),
-                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
+                            ui.clip_rect(),
                         );
 
                         if let Some(next_next_tex) = self.top_down_texture(self.current_index + 2) {
@@ -525,11 +537,12 @@ impl MangaReader {
                                 next_distance + size.y * 0.5 + page_gap + next_next_size.y * 0.5;
                             let next_next_center =
                                 egui::pos2(rect.center().x, current_center_y + next_next_distance);
-                            ui.painter().image(
+                            paint_page(
+                                ui,
+                                &mut drawn,
                                 next_next_tex.id(),
                                 egui::Rect::from_center_size(next_next_center, next_next_size),
-                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
+                                ui.clip_rect(),
                             );
                         }
                     }
@@ -551,5 +564,6 @@ impl MangaReader {
                 self.render_zip_name_overlay(ctx, ui);
                 self.render_page_indicator_overlay(ctx);
             });
+        self.drawn_pages = drawn;
     }
 }

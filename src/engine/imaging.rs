@@ -8,12 +8,15 @@ pub struct ImageProcessingSpec {
     pub image_sizing_mode: ImageSizingMode,
     pub transparency_support: bool,
     pub zoom_factor: f32,
+    /// ルーペを出しているとき。拡大して見るので、ズーム中と同じく高い解像度で読み込む
+    pub loupe: bool,
     /// Size of the area the page is drawn into, in points.
     pub container_size: [f32; 2],
 }
 
 /// Pixel size a `width` x `height` image is resized to, or `None` when it is
-/// shown as is. While zoomed the target is 3x larger so the texture stays sharp.
+/// shown as is. While zoomed (or while the loupe is shown) the target is 3x
+/// larger so the texture stays sharp.
 pub fn display_size(width: u32, height: u32, spec: &ImageProcessingSpec) -> Option<(u32, u32)> {
     spec.resize_method.to_filter()?;
     if spec.image_sizing_mode == ImageSizingMode::OriginalSize {
@@ -21,7 +24,7 @@ pub fn display_size(width: u32, height: u32, spec: &ImageProcessingSpec) -> Opti
     }
     let [container_w, container_h] = spec.container_size;
     let aspect_ratio = width as f32 / height as f32;
-    let factor = if (spec.zoom_factor - 1.0).abs() > 0.01 {
+    let factor = if (spec.zoom_factor - 1.0).abs() > 0.01 || spec.loupe {
         3
     } else {
         1
@@ -138,6 +141,7 @@ mod tests {
             image_sizing_mode: mode,
             transparency_support: false,
             zoom_factor: zoom,
+            loupe: false,
             container_size: container,
         }
     }
@@ -164,6 +168,15 @@ mod tests {
     #[test]
     fn zoom_renders_at_triple_resolution() {
         let s = spec(ImageSizingMode::FitHeight, [800.0, 1000.0], 1.5);
+        assert_eq!(display_size(1000, 2000, &s), Some((1500, 3000)));
+    }
+
+    #[test]
+    fn loupe_renders_at_triple_resolution() {
+        let s = ImageProcessingSpec {
+            loupe: true,
+            ..spec(ImageSizingMode::FitHeight, [800.0, 1000.0], 1.0)
+        };
         assert_eq!(display_size(1000, 2000, &s), Some((1500, 3000)));
     }
 

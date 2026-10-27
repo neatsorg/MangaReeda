@@ -134,6 +134,7 @@ impl MangaReader {
             image_sizing_mode: self.config.image_sizing_mode,
             transparency_support: self.config.transparency_support,
             zoom_factor: self.zoom_factor,
+            loupe: self.loupe_enabled,
             container_size: [container_size.x, container_size.y],
         }
     }

@@ -1,5 +1,9 @@
 use super::{MangaReader, ZOOM_MAX, ZOOM_MIN, ZOOM_RELOAD_DELAY, ZOOM_STEP};
+
+/// ルーペの円を近似する多角形の頂点数
+const LOUPE_SEGMENTS: usize = 96;
 use crate::config::{ImageSizingMode, PageViewOptions};
+use crate::engine::loupe;
 use crate::engine::scroll::{self, Span};
 use eframe::egui;
 use egui::Rect;
@@ -304,20 +308,26 @@ impl MangaReader {
                         egui::Align::LEFT => rect.left(),
                     };
                     let image_y = rect.center().y - image_size.y * 0.5;
-                    ui.painter().image(
+                    paint_page(
+                        ui,
+                        &mut self.drawn_pages,
                         tex.id(),
                         egui::Rect::from_min_size(egui::pos2(image_x, image_y), image_size),
-                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
+                        ui.clip_rect(),
                     );
                 } else {
                     let layout = egui::Layout::top_down(align);
                     ui.with_layout(layout, |ui| {
-                        ui.add(
+                        let image = ui.add(
                             egui::Image::new(tex)
                                 .fit_to_exact_size(image_size)
                                 .maintain_aspect_ratio(true),
                         );
+                        self.drawn_pages.push(DrawnPage {
+                            texture: tex.id(),
+                            rect: image.rect,
+                            clip: ui.clip_rect(),
+                        });
                     });
                 }
                 ui.set_clip_rect(previous_clip_rect);
@@ -327,20 +337,114 @@ impl MangaReader {
         .inner
     }
 
-    pub(super) fn paint_image_clipped(
-        &self,
-        ui: &egui::Ui,
-        tex: &egui::TextureHandle,
-        image_rect: Rect,
-        visible_rect: Rect,
-    ) {
-        ui.painter()
-            .with_clip_rect(ui.clip_rect().intersect(visible_rect))
-            .image(
-                tex.id(),
-                image_rect,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
+    /// ルーペを出し入れする。拡大して見るためにページを高い解像度で読み直す
+    pub(super) fn set_loupe_enabled(&mut self, enabled: bool, ctx: &egui::Context) {
+        if self.loupe_enabled == enabled {
+            return;
+        }
+        self.loupe_enabled = enabled;
+        if self.zip_path.is_some() && !self.image_files.is_empty() {
+            self.reload_zoom_textures(ctx);
+        }
+        ctx.request_repaint();
     }
+
+    /// ルーペの描画（MM-LOUPE-01）: カーソルの周りの円に、このフレームで描いたページを拡大して重ねる
+    pub(super) fn render_loupe(&self, ctx: &egui::Context) {
+        if !self.loupe_enabled || self.drawn_pages.is_empty() {
+            return;
+        }
+        let (Some(pointer), Some(view)) = (ctx.pointer_hover_pos(), self.last_page_view_rect)
+        else {
+            return;
+        };
+        if !view.contains(pointer) {
+            return;
+        }
+        let radius = self.config.loupe_radius;
+        let magnification = self.config.loupe_magnification;
+        let center = [pointer.x, pointer.y];
+        let painter = ctx
+            .layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("loupe"),
+            ))
+            .with_clip_rect(view);
+        let circle = loupe::circle(center, radius, LOUPE_SEGMENTS);
+        let to_pos = |p: loupe::Point| egui::pos2(p[0], p[1]);
+
+        // ページの外側が映る部分は背景色にする
+        painter.add(egui::Shape::convex_polygon(
+            circle.iter().copied().map(to_pos).collect(),
+            self.image_panel_background_color(),
+            egui::Stroke::NONE,
+        ));
+        for page in &self.drawn_pages {
+            // ページの見えている範囲がルーペの中で占める範囲で、円を切り抜く
+            let visible = page.rect.intersect(page.clip);
+            if !visible.is_positive() {
+                continue;
+            }
+            let min = loupe::loupe_point(center, [visible.min.x, visible.min.y], magnification);
+            let max = loupe::loupe_point(center, [visible.max.x, visible.max.y], magnification);
+            let polygon = loupe::clip_to_rect(&circle, min, max);
+            if polygon.len() < 3 {
+                continue;
+            }
+            let mut mesh = egui::Mesh::with_texture(page.texture);
+            for point in &polygon {
+                let source = loupe::source_point(center, *point, magnification);
+                let uv = egui::pos2(
+                    (source[0] - page.rect.min.x) / page.rect.width(),
+                    (source[1] - page.rect.min.y) / page.rect.height(),
+                );
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: to_pos(*point),
+                    uv,
+                    color: egui::Color32::WHITE,
+                });
+            }
+            // 凸多角形なので扇形に三角形を張る
+            for i in 1..polygon.len() as u32 - 1 {
+                mesh.add_triangle(0, i, i + 1);
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
+        painter.circle_stroke(
+            pointer,
+            radius,
+            egui::Stroke::new(2.0_f32, egui::Color32::from_gray(160)),
+        );
+    }
+}
+
+/// 描いたページの記録（ルーペ用）
+pub(super) struct DrawnPage {
+    pub texture: egui::TextureId,
+    /// 画像全体を描いた範囲（はみ出している部分も含む）
+    pub rect: Rect,
+    /// 実際に見えている範囲
+    pub clip: Rect,
+}
+
+/// ページの画像を描き、ルーペ用に記録する
+pub(super) fn paint_page(
+    ui: &egui::Ui,
+    drawn: &mut Vec<DrawnPage>,
+    texture: egui::TextureId,
+    image_rect: Rect,
+    visible_rect: Rect,
+) {
+    let clip = ui.clip_rect().intersect(visible_rect);
+    ui.painter().with_clip_rect(clip).image(
+        texture,
+        image_rect,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+    drawn.push(DrawnPage {
+        texture,
+        rect: image_rect,
+        clip,
+    });
 }

@@ -96,6 +96,9 @@ pub struct MangaReader {
     mouse_chord_used: [bool; 5],
     /// reset_pan のあと、ページを読み始めの位置に合わせるのを待っている
     pan_to_start_pending: bool,
+    loupe_enabled: bool,
+    /// このフレームで描いたページ。ルーペはこれを拡大して描く
+    drawn_pages: Vec<view::DrawnPage>,
     pending_mouse_click: [Option<(Instant, MangaAction)>; 5],
     gamepad: Option<Gilrs>,
     gamepad_repeat_deadlines: [Option<Instant>; 16],
@@ -176,6 +179,8 @@ impl MangaReader {
             mouse_drag_suppressed: [false; 5],
             mouse_chord_used: [false; 5],
             pan_to_start_pending: false,
+            loupe_enabled: false,
+            drawn_pages: Vec::new(),
             pending_mouse_click: [None; 5],
             gamepad: Gilrs::new().ok(),
             gamepad_repeat_deadlines: [None; 16],
@@ -772,6 +777,56 @@ mod tests {
     }
 
     #[test]
+    fn loupe_draws_the_page_under_the_pointer() {
+        let pages = TestPages::new(&[[10, 20]]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        let frame = |reader: &mut MangaReader| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 400.0),
+                )),
+                events: vec![egui::Event::PointerMoved(egui::pos2(200.0, 200.0))],
+                ..Default::default()
+            };
+            ctx.run(input, |ctx| {
+                let mut action = MangaAction::None;
+                reader.render_page_view(ctx, &mut action);
+            })
+        };
+        let page_texture = reader.textures[0].as_ref().unwrap().id();
+        let loupe_meshes = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .filter(|clipped| {
+                    clipped.shape.texture_id() == page_texture
+                        && matches!(clipped.shape, egui::Shape::Mesh(_))
+                })
+                .count()
+        };
+
+        // ルーペを出していないときはページを1回描くだけ（ページの画像も Mesh として描かれる）
+        let output = frame(&mut reader);
+        assert_eq!(reader.drawn_pages.len(), 1);
+        let without_loupe = loupe_meshes(&output);
+
+        // ルーペを出すと、同じページの画像を使った拡大の図形が1つ加わる
+        reader.loupe_enabled = true;
+        let output = frame(&mut reader);
+        assert_eq!(loupe_meshes(&output), without_loupe + 1);
+    }
+
+    #[test]
     fn reopening_a_book_resumes_at_its_bookmark() {
         let parent = TestPages::new(&[]);
         for book in ["a", "b"] {
@@ -925,6 +980,13 @@ mod tests {
             keys.open_file,
             keys.quit_app,
             keys.cycle_last_page_action,
+            keys.scroll_next_page,
+            keys.scroll_prev_page,
+            keys.scroll_up,
+            keys.scroll_down,
+            keys.scroll_left,
+            keys.scroll_right,
+            keys.toggle_loupe,
         ];
         let assigned: Vec<_> = all.into_iter().filter_map(parts).collect();
         for (index, shortcut) in assigned.iter().enumerate() {

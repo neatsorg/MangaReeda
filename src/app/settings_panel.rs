@@ -280,6 +280,11 @@ pub(super) fn render_control_mapping_settings(
                         "Scroll Right",
                         &mut keys.scroll_right,
                     ),
+                    (
+                        tr("settings.key.toggle_loupe"),
+                        "Toggle Loupe",
+                        &mut keys.toggle_loupe,
+                    ),
                 ] {
                     ui.label(label);
                     render_binding_button(
@@ -776,6 +781,36 @@ impl MangaReader {
                                 {
                                     self.reset_pan();
                                     self.apply_zoom_factor(1.0, ctx, false);
+                                }
+                                ui.add_space(10.0);
+                                let mut loupe_enabled = self.loupe_enabled;
+                                if ui
+                                    .checkbox(&mut loupe_enabled, tr("settings.loupe"))
+                                    .changed()
+                                {
+                                    self.set_loupe_enabled(loupe_enabled, ctx);
+                                }
+                                let mut loupe_changed = false;
+                                loupe_changed |= ui
+                                    .add(
+                                        egui::Slider::new(
+                                            &mut self.config.loupe_radius,
+                                            50.0..=400.0,
+                                        )
+                                        .text(tr("settings.loupe.radius")),
+                                    )
+                                    .changed();
+                                loupe_changed |= ui
+                                    .add(
+                                        egui::Slider::new(
+                                            &mut self.config.loupe_magnification,
+                                            1.5..=6.0,
+                                        )
+                                        .text(tr("settings.loupe.magnification")),
+                                    )
+                                    .changed();
+                                if loupe_changed {
+                                    self.save_settings();
                                 }
                                 ui.add_space(10.0);
                                 ui.label(

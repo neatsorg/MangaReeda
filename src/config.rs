@@ -148,10 +148,11 @@ pub enum MangaAction {
     ScrollDown,
     ScrollLeft,
     ScrollRight,
+    ToggleLoupe,
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -180,6 +181,7 @@ impl MangaAction {
         Self::ScrollDown,
         Self::ScrollLeft,
         Self::ScrollRight,
+        Self::ToggleLoupe,
     ];
 }
 
@@ -292,6 +294,8 @@ pub struct KeyConfig {
     pub scroll_left: Option<Shortcut>,
     #[serde(default)]
     pub scroll_right: Option<Shortcut>,
+    #[serde(default)]
+    pub toggle_loupe: Option<Shortcut>,
 }
 
 // 既存の設定ファイルにこの項目が無いときもミーヤと同じ F8 を割り当てる
@@ -327,6 +331,7 @@ impl Default for KeyConfig {
             scroll_down: None,
             scroll_left: None,
             scroll_right: None,
+            toggle_loupe: None,
         }
     }
 }
@@ -363,6 +368,8 @@ impl KeyConfig {
             scroll_down: Some(Shortcut::new(egui::Key::ArrowDown, true, false, false)),
             scroll_left: Some(Shortcut::new(egui::Key::ArrowLeft, true, false, false)),
             scroll_right: Some(Shortcut::new(egui::Key::ArrowRight, true, false, false)),
+            // MM-IN-K08
+            toggle_loupe: Some(Shortcut::new(egui::Key::L, false, false, false)),
         }
     }
 
@@ -393,6 +400,7 @@ impl KeyConfig {
             scroll_down: None,
             scroll_left: None,
             scroll_right: None,
+            toggle_loupe: None,
         }
     }
 }
@@ -463,7 +471,7 @@ impl MouseConfig {
             scroll_down: MangaAction::ScrollNextPage,
             button1_click: MangaAction::NextPage,
             button2_click: MangaAction::PrevPage,
-            button3_click: MangaAction::None,
+            button3_click: MangaAction::ToggleLoupe,
             button4_click: MangaAction::NextFile,
             button5_click: MangaAction::PrevFile,
             button1_double_click: MangaAction::ToggleAutoScroll,
@@ -564,6 +572,15 @@ impl GamepadConfig {
     }
 }
 
+// ルーペの既定値はミーヤの値を確認するまでの仮の値（観察リスト19）
+fn default_loupe_radius() -> f32 {
+    150.0
+}
+
+fn default_loupe_magnification() -> f32 {
+    2.0
+}
+
 fn default_double_click_threshold_ms() -> u64 {
     160
 }
@@ -628,6 +645,11 @@ pub struct AppSettings {
     pub image_sizing_mode: ImageSizingMode,
     #[serde(default)]
     pub spread_center_offset: f32,
+    /// ルーペの半径（ピクセル）と倍率（MM-LOUPE-02）
+    #[serde(default = "default_loupe_radius")]
+    pub loupe_radius: f32,
+    #[serde(default = "default_loupe_magnification")]
+    pub loupe_magnification: f32,
     #[serde(default = "default_image_panel_background")]
     pub image_panel_background: [u8; 4],
     #[serde(default)]
@@ -682,6 +704,8 @@ impl Default for AppSettings {
             auto_page_layout_lr: false,
             image_sizing_mode: ImageSizingMode::FitHeight,
             spread_center_offset: 0.0,
+            loupe_radius: default_loupe_radius(),
+            loupe_magnification: default_loupe_magnification(),
             image_panel_background: default_image_panel_background(),
             language: UiLanguage::Japanese,
             settings_width: 300.0,
