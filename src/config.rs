@@ -705,6 +705,11 @@ pub struct AppSettings {
     pub auto_page_layout_rl: bool,
     #[serde(default)]
     pub auto_page_layout_lr: bool,
+    /// 自動見開きをオンにする前のページ表示。オフにしたらこれに戻す。
+    /// ミーヤの自動見開きは1ページ／2ページ表示の設定に上乗せされるもので、
+    /// オフにするとその設定に戻る（MM-VIEW-01, 03）
+    #[serde(default)]
+    pub page_view_before_auto: Option<PageViewOptions>,
     #[serde(default)]
     pub image_sizing_mode: ImageSizingMode,
     #[serde(default)]
@@ -776,8 +781,8 @@ impl AppSettings {
         self.top_down_double_click_threshold_ms = MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS;
     }
 
-    /// 自動見開きのオン・オフを切り替える（MM-IN-K05）。今の読む向きを保ち、
-    /// オフにしたときはその向きの見開きに戻す。縦スクロール表示では何もせず false を返す
+    /// 自動見開きのオン・オフを切り替える（MM-IN-K05）。今の読む向きでオンにし、
+    /// オフにしたときはオンにする前のページ表示に戻す。縦スクロール表示では何もせず false を返す
     pub fn toggle_auto_page_layout(&mut self) -> bool {
         let right_to_left = match self.page_view_options {
             PageViewOptions::TopDown => return false,
@@ -785,15 +790,45 @@ impl AppSettings {
             PageViewOptions::DoubleRL => true,
             PageViewOptions::Single => !self.auto_page_layout_lr,
         };
-        let enable = !(self.auto_page_layout_rl || self.auto_page_layout_lr);
-        self.auto_page_layout_rl = enable && right_to_left;
-        self.auto_page_layout_lr = enable && !right_to_left;
-        self.page_view_options = if right_to_left {
-            PageViewOptions::DoubleRL
+        if self.auto_page_layout_rl || self.auto_page_layout_lr {
+            self.set_auto_page_layout(None);
         } else {
-            PageViewOptions::DoubleLR
-        };
+            self.set_auto_page_layout(Some(right_to_left));
+        }
         true
+    }
+
+    /// 自動見開きを `right_to_left` の向きでオンにする。None ならオフにして、
+    /// オンにする前のページ表示に戻す（見開きだったときは今の読む向きの見開き）
+    pub fn set_auto_page_layout(&mut self, right_to_left: Option<bool>) {
+        let was_on = self.auto_page_layout_rl || self.auto_page_layout_lr;
+        let double = |right_to_left| {
+            if right_to_left {
+                PageViewOptions::DoubleRL
+            } else {
+                PageViewOptions::DoubleLR
+            }
+        };
+        match right_to_left {
+            Some(right_to_left) => {
+                if !was_on {
+                    self.page_view_before_auto = Some(self.page_view_options);
+                }
+                self.auto_page_layout_rl = right_to_left;
+                self.auto_page_layout_lr = !right_to_left;
+                self.page_view_options = double(right_to_left);
+            }
+            None if was_on => {
+                let right_to_left = !self.auto_page_layout_lr;
+                self.auto_page_layout_rl = false;
+                self.auto_page_layout_lr = false;
+                self.page_view_options = match self.page_view_before_auto.take() {
+                    Some(view @ (PageViewOptions::Single | PageViewOptions::TopDown)) => view,
+                    _ => double(right_to_left),
+                };
+            }
+            None => {}
+        }
     }
 
     /// 利用者がページ表示を選んだとき、自動見開きをそれに合わせる。
@@ -804,14 +839,18 @@ impl AppSettings {
             PageViewOptions::Single => {
                 self.auto_page_layout_rl = false;
                 self.auto_page_layout_lr = false;
+                self.page_view_before_auto = None;
             }
+            // 見開きを選び直したら、自動見開きを外したときの戻り先も見開きにする
             PageViewOptions::DoubleRL if auto_on => {
                 self.auto_page_layout_rl = true;
                 self.auto_page_layout_lr = false;
+                self.page_view_before_auto = Some(self.page_view_options);
             }
             PageViewOptions::DoubleLR if auto_on => {
                 self.auto_page_layout_rl = false;
                 self.auto_page_layout_lr = true;
+                self.page_view_before_auto = Some(self.page_view_options);
             }
             _ => {}
         }
@@ -825,6 +864,7 @@ impl Default for AppSettings {
             page_view_options: PageViewOptions::DoubleRL,
             auto_page_layout_rl: false,
             auto_page_layout_lr: false,
+            page_view_before_auto: None,
             image_sizing_mode: ImageSizingMode::FitHeight,
             spread_center_offset: 0.0,
             cover_blank_page: false,

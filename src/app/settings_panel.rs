@@ -936,30 +936,23 @@ impl MangaReader {
                                         .strong(),
                                 );
                                 separator_pct(ui);
-                                let mut auto_layout_changed = ui
-                                    .checkbox(
-                                        &mut self.config.auto_page_layout_rl,
-                                        tr("settings.auto_page_layout_rl"),
-                                    )
+                                let mut rl = self.config.auto_page_layout_rl;
+                                let mut lr = self.config.auto_page_layout_lr;
+                                let rl_changed = ui
+                                    .checkbox(&mut rl, tr("settings.auto_page_layout_rl"))
                                     .on_hover_text(tr("settings.auto_page_layout.tooltip"))
                                     .changed();
-                                if auto_layout_changed && self.config.auto_page_layout_rl {
-                                    self.config.auto_page_layout_lr = false;
-                                    self.config.page_view_options = PageViewOptions::DoubleRL;
-                                }
                                 let lr_changed = ui
-                                    .checkbox(
-                                        &mut self.config.auto_page_layout_lr,
-                                        tr("settings.auto_page_layout_lr"),
-                                    )
+                                    .checkbox(&mut lr, tr("settings.auto_page_layout_lr"))
                                     .on_hover_text(tr("settings.auto_page_layout.tooltip"))
                                     .changed();
-                                if lr_changed && self.config.auto_page_layout_lr {
-                                    self.config.auto_page_layout_rl = false;
-                                    self.config.page_view_options = PageViewOptions::DoubleLR;
-                                }
-                                auto_layout_changed |= lr_changed;
-                                if auto_layout_changed {
+                                if rl_changed || lr_changed {
+                                    // 外したときはオンにする前のページ表示に戻す
+                                    self.config.set_auto_page_layout(if rl_changed {
+                                        rl.then_some(true)
+                                    } else {
+                                        lr.then_some(false)
+                                    });
                                     self.reset_buffer();
                                     self.texture_cache.clear();
                                     self.clear_animated_image_cache();

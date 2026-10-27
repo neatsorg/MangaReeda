@@ -989,6 +989,42 @@ mod tests {
         assert!(config.toggle_auto_page_layout());
         assert_eq!(config.page_view_options, PageViewOptions::DoubleLR);
 
+        // 単ページで読んでいたときは、オフにすると単ページに戻る（ミーヤと同じ）
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        reader.toggle_auto_page_layout(&ctx);
+        assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
+        reader.toggle_auto_page_layout(&ctx);
+        assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+        // 単ページ表示でも次のページを先読みするので、テクスチャは2枚
+        assert_view(&reader, 0, PageViewOptions::Single, 2);
+
+        // 設定画面のチェックボックスで外したときも同じ。戻り先は再起動しても覚えている
+        let mut config = AppSettings {
+            page_view_options: PageViewOptions::Single,
+            ..AppSettings::default()
+        };
+        config.set_auto_page_layout(Some(false));
+        assert_eq!(config.page_view_options, PageViewOptions::DoubleLR);
+        let mut config: AppSettings =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        config.set_auto_page_layout(None);
+        assert_eq!(config.page_view_options, PageViewOptions::Single);
+
+        // 自動見開きのまま見開きを選び直すと、外したときは見開き（今の向き）に戻る
+        config.set_auto_page_layout(Some(true));
+        config.page_view_options = PageViewOptions::DoubleRL;
+        config.follow_chosen_page_view();
+        config.set_auto_page_layout(None);
+        assert_eq!(config.page_view_options, PageViewOptions::DoubleRL);
+
         // 縦スクロール表示では切り替えない
         let mut config = AppSettings {
             page_view_options: PageViewOptions::TopDown,
