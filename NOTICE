@@ -5,9 +5,10 @@ This product is derived from RustMangaReader
 licensed under the Apache License, Version 2.0.
 
 The RustMangaReader source files have been modified: ported to Linux,
-reorganized into the src/app and src/engine modules, and renamed. The
-commit history of this repository records every change made after the
-fork point (upstream commit 6def3e2).
+reorganized into the src/app and src/engine modules, and renamed. Each
+source file that contains code from RustMangaReader starts with a
+comment saying so. The commit history of this repository records every
+change made after the fork point (upstream commit 6def3e2).
 
 Third-party files bundled in this repository (pdfium.dll, dav1d.dll and
 the Noto Sans JP font) are listed with their licenses in

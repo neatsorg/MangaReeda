@@ -1,3 +1,5 @@
+// このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
+
 pub fn is_portrait(size: [u32; 2]) -> bool {
     size[1] > size[0]
 }

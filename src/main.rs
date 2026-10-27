@@ -1,3 +1,5 @@
+// このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;

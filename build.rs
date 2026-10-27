@@ -1,3 +1,5 @@
+// このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
+
 use std::path::PathBuf;
 use std::{env, fs};
 

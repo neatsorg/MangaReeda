@@ -1,3 +1,5 @@
+// このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
+
 use super::{MangaReader, ZOOM_MAX, ZOOM_MIN, ZOOM_RELOAD_DELAY, ZOOM_STEP};
 
 /// 先頭ページ挿入の白紙のテクスチャの長辺（ピクセル）

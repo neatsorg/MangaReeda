@@ -1,3 +1,5 @@
+// このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
+
 use super::{
     AUTO_SCROLL_MAX_DELAY_MS, MangaReader, SETTINGS_TOGGLE_FADE_DURATION, ZOOM_MAX, ZOOM_MIN,
 };

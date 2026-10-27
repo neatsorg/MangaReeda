@@ -1,3 +1,5 @@
+// このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
+
 use std::sync::Arc;
 
 pub fn setup_custom_fonts(ctx: &egui::Context) {

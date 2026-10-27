@@ -1,3 +1,5 @@
+// このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
+
 use super::{ANIMATION_SCAN_AHEAD_PAGES, MangaReader};
 use crate::config::{PageViewOptions, SourceMode};
 use crate::engine::imaging::ImageProcessingSpec;
