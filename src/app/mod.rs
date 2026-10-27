@@ -363,7 +363,15 @@ mod tests {
                         reader.next_page(&ctx, false);
                         assert_view(&reader, index, mode, count);
                     }
-                    for &(index, mode, count) in expected[..expected.len() - 1].iter().rev() {
+                    // 戻るときは直前の2枚が縦長なら組む（ミーヤと同じ）ので、行きと組み方が変わる
+                    let backward = [
+                        (5, PageViewOptions::Single, 1),
+                        (4, direction, 1),
+                        (3, PageViewOptions::Single, 1),
+                        (1, direction, 2),
+                        (0, direction, 2),
+                    ];
+                    for &(index, mode, count) in &backward {
                         if preloading {
                             reader.update_buffers(&ctx);
                         }
@@ -373,6 +381,85 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn automatic_layout_goes_back_like_mangameeya() {
+        // 実機 の mixed.zip（縦縦縦横縦横縦縦横横縦縦縦）での観察（2026-10-27）
+        let (p, l) = ([10, 20], [20, 10]);
+        let pages = TestPages::new(&[p, p, p, l, p, l, p, p, l, l, p, p, p]);
+        let ctx = egui::Context::default();
+        let config = || AppSettings {
+            auto_page_layout_rl: true,
+            enable_animated_images: false,
+            resize_method: ResizeMethod::None,
+            last_page_action: LastPageAction::Nothing,
+            image_delay: 0,
+            ..AppSettings::default()
+        };
+        // 表示中の組を 1 始まりのページ番号で返す
+        let view = |reader: &MangaReader| {
+            let first = reader.current_index + 1;
+            let count = reader.textures.iter().flatten().count();
+            if reader.config.page_view_options == PageViewOptions::Single || count == 1 {
+                vec![first]
+            } else {
+                vec![first, first + 1]
+            }
+        };
+        let mut reader = pages.reader(config(), &ctx);
+        let mut forward = vec![view(&reader)];
+        for _ in 0..9 {
+            reader.update_buffers(&ctx);
+            reader.next_page(&ctx, false);
+            forward.push(view(&reader));
+        }
+        let expected: [&[usize]; 10] = [
+            &[1, 2],
+            &[3],
+            &[4],
+            &[5],
+            &[6],
+            &[7, 8],
+            &[9],
+            &[10],
+            &[11, 12],
+            &[13],
+        ];
+        assert_eq!(forward, expected);
+        let mut backward = Vec::new();
+        for _ in 0..9 {
+            reader.update_buffers(&ctx);
+            reader.prev_page(&ctx, false);
+            backward.push(view(&reader));
+        }
+        let expected: [&[usize]; 9] = [
+            &[11, 12],
+            &[10],
+            &[9],
+            &[7, 8],
+            &[6],
+            &[5],
+            &[4],
+            &[2, 3],
+            &[1, 2],
+        ];
+        assert_eq!(backward, expected);
+
+        // portrait.zip: 1つ進んでずれた組から戻ると、直前の2枚で組む
+        let pages = TestPages::new(&[p; 10]);
+        let mut reader = pages.reader(config(), &ctx);
+        reader.next_page(&ctx, true);
+        assert_eq!(view(&reader), [2, 3]);
+        reader.update_buffers(&ctx);
+        reader.next_page(&ctx, false);
+        assert_eq!(view(&reader), [4, 5]);
+        reader.update_buffers(&ctx);
+        reader.prev_page(&ctx, false);
+        assert_eq!(view(&reader), [2, 3]);
+        reader.update_buffers(&ctx);
+        reader.prev_page(&ctx, false);
+        assert_eq!(view(&reader), [1, 2]);
     }
 
     #[test]

@@ -129,7 +129,7 @@ impl MangaReader {
         // index の次から戻ったときに表示する組を求める
         let current_index = self.current_index;
         self.current_index = index + 1;
-        let start = self.automatic_previous_index(ctx);
+        let start = self.automatic_run_aligned_previous_index(ctx);
         self.current_index = current_index;
         start
     }
@@ -141,7 +141,32 @@ impl MangaReader {
         self.sync_cover_blank(ctx);
     }
 
+    /// 自動見開きで「前へ」戻ったときに表示する組の先頭（MM-VIEW-03）。ミーヤと同じく、
+    /// 直前の2枚が両方縦長ならその2枚、そうでなければ直前の1枚。先頭まで戻ったら1枚目から組む
+    /// （観察リスト3, 2026-10-27 確認）
     pub(super) fn automatic_previous_index(&mut self, ctx: &egui::Context) -> usize {
+        let previous = self.current_index.saturating_sub(1);
+        if previous == 0 || (self.is_shifted && previous == 1) {
+            // 1枚目、または奇数ページ開始で1枚目の次。前に組める相手がいないので、そこから組む
+            return previous;
+        }
+        for index in [previous, previous - 1] {
+            if self.page_dimensions(index).is_none() {
+                let _ = self.load_pair(index, ctx);
+            }
+        }
+        if self.page_dimensions(previous).is_some_and(is_portrait)
+            && self.page_dimensions(previous - 1).is_some_and(is_portrait)
+        {
+            previous - 1
+        } else {
+            previous
+        }
+    }
+
+    /// 自動見開きで、今の位置の直前のページを含む組の先頭。縦長の続きの先頭から2枚ずつ組んだ位置にする。
+    /// 最終ページや決まったページへ移るときに使う（ミーヤでは未確認）
+    fn automatic_run_aligned_previous_index(&mut self, ctx: &egui::Context) -> usize {
         let previous = self.current_index.saturating_sub(1);
         if self.page_dimensions(previous).is_none() {
             let _ = self.load_pair(previous, ctx);
@@ -451,7 +476,7 @@ impl MangaReader {
                 // Treat the position just past the end as a backward page turn.
                 let current_index = self.current_index;
                 self.current_index = self.image_files.len();
-                let last_idx = self.automatic_previous_index(ctx);
+                let last_idx = self.automatic_run_aligned_previous_index(ctx);
                 self.current_index = current_index;
                 last_idx
             } else {
