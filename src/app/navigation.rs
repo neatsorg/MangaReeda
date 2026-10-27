@@ -452,6 +452,25 @@ impl MangaReader {
         self.show_fading_error(msg);
     }
 
+    /// 自動見開きを切り替えて、今のページから表示し直す（MM-IN-K05）
+    pub(super) fn toggle_auto_page_layout(&mut self, ctx: &egui::Context) {
+        if !self.config.toggle_auto_page_layout() {
+            return;
+        }
+        self.reset_buffer();
+        self.texture_cache.clear();
+        self.clear_animated_image_cache();
+        self.reset_pan();
+        self.load_current_pair(ctx);
+        self.save_settings();
+        let msg = if self.automatic_page_direction().is_some() {
+            tr("mode.auto_layout_on")
+        } else {
+            tr("mode.auto_layout_off")
+        };
+        self.show_fading_error(msg);
+    }
+
     /// 右開きで読んでいるか。1ページ表示のときは自動見開きの向きに従い、決まっていなければ右開き
     pub(super) fn reads_right_to_left(&self) -> bool {
         match self.config.page_view_options {

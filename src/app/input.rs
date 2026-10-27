@@ -72,6 +72,9 @@ impl MangaReader {
                                     "Scroll Left" => keys.scroll_left = Some(new_shortcut),
                                     "Scroll Right" => keys.scroll_right = Some(new_shortcut),
                                     "Toggle Loupe" => keys.toggle_loupe = Some(new_shortcut),
+                                    "Toggle Auto Page Layout" => {
+                                        keys.toggle_auto_page_layout = Some(new_shortcut)
+                                    }
                                     _ => {}
                                 }
                                 self.binding_action = None;
@@ -178,6 +181,9 @@ impl MangaReader {
                 }
                 if is_triggered(&keys.toggle_loupe) {
                     action_to_run = MangaAction::ToggleLoupe;
+                }
+                if is_triggered(&keys.toggle_auto_page_layout) {
+                    action_to_run = MangaAction::ToggleAutoPageLayout;
                 }
             });
         }
@@ -546,6 +552,7 @@ impl MangaReader {
             MangaAction::ScrollLeft => self.scroll_view(-1.0, 0.0, ctx),
             MangaAction::ScrollRight => self.scroll_view(1.0, 0.0, ctx),
             MangaAction::ToggleLoupe => self.set_loupe_enabled(!self.loupe_enabled, ctx),
+            MangaAction::ToggleAutoPageLayout => self.toggle_auto_page_layout(ctx),
             MangaAction::SlideImageDown => {
                 if self.config.page_view_options == PageViewOptions::TopDown {
                     self.top_down_scroll_offset -=

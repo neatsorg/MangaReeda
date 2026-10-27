@@ -875,6 +875,53 @@ mod tests {
     }
 
     #[test]
+    fn toggling_automatic_layout_keeps_the_reading_direction() {
+        let pages = TestPages::new(&[[10, 20], [10, 20], [30, 10], [10, 20]]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
+
+        // オンにすると右から左の自動見開きになり、横長のページは1ページで見せる
+        reader.toggle_auto_page_layout(&ctx);
+        assert!(reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+        reader.next_page(&ctx, false);
+        assert_view(&reader, 2, PageViewOptions::Single, 1);
+
+        // オフにすると、1ページ表示のページにいても右から左の見開きに戻る
+        reader.toggle_auto_page_layout(&ctx);
+        assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+        assert_view(&reader, 2, PageViewOptions::DoubleRL, 2);
+
+        // 左から右の見開きからオンにすると、左から右の自動見開きになる
+        let mut config = AppSettings {
+            page_view_options: PageViewOptions::DoubleLR,
+            ..AppSettings::default()
+        };
+        assert!(config.toggle_auto_page_layout());
+        assert!(config.auto_page_layout_lr && !config.auto_page_layout_rl);
+        // 自動見開きが1ページ表示にしていても、向きは左から右のまま
+        config.page_view_options = PageViewOptions::Single;
+        assert!(config.toggle_auto_page_layout());
+        assert_eq!(config.page_view_options, PageViewOptions::DoubleLR);
+
+        // 縦スクロール表示では切り替えない
+        let mut config = AppSettings {
+            page_view_options: PageViewOptions::TopDown,
+            ..AppSettings::default()
+        };
+        assert!(!config.toggle_auto_page_layout());
+        assert_eq!(config.page_view_options, PageViewOptions::TopDown);
+        assert!(!config.auto_page_layout_rl && !config.auto_page_layout_lr);
+    }
+
+    #[test]
     fn mangameeya_controls_also_give_the_top_down_view_the_loupe() {
         let mut config = AppSettings::default();
         config.apply_mangameeya_controls();
@@ -1249,6 +1296,10 @@ mod tests {
             parts(keys.cycle_last_page_action),
             key(egui::Key::F8, false)
         );
+        assert_eq!(
+            parts(keys.toggle_auto_page_layout),
+            key(egui::Key::Space, false)
+        );
 
         // 同じキーに2つの操作が割り当てられていないこと
         let all = [
@@ -1278,6 +1329,7 @@ mod tests {
             keys.scroll_left,
             keys.scroll_right,
             keys.toggle_loupe,
+            keys.toggle_auto_page_layout,
         ];
         let assigned: Vec<_> = all.into_iter().filter_map(parts).collect();
         for (index, shortcut) in assigned.iter().enumerate() {

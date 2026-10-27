@@ -282,6 +282,11 @@ pub(super) fn render_control_mapping_settings(
                         "Toggle Loupe",
                         &mut keys.toggle_loupe,
                     ),
+                    (
+                        tr("settings.key.toggle_auto_page_layout"),
+                        "Toggle Auto Page Layout",
+                        &mut keys.toggle_auto_page_layout,
+                    ),
                 ] {
                     ui.label(label);
                     render_binding_button(

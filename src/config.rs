@@ -160,10 +160,11 @@ pub enum MangaAction {
     ScrollLeft,
     ScrollRight,
     ToggleLoupe,
+    ToggleAutoPageLayout,
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -193,6 +194,7 @@ impl MangaAction {
         Self::ScrollLeft,
         Self::ScrollRight,
         Self::ToggleLoupe,
+        Self::ToggleAutoPageLayout,
     ];
 }
 
@@ -307,6 +309,8 @@ pub struct KeyConfig {
     pub scroll_right: Option<Shortcut>,
     #[serde(default)]
     pub toggle_loupe: Option<Shortcut>,
+    #[serde(default)]
+    pub toggle_auto_page_layout: Option<Shortcut>,
 }
 
 // 既存の設定ファイルにこの項目が無いときもミーヤと同じ F8 を割り当てる
@@ -343,6 +347,7 @@ impl Default for KeyConfig {
             scroll_left: None,
             scroll_right: None,
             toggle_loupe: None,
+            toggle_auto_page_layout: None,
         }
     }
 }
@@ -381,6 +386,8 @@ impl KeyConfig {
             scroll_right: Some(Shortcut::new(egui::Key::ArrowRight, true, false, false)),
             // MM-IN-K08
             toggle_loupe: Some(Shortcut::new(egui::Key::L, false, false, false)),
+            // MM-IN-K05
+            toggle_auto_page_layout: Some(Shortcut::new(egui::Key::Space, false, false, false)),
         }
     }
 
@@ -420,6 +427,7 @@ impl KeyConfig {
             scroll_left: None,
             scroll_right: None,
             toggle_loupe: None,
+            toggle_auto_page_layout: None,
         }
     }
 }
@@ -736,6 +744,26 @@ impl AppSettings {
         self.top_down_keys = KeyConfig::mangameeya_top_down();
         self.top_down_mouse = MouseConfig::mangameeya_top_down();
         self.top_down_double_click_threshold_ms = MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS;
+    }
+
+    /// 自動見開きのオン・オフを切り替える（MM-IN-K05）。今の読む向きを保ち、
+    /// オフにしたときはその向きの見開きに戻す。縦スクロール表示では何もせず false を返す
+    pub fn toggle_auto_page_layout(&mut self) -> bool {
+        let right_to_left = match self.page_view_options {
+            PageViewOptions::TopDown => return false,
+            PageViewOptions::DoubleLR => false,
+            PageViewOptions::DoubleRL => true,
+            PageViewOptions::Single => !self.auto_page_layout_lr,
+        };
+        let enable = !(self.auto_page_layout_rl || self.auto_page_layout_lr);
+        self.auto_page_layout_rl = enable && right_to_left;
+        self.auto_page_layout_lr = enable && !right_to_left;
+        self.page_view_options = if right_to_left {
+            PageViewOptions::DoubleRL
+        } else {
+            PageViewOptions::DoubleLR
+        };
+        true
     }
 
     /// 利用者がページ表示を選んだとき、自動見開きをそれに合わせる。
