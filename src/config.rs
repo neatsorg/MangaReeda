@@ -24,7 +24,7 @@ pub enum LastPageAction {
 }
 
 impl LastPageAction {
-    /// リピート状態の切り替え順（MM-NAV-20）: 非リピート → リピート → フォルダ移動 → 非リピート…
+    /// リピート状態の切り替え順: 非リピート → リピート → フォルダ移動 → 非リピート…
     pub fn next_in_cycle(self) -> Self {
         match self {
             Self::Nothing => Self::ToFirstPage,
@@ -34,7 +34,7 @@ impl LastPageAction {
     }
 }
 
-/// サブフォルダを含むフォルダを開いたときの扱い（MM-SRC-06）。
+/// サブフォルダを含むフォルダを開いたときの扱い。
 /// 冊ごとに覚えた選択があれば、そちらを優先する
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default, Serialize, Deserialize)]
 pub enum SubfolderMode {
@@ -86,9 +86,9 @@ pub enum ImageSizingMode {
     FitWidth,
     FitBoth,
     OriginalSize,
-    /// 縦サイズを揃える（MM-SCALE-02）: 見開きの2枚を同じ高さにして、ウインドウに収める
+    /// 縦サイズを揃える: 見開きの2枚を同じ高さにして、ウインドウに収める
     MatchHeight,
-    /// 縮小はするが拡大はしない（MM-SCALE-03）: 幅と高さに合わせるが、原寸より大きくしない
+    /// 縮小はするが拡大はしない: 幅と高さに合わせるが、原寸より大きくしない
     ShrinkOnly,
 }
 
@@ -401,7 +401,7 @@ impl Default for KeyConfig {
 }
 
 impl KeyConfig {
-    /// マンガミーヤのマンガ用設定に近いキー配置（仕様 13.3 節）。
+    /// マンガミーヤのマンガ用設定に近いキー配置。
     /// 対応する操作がまだ無いキーは割り当てない
     pub fn mangameeya() -> Self {
         Self {
@@ -427,24 +427,21 @@ impl KeyConfig {
             cycle_last_page_action: default_cycle_last_page_action_key(),
             scroll_next_page: None,
             scroll_prev_page: None,
-            // MM-IN-K14: Ctrl+方向キーで画面のスクロール
+            // Ctrl+方向キーで画面のスクロール
             scroll_up: Some(Shortcut::new(egui::Key::ArrowUp, true, false, false)),
             scroll_down: Some(Shortcut::new(egui::Key::ArrowDown, true, false, false)),
             scroll_left: Some(Shortcut::new(egui::Key::ArrowLeft, true, false, false)),
             scroll_right: Some(Shortcut::new(egui::Key::ArrowRight, true, false, false)),
-            // MM-IN-K08
             toggle_loupe: Some(Shortcut::new(egui::Key::L, false, false, false)),
-            // MM-IN-K05
             toggle_auto_page_layout: Some(Shortcut::new(egui::Key::Space, false, false, false)),
-            // MM-IN-K04
             jump_forward: Some(Shortcut::new(egui::Key::ArrowRight, false, true, false)),
             jump_backward: Some(Shortcut::new(egui::Key::ArrowLeft, false, true, false)),
             // ミーヤでもキーは割り当てられていない（CMD139=0）
             toggle_split_pages: None,
-            // MM-IN-K09: A = サムネイル（1画面）、H = サムネイル（8列）
+            // A = サムネイル（1画面）、H = サムネイル（8列）
             thumbnails_fit_all: Some(Shortcut::new(egui::Key::A, false, false, false)),
             thumbnails_large: Some(Shortcut::new(egui::Key::H, false, false, false)),
-            // MM-IN-K12: Shift+↑ = 上のフォルダへ、Shift+↓ = 表紙サムネイル
+            // Shift+↑ = 上のフォルダへ、Shift+↓ = 表紙サムネイル
             cover_thumbnails: Some(Shortcut::new(egui::Key::ArrowDown, false, false, true)),
             upper_folder: Some(Shortcut::new(egui::Key::ArrowUp, false, false, true)),
         }
@@ -518,11 +515,11 @@ pub struct MouseConfig {
     pub button3_long_click: MangaAction,
     pub button4_long_click: MangaAction,
     pub button5_long_click: MangaAction,
-    /// 右ボタンを押したまま左クリック（MM-IN-M05）
+    /// 右ボタンを押したまま左クリック
     pub button2_held_button1_click: MangaAction,
-    /// 左ボタンを押したまま右クリック（MM-IN-M05）
+    /// 左ボタンを押したまま右クリック
     pub button1_held_button2_click: MangaAction,
-    /// 右ボタンを押したままホイール（MM-IN-M06）
+    /// 右ボタンを押したままホイール
     pub button2_held_scroll_up: MangaAction,
     pub button2_held_scroll_down: MangaAction,
 }
@@ -556,7 +553,7 @@ impl Default for MouseConfig {
 }
 
 impl MouseConfig {
-    /// マンガミーヤのマンガ用設定に近いマウス操作（仕様 13.1 節）。
+    /// マンガミーヤのマンガ用設定に近いマウス操作。
     /// ホイールはスクロール兼ページ送りにする（はみ出していればスクロール、収まっていればページ送り）
     pub fn mangameeya() -> Self {
         Self {
@@ -674,7 +671,7 @@ impl GamepadConfig {
     }
 }
 
-// ルーペの既定値はミーヤの値を確認するまでの仮の値（観察リスト19）
+// ルーペの既定値
 fn default_loupe_radius() -> f32 {
     150.0
 }
@@ -748,7 +745,7 @@ pub struct AppSettings {
     pub auto_page_layout_rl: bool,
     #[serde(default)]
     pub auto_page_layout_lr: bool,
-    /// 自動単ページ表示（左右分割。MM-VIEW-05）: 1ページ表示で、横長のページを左右に分けて半分ずつ見せる
+    /// 自動単ページ表示（左右分割）: 1ページ表示で、横長のページを左右に分けて半分ずつ見せる
     #[serde(default)]
     pub split_landscape_pages: bool,
     /// 左から右に読むか。1ページ表示のときの読む向きで、自動見開きをオフにしても向きを忘れないようにする
@@ -758,11 +755,11 @@ pub struct AppSettings {
     pub image_sizing_mode: ImageSizingMode,
     #[serde(default)]
     pub spread_center_offset: f32,
-    /// 奇数ページ開始のとき、1枚目を白紙と並べて見開きで見せる（ミーヤの先頭ページ挿入。MM-VIEW-07）。
+    /// 奇数ページ開始のとき、1枚目を白紙と並べて見開きで見せる（ミーヤの先頭ページ挿入）。
     /// オフなら1枚目を単独で中央に見せる
     #[serde(default)]
     pub cover_blank_page: bool,
-    /// ルーペの半径（ピクセル）と倍率（MM-LOUPE-02）
+    /// ルーペの半径（ピクセル）と倍率
     #[serde(default = "default_loupe_radius")]
     pub loupe_radius: f32,
     #[serde(default = "default_loupe_magnification")]
@@ -840,7 +837,7 @@ impl AppSettings {
         }
     }
 
-    /// 自動見開きのオン・オフを切り替える（MM-IN-K05）。縦スクロール表示では何もせず false を返す
+    /// 自動見開きのオン・オフを切り替える。縦スクロール表示では何もせず false を返す
     pub fn toggle_auto_page_layout(&mut self) -> bool {
         if self.page_view_options == PageViewOptions::TopDown {
             return false;
@@ -908,7 +905,7 @@ impl AppSettings {
         overrides_auto
     }
 
-    /// 自動単ページ表示（左右分割）を切り替える（MM-VIEW-05）。ミーヤと同じく、オンにすると
+    /// 自動単ページ表示（左右分割）を切り替える。ミーヤと同じく、オンにすると
     /// 1ページ表示にする（自動見開きも切る）。縦スクロール表示では何もせず false を返す
     pub fn toggle_split_landscape_pages(&mut self) -> bool {
         if self.page_view_options == PageViewOptions::TopDown {

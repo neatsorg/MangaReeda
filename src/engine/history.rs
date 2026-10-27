@@ -1,4 +1,4 @@
-//! 読んだ冊の履歴としおり（MM-LIST-01）。
+//! 読んだ冊の履歴としおり。
 //! 冊ごとに最後に表示していたページを覚え、次に開いたときにそこから読めるようにする。
 
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 履歴に残す冊の数（ミーヤの履歴の既定と同じ。MM-LIST-02）
+/// 履歴に残す冊の数（ミーヤの履歴の既定と同じ）
 pub const HISTORY_LIMIT: usize = 100;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -22,7 +22,7 @@ pub struct HistoryEntry {
     pub last_access: u64,
 }
 
-/// サブフォルダを含むフォルダで、利用者が選んだ読み方（MM-SRC-06）
+/// サブフォルダを含むフォルダで、利用者が選んだ読み方
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SubfolderChoice {
     /// フォルダの絶対パス

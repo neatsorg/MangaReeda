@@ -72,12 +72,12 @@ pub fn fit_scale(size: [f32; 2], container: [f32; 2]) -> f32 {
     (container[0] / size[0]).min(container[1] / size[1])
 }
 
-/// 縮小はするが拡大はしないときの倍率（MM-SCALE-03）。`original` は元画像の画素数
+/// 縮小はするが拡大はしないときの倍率。`original` は元画像の画素数
 pub fn shrink_only_scale(original: [f32; 2], container: [f32; 2]) -> f32 {
     fit_scale(original, container).min(1.0)
 }
 
-/// 縦サイズを揃えるときの共通の高さ（MM-SCALE-02）。
+/// 縦サイズを揃えるときの共通の高さ。
 /// 縦横比 `aspects`（幅÷高さ）の2枚を同じ高さにし、どちらも1枚ぶんの領域 `half` に収める
 /// （見開きの綴じ目は画面の中央に置くので、それぞれが半分に収まる必要がある）
 pub fn matched_height(aspects: [f32; 2], half: [f32; 2]) -> f32 {

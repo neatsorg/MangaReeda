@@ -1,0 +1,71 @@
+# 並び順のテストに使うファイル名。1行に1つ。「# 」（# と空白）で始まる行と空行は無視する。/ はフォルダの区切り
+
+# 数字の大きさと先頭のゼロ
+10.png
+2.png
+1.png
+01.png
+001.png
+010.png
+0.png
+00.png
+
+# 数字と文字の混在
+page10.png
+page2.png
+page1a.png
+page1-1.png
+page1_1.png
+page1.5.png
+1a.png
+a1.png
+
+# 大文字と小文字
+Page3.png
+PAGE4.png
+b.png
+B2.png
+a.png
+c.png
+
+# 記号
+_a.png
+-a.png
+(a).png
+[a].png
+~a.png
+!a.png
+a b.png
+a.b.png
+#a.png
+
+# 全角
+２.png
+１０.png
+ｐａｇｅ5.png
+
+# 日本語
+あ.png
+ア.png
+ｱ.png
+か.png
+が.png
+亜.png
+第2話.png
+第10話.png
+
+# 拡張子だけ違う
+5.png
+5.jpg
+
+# 桁の多い数字（64ビットを超える）
+99999999999999999999.png
+100000000000000000000.png
+
+# フォルダの階層
+vol10/001.png
+vol2/001.png
+vol1/002.png
+vol1/001.png
+vol1/sub/001.png
+zz.png

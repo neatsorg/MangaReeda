@@ -37,7 +37,7 @@ const ZOOM_MAX: f32 = 3.0;
 const ZOOM_STEP: f32 = 1.1;
 /// スクロール1回で動かす量（表示領域の大きさに対する割合）
 const SCROLL_STEP_RATIO: f32 = 0.8;
-/// 固定ページ進む／戻るで動くページ数（ミーヤのマンガ用設定と同じ。MM-NAV-03）
+/// 固定ページ進む／戻るで動くページ数（ミーヤのマンガ用設定と同じ）
 const JUMP_PAGE_COUNT: usize = 20;
 const ZOOM_RELOAD_DELAY: Duration = Duration::from_secs(1);
 const FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT: f32 = 20.0;
@@ -118,9 +118,9 @@ pub struct MangaReader {
     /// 自動見開きがオンのまま利用者がページ表示を選んだ。次にページをめくるまで、
     /// 自動見開きより選んだ表示を優先する（ミーヤと同じ）
     manual_page_view: bool,
-    /// 左右に分けて見せている横長のページで、後に読む半分を見せているページ（MM-VIEW-05）
+    /// 左右に分けて見せている横長のページで、後に読む半分を見せているページ
     split_second_half_of: Option<usize>,
-    /// 開いているサムネイル一覧（MM-THUMB-01）
+    /// 開いているサムネイル一覧
     thumbnails: Option<thumbnails::ThumbnailView>,
     thumbnail_cache: thumbnails::ThumbnailCache,
     /// 次に表示し直すとき、見開きの組を合わせ直さない（サムネイルで選んだページから見開きにする）
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn automatic_layout_goes_back_like_mangameeya() {
-        // 実機 の mixed.zip（縦縦縦横縦横縦縦横横縦縦縦）での観察（2026-10-27）
+        // 縦縦縦横縦横縦縦横横縦縦縦 と並ぶ本
         let (p, l) = ([10, 20], [20, 10]);
         let pages = TestPages::new(&[p, p, p, l, p, l, p, p, l, l, p, p, p]);
         let ctx = egui::Context::default();
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn last_lone_page_is_paired_with_a_blank_like_mangameeya() {
-        // 実機 の odd.zip・mixed.zip での観察（2026-10-27）。白紙は後に読む側（右開きなら左）
+        // 白紙は後に読む側（右開きなら左）
         let (p, l) = ([10, 20], [20, 10]);
         let odd = TestPages::new(&[p; 9]);
         let mixed = TestPages::new(&[p, p, p, l, p, l, p, p, l, l, p, p, p]);
@@ -579,7 +579,7 @@ mod tests {
 
     #[test]
     fn wide_pages_are_split_into_halves_like_mangameeya() {
-        // 実機 の split.zip（縦 横 縦 縦 横 横 縦）での観察（2026-10-27）
+        // 縦 横 縦 縦 横 横 縦 と並ぶ本
         let (p, l) = ([10, 20], [20, 10]);
         let pages = TestPages::new(&[p, l, p, p, l, l, p]);
         let ctx = egui::Context::default();
@@ -730,7 +730,7 @@ mod tests {
             }
             zip.finish().unwrap();
         };
-        // 実機 の shelf と同じ形: 書庫 2 冊、画像のフォルダ、冊の入ったフォルダ
+        // 書庫 2 冊、画像のフォルダ、冊の入ったフォルダが並ぶフォルダ
         let (a, b) = (shelf.0.join("01 A.zip"), shelf.0.join("02 B.zip"));
         write_zip(a.clone(), 3);
         write_zip(b.clone(), 3);
@@ -1916,7 +1916,7 @@ mod tests {
         let keys = KeyConfig::mangameeya();
         let parts = |s: Option<Shortcut>| s.map(|s| (s.key, s.ctrl, s.alt, s.shift));
         let key = |k, shift| Some((k, false, false, shift));
-        // 仕様 13.3 節（MM-IN-K01〜K03, K06, K13, K18）
+        // ミーヤのマンガ用設定に近いキー配置
         assert_eq!(parts(keys.next_page), key(egui::Key::ArrowRight, false));
         assert_eq!(parts(keys.prev_page), key(egui::Key::ArrowLeft, false));
         assert_eq!(parts(keys.one_next_page), key(egui::Key::ArrowDown, false));

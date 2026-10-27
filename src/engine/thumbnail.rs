@@ -1,4 +1,4 @@
-//! サムネイル一覧（MM-THUMB-01, 02）の、画面に依存しない部分。
+//! サムネイル一覧の、画面に依存しない部分。
 //! マスの並べ方、方向キーでの選択の動き、縮小画像の作成と、別スレッドでの読み込み。
 
 use crate::config::SourceMode;
@@ -28,7 +28,7 @@ pub enum ThumbnailMode {
     FitAll,
     /// 大きいマスで並べ、スクロールする（ミーヤの「8列」）
     Large,
-    /// フォルダの中の冊を表紙で並べる（MM-THUMB-03）。決まった大きさのマスを中央に置く
+    /// フォルダの中の冊を表紙で並べる。決まった大きさのマスを中央に置く
     Covers,
 }
 
@@ -171,7 +171,7 @@ pub fn decode_thumbnail(bytes: &[u8], max_side: u32, fix_adobe: bool) -> Option<
     Some(image.thumbnail(max_side, max_side).to_rgba8())
 }
 
-/// 表紙サムネイルに並べる冊（MM-THUMB-03）
+/// 表紙サムネイルに並べる冊
 #[derive(Clone, Debug, PartialEq)]
 pub struct CoverEntry {
     pub path: PathBuf,
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn fit_all_matches_mangameeya_for_sixty_pages() {
-        // 実機 で 1920x1000 前後の画面に 60 ページが 10 列 × 6 行で並んだ（2026-10-27）
+        // 1900x960 の画面に 60 ページなら 10 列 × 6 行
         let grid = Grid::new(ThumbnailMode::FitAll, 60, [1900.0, 960.0]);
         assert_eq!((grid.columns, grid.rows), (10, 6));
         assert_eq!(grid.cell, 160.0);
@@ -404,7 +404,7 @@ mod tests {
         write_zip(&root.join("04 shelf/D.zip"), &[("01.png", png(10, 50))]);
         std::fs::write(root.join("memo.txt"), "memo").unwrap();
 
-        // 実機 で、フォルダが先、それぞれ名前順だった（2026-10-27）。冊でないファイルは入れない
+        // フォルダが先、それぞれ名前順。冊でないファイルは入れない
         let names: Vec<_> = cover_entries(&root)
             .iter()
             .map(|entry| {

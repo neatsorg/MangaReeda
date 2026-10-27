@@ -21,7 +21,7 @@ pub struct Listing {
 /// Lists the pages of `path`. A single image file opens its whole folder.
 /// PDFs are not handled here: their pages come from the loaded document.
 /// Returns `None` when a ZIP archive cannot be opened at all.
-/// `include_subfolders` が真なら、フォルダの下のサブフォルダの画像もページにする（MM-SRC-06）
+/// `include_subfolders` が真なら、フォルダの下のサブフォルダの画像もページにする
 pub fn list_images(path: &Path, include_subfolders: bool) -> Option<Listing> {
     let mut root = path.to_path_buf();
     let mut start_at = None;

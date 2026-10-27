@@ -2329,7 +2329,6 @@ dependencies = [
 name = "mangareeda"
 version = "0.2.4"
 dependencies = [
- "ab_glyph",
  "eframe",
  "egui",
  "gilrs",

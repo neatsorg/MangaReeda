@@ -2,8 +2,7 @@ use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// マンガミーヤの「パス[数字順]」に合わせた比較（MM-SORT-01）。
-/// spec/sort-check/mangameeya-order.txt の実物の並びから読み取った規則:
+/// ページの並び順の比較（マンガミーヤの「パス[数字順]」に近い並び）:
 ///
 /// - フォルダの区切りも含めたパス全体で比べる（フォルダの中身がほかと混ざらない）
 /// - 文字の種類の順: 区切り（/ \）→ `-` → ほかの記号（ASCII 順）→ 全角・半角カナ
@@ -11,8 +10,7 @@ use std::path::{Path, PathBuf};
 /// - 続いた数字は値で比べる（桁数に上限なし）。値が同じなら先頭のゼロが多いほうが先
 ///   （`00` → `0`、`001` → `01` → `1`）
 ///
-/// 全角文字と半角カナどうしの順は単純な規則で説明できなかったので、
-/// 文字コード順にしてある（観察リスト2）。
+/// 全角文字と半角カナどうしは文字コード順。
 pub fn mangameeya_cmp(a: &str, b: &str) -> Ordering {
     let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
     // 値が同じ数字の桁数の違い。ほかに差が無ければこれで決める
@@ -180,36 +178,23 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// spec/sort-check/names.txt の名前（examples/sort_check_book.rs と同じ読み方）
-    fn sort_check_names() -> Vec<String> {
-        include_str!("../../spec/sort-check/names.txt")
-            .lines()
+    /// テスト用のファイル名の一覧（「# 」で始まる行と空行は無視する）
+    fn listed_names(text: &str) -> Vec<String> {
+        text.lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with("# ") && *line != "#")
             .map(str::to_owned)
             .collect()
     }
 
-    /// 書庫の中の並び順をマンガミーヤと比べる（MM-SORT-01、観察リスト2）。
-    /// マンガミーヤで確認した順番を spec/sort-check/mangameeya-order.txt に書くと比べる。
-    /// まだ無いときは MangaReeda の順番を表示するだけ
-    /// （cargo test sort_check -- --nocapture で見られる）
+    /// 記号・数字・英字・かな・フォルダの階層が混ざった名前を、決めた順に並べる
     #[test]
-    fn sort_check_order_matches_mangameeya() {
-        let mut names = sort_check_names();
+    fn page_names_sort_in_the_expected_order() {
+        let mut names = listed_names(include_str!("testdata/sort_names.txt"));
         natural_sort_strings(&mut names);
-        let expected = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("spec/sort-check/mangameeya-order.txt"),
-        );
-        let Ok(expected) = expected else {
-            println!("MangaReeda の順番:");
-            for (index, name) in names.iter().enumerate() {
-                println!("{:>3} {name}", index + 1);
-            }
-            return;
-        };
+        let expected = listed_names(include_str!("testdata/sort_expected.txt"));
         // 全角文字と半角カナを含む名前は、どこに来るか（記号と数字のあいだ）だけを比べる。
-        // マンガミーヤでのそれらどうしの順（２ → ｱ → ｐａｇｅ5 → １０）は規則が分からないため
+        // それらどうしは文字コード順で、期待する順番と一致しないため
         fn wide(name: &str) -> &str {
             if name.chars().any(|c| ('\u{FF00}'..='\u{FFEF}').contains(&c)) {
                 "（全角・半角カナ）"
@@ -217,12 +202,7 @@ mod tests {
                 name
             }
         }
-        let expected: Vec<&str> = expected
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with("# "))
-            .map(wide)
-            .collect();
+        let expected: Vec<&str> = expected.iter().map(|name| wide(name)).collect();
         let names: Vec<&str> = names.iter().map(|name| wide(name)).collect();
         assert_eq!(names, expected);
     }

@@ -20,13 +20,13 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum OpenAt {
     First,
-    /// 先頭ページから前の冊へ戻ったとき（MM-NAV-22）
+    /// 先頭ページから前の冊へ戻ったとき
     Last,
-    /// 履歴にしおりがあればそのページ（MM-LIST-01）
+    /// 履歴にしおりがあればそのページ
     Bookmark,
 }
 
-/// サブフォルダを読むかを利用者に聞いている冊（MM-SRC-06）
+/// サブフォルダを読むかを利用者に聞いている冊
 pub(super) struct SubfolderQuestion {
     pub(super) path: PathBuf,
     /// 冊になるフォルダ。選択はこのフォルダについて覚える
@@ -374,14 +374,14 @@ impl MangaReader {
     }
 
     /// 利用者が冊を開くとき（ファイル選択・ドロップ・起動引数・履歴）に使う。
-    /// 履歴にしおりがあればそのページから表示する（MM-LIST-01）。
+    /// 履歴にしおりがあればそのページから表示する。
     /// 冊の移動（次／前のファイル）は先頭や最終ページから開くので、open_book を直接使う
     pub(super) fn open_source(&mut self, path: PathBuf, ctx: &egui::Context) {
         self.open_book(path, OpenAt::Bookmark, ctx);
     }
 
     /// 冊を開く。サブフォルダを含むフォルダで、読み方が決まっていなければ
-    /// ダイアログで聞き、答えが出てから開く（MM-SRC-06）
+    /// ダイアログで聞き、答えが出てから開く
     pub(super) fn open_book(&mut self, path: PathBuf, open_at: OpenAt, ctx: &egui::Context) {
         let include_subfolders = match book_folder(&path) {
             Some(folder) if has_image_subfolders(&folder) => {

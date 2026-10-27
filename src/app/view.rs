@@ -176,7 +176,7 @@ impl MangaReader {
         }
     }
 
-    /// 1ページ表示で、今のページを左右に分けて見せているとき（MM-VIEW-05）、右半分を見せているか。
+    /// 1ページ表示で、今のページを左右に分けて見せているとき、右半分を見せているか。
     /// 分けていなければ None。分けるのは、自動単ページ表示がオンで、1ページ表示で、横長のページ
     pub(super) fn split_half_shows_right(&self) -> Option<bool> {
         if !self.config.split_landscape_pages
@@ -343,7 +343,7 @@ impl MangaReader {
         self.is_shifted && self.current_index == 0 && !self.config.cover_blank_page
     }
 
-    /// 1枚目を白紙と並べて見開きで見せる状態か（先頭ページ挿入。MM-VIEW-07）
+    /// 1枚目を白紙と並べて見開きで見せる状態か（先頭ページ挿入）
     pub(super) fn cover_paired_with_blank(&self) -> bool {
         self.config.cover_blank_page
             && self.is_shifted
@@ -351,8 +351,8 @@ impl MangaReader {
             && !self.is_single_page()
     }
 
-    /// 最後の1枚を白紙と並べて見開きで見せる状態か（MM-NAV-01）。ミーヤと同じく、
-    /// 2ページ表示ではいつも、自動見開きでは先頭ページ挿入のときだけ（観察リスト4, 5）。
+    /// 最後の1枚を白紙と並べて見開きで見せる状態か。ミーヤと同じく、
+    /// 2ページ表示ではいつも、自動見開きでは先頭ページ挿入のときだけ。
     /// 1枚目を単独で中央に見せる設定のときは、最後の1枚も白紙と並べない
     pub(super) fn last_page_paired_with_blank(&self) -> bool {
         if self.is_single_page()
@@ -541,7 +541,7 @@ impl MangaReader {
         ctx.request_repaint();
     }
 
-    /// ルーペの描画（MM-LOUPE-01）: カーソルの周りの円に、このフレームで描いたページを拡大して重ねる
+    /// ルーペの描画: カーソルの周りの円に、このフレームで描いたページを拡大して重ねる
     pub(super) fn render_loupe(&self, ctx: &egui::Context) {
         if !self.loupe_enabled || self.drawn_pages.is_empty() {
             return;

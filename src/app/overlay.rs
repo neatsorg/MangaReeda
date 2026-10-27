@@ -129,7 +129,7 @@ impl MangaReader {
 }
 
 impl MangaReader {
-    /// サブフォルダを読むかを聞くダイアログ（MM-SRC-06）。外側のクリックや Esc はキャンセル
+    /// サブフォルダを読むかを聞くダイアログ。外側のクリックや Esc はキャンセル
     pub(super) fn render_subfolder_question(&mut self, ctx: &egui::Context) {
         let Some(question) = self.subfolder_question.as_mut() else {
             return;

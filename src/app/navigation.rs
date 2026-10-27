@@ -142,9 +142,8 @@ impl MangaReader {
         self.sync_cover_blank(ctx);
     }
 
-    /// 自動見開きで「前へ」戻ったときに表示する組の先頭（MM-VIEW-03）。ミーヤと同じく、
+    /// 自動見開きで「前へ」戻ったときに表示する組の先頭。ミーヤと同じく、
     /// 直前の2枚が両方縦長ならその2枚、そうでなければ直前の1枚。先頭まで戻ったら1枚目から組む
-    /// （観察リスト3, 2026-10-27 確認）
     pub(super) fn automatic_previous_index(&mut self, ctx: &egui::Context) -> usize {
         let previous = self.current_index.saturating_sub(1);
         if previous == 0 || (self.is_shifted && previous == 1) {
@@ -166,7 +165,7 @@ impl MangaReader {
     }
 
     /// 自動見開きで、今の位置の直前のページを含む組の先頭。縦長の続きの先頭から2枚ずつ組んだ位置にする。
-    /// 最終ページや決まったページへ移るときに使う（ミーヤでは未確認）
+    /// 最終ページや決まったページへ移るときに使う
     fn automatic_run_aligned_previous_index(&mut self, ctx: &egui::Context) -> usize {
         let previous = self.current_index.saturating_sub(1);
         if self.page_dimensions(previous).is_none() {
@@ -254,7 +253,7 @@ impl MangaReader {
         } else {
             self.last_image_switch_time = Instant::now();
         }
-        // 横長のページを左右に分けて見せているときは、先に読む半分から後の半分へ（MM-VIEW-05）
+        // 横長のページを左右に分けて見せているときは、先に読む半分から後の半分へ
         if self.split_half_shows_right().is_some()
             && self.split_second_half_of != Some(self.current_index)
         {
@@ -414,7 +413,7 @@ impl MangaReader {
     }
 
     /// 前の冊を開く。`open_at_last_page` が真なら最終ページから表示する
-    /// （先頭ページから戻ったときの挙動。MM-NAV-22）
+    /// （先頭ページから戻ったときの挙動）
     pub(super) fn prev_zip(&mut self, ctx: &egui::Context, open_at_last_page: bool) {
         if let Some(pos) = self
             .all_zips_in_folder
@@ -533,7 +532,7 @@ impl MangaReader {
         }
     }
 
-    /// リピート状態（冊の端に来たときの動作）を順に切り替えて保存する（MM-NAV-20）
+    /// リピート状態（冊の端に来たときの動作）を順に切り替えて保存する
     pub(super) fn cycle_last_page_action(&mut self) {
         self.config.last_page_action = self.config.last_page_action.next_in_cycle();
         self.save_settings();
@@ -560,14 +559,14 @@ impl MangaReader {
         self.page_indicator_time = Some(Instant::now());
     }
 
-    /// 前へ戻って横長のページに来たら、後に読む半分から見せる（MM-VIEW-05）
+    /// 前へ戻って横長のページに来たら、後に読む半分から見せる
     fn show_second_half_after_going_back(&mut self) {
         if self.split_half_shows_right().is_some() {
             self.split_second_half_of = Some(self.current_index);
         }
     }
 
-    /// 自動単ページ表示（左右分割）を切り替えて、今のページから表示し直す（MM-VIEW-05）
+    /// 自動単ページ表示（左右分割）を切り替えて、今のページから表示し直す
     pub(super) fn toggle_split_landscape_pages(&mut self, ctx: &egui::Context) {
         if !self.config.toggle_split_landscape_pages() {
             return;
@@ -588,7 +587,7 @@ impl MangaReader {
         self.show_fading_error(msg);
     }
 
-    /// 決まったページ数だけ進む／戻る（MM-NAV-03）。行き先のページを含む見開きから表示する。
+    /// 決まったページ数だけ進む／戻る。行き先のページを含む見開きから表示する。
     /// 冊の端を越えるときは端のページで止まり、すでに端にいるときは「次へ」「前へ」と同じく
     /// リピート状態に従う
     pub(super) fn jump_pages(&mut self, forward: bool, ctx: &egui::Context) {
@@ -612,7 +611,7 @@ impl MangaReader {
         }
     }
 
-    /// 自動見開きを切り替えて、今のページから表示し直す（MM-IN-K05）
+    /// 自動見開きを切り替えて、今のページから表示し直す
     pub(super) fn toggle_auto_page_layout(&mut self, ctx: &egui::Context) {
         if !self.config.toggle_auto_page_layout() {
             return;
@@ -650,7 +649,7 @@ impl MangaReader {
         ctx.request_repaint();
     }
 
-    /// 上下左右へ1回分スクロールする（MM-NAV-09）。端より先へは動かない。
+    /// 上下左右へ1回分スクロールする。端より先へは動かない。
     /// `dx`・`dy` は見たい方向（右・下が正）
     pub(super) fn scroll_view(&mut self, dx: f32, dy: f32, ctx: &egui::Context) {
         if self.config.page_view_options == PageViewOptions::TopDown {
@@ -673,7 +672,7 @@ impl MangaReader {
         self.set_pan(target, ctx);
     }
 
-    /// スクロール兼次へ（MM-NAV-08）: はみ出していれば読む順にスクロールし、
+    /// スクロール兼次へ: はみ出していれば読む順にスクロールし、
     /// 読み終わりまで来ていたら次のページを読み始めの位置から表示する
     pub(super) fn scroll_next_page(&mut self, ctx: &egui::Context) {
         if self.config.page_view_options == PageViewOptions::TopDown {
