@@ -665,6 +665,17 @@ impl MangaReader {
                                             egui::RichText::new(tr("settings.page_view.top_down")),
                                         )
                                         .clicked();
+                                    if ui
+                                        .checkbox(
+                                            &mut self.config.cover_blank_page,
+                                            tr("settings.cover_blank_page"),
+                                        )
+                                        .on_hover_text(tr("settings.cover_blank_page.tooltip"))
+                                        .changed()
+                                    {
+                                        self.sync_cover_blank(ctx);
+                                        self.save_settings();
+                                    }
                                     separator_pct(ui);
                                     ui.label(
                                         egui::RichText::new(tr("settings.page_view.center_offset"))

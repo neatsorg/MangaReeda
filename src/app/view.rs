@@ -1,5 +1,7 @@
 use super::{MangaReader, ZOOM_MAX, ZOOM_MIN, ZOOM_RELOAD_DELAY, ZOOM_STEP};
 
+/// 先頭ページ挿入の白紙のテクスチャの長辺（ピクセル）
+const COVER_BLANK_MAX_SIDE: f32 = 64.0;
 /// ルーペの円を近似する多角形の頂点数
 const LOUPE_SEGMENTS: usize = 96;
 use crate::config::{ImageSizingMode, PageViewOptions};
@@ -115,7 +117,7 @@ impl MangaReader {
 
     pub(super) fn effective_image_container_size(&self, ctx: &egui::Context) -> egui::Vec2 {
         let content_rect = ctx.content_rect();
-        if self.is_single_page() || (self.is_shifted && self.current_index == 0) {
+        if self.is_single_page() || self.cover_shown_alone() {
             content_rect.size()
         } else {
             egui::vec2(
@@ -228,10 +230,61 @@ impl MangaReader {
         }
     }
 
+    /// 1枚目を単独で中央に見せている状態か（奇数ページ開始で、白紙を置かない設定）
+    pub(super) fn cover_shown_alone(&self) -> bool {
+        self.is_shifted && self.current_index == 0 && !self.config.cover_blank_page
+    }
+
+    /// 1枚目を白紙と並べて見開きで見せる状態か（先頭ページ挿入。MM-VIEW-07）
+    pub(super) fn cover_paired_with_blank(&self) -> bool {
+        self.config.cover_blank_page
+            && self.is_shifted
+            && self.current_index == 0
+            && !self.is_single_page()
+    }
+
+    pub(super) fn is_cover_blank(&self, texture: &Option<egui::TextureHandle>) -> bool {
+        match (texture, &self.cover_blank) {
+            (Some(texture), Some(blank)) => texture.id() == blank.id(),
+            _ => false,
+        }
+    }
+
+    /// 表示中の2枚を、先頭ページ挿入の状態に合わせる。
+    /// 白紙は「先に読む側」（右開きなら右）に置き、1枚目をその隣に移す
+    pub(super) fn sync_cover_blank(&mut self, ctx: &egui::Context) {
+        let has_blank = self.is_cover_blank(&self.textures[0]);
+        if self.cover_paired_with_blank() {
+            if has_blank {
+                return;
+            }
+            let Some(cover) = self.textures[0].take() else {
+                return;
+            };
+            // 白紙は1枚目と同じ縦横比にする（色が一様なので小さくてよい）
+            let [width, height] = cover.size();
+            let scale = COVER_BLANK_MAX_SIDE / width.max(height).max(1) as f32;
+            let size = [
+                ((width as f32 * scale).round() as usize).max(1),
+                ((height as f32 * scale).round() as usize).max(1),
+            ];
+            let blank = ctx.load_texture(
+                "cover_blank",
+                egui::ColorImage::new(size, vec![egui::Color32::WHITE; size[0] * size[1]]),
+                egui::TextureOptions::LINEAR,
+            );
+            self.cover_blank = Some(blank.clone());
+            self.textures = [Some(blank), Some(cover)];
+        } else if has_blank {
+            // 設定を切ったときなど: 1枚目を元の位置に戻す
+            self.textures = [self.textures[1].take(), None];
+        }
+    }
+
     /// 今のページを pan_offset = 0 で描いたときに占める範囲（render_default_page_view と同じ計算）。
     /// ページが無いときは None
     pub(super) fn page_content_rect(&self, rect: Rect) -> Option<Rect> {
-        let viewing_single = self.is_single_page() || (self.is_shifted && self.current_index == 0);
+        let viewing_single = self.is_single_page() || self.cover_shown_alone();
         if viewing_single {
             let tex = self.textures[0].as_ref()?;
             let size = self.image_draw_size(tex, rect.size(), self.zoom_factor);

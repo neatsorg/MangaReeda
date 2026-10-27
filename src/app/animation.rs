@@ -508,10 +508,17 @@ impl MangaReader {
             return;
         }
 
+        // 先頭ページ挿入では、スロット0が白紙、スロット1が1枚目
+        let cover_with_blank = self.cover_paired_with_blank();
         for slot in 0..2 {
+            let page_index = match (cover_with_blank, slot) {
+                (true, 0) => None,
+                (true, _) => Some(0),
+                (false, _) => Some(self.current_index + slot),
+            };
             let desired_key = if self.textures[slot].is_some() {
-                self.image_files
-                    .get(self.current_index + slot)
+                page_index
+                    .and_then(|index| self.image_files.get(index))
                     .filter(|filename| Self::animated_image_format_unchecked(filename).is_some())
                     .cloned()
             } else {

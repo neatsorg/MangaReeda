@@ -39,6 +39,8 @@
   "settings.page_view.double_rl": "見開き (右から左)",
   "settings.page_view.double_lr": "見開き (左から右)",
   "settings.page_view.top_down": "縦スクロール (Webマンガ)",
+  "settings.cover_blank_page": "奇数ページ開始で1枚目を白紙と並べる",
+  "settings.cover_blank_page.tooltip": "奇数ページ開始のとき、1枚目の前に白紙を置いて見開きで表示します（マンガミーヤの「先頭ページ挿入」）。オフのときは1枚目を単独で中央に表示します。",
   "settings.last_page": "最終ページ到達時の動作:",
   "settings.last_page.next_file": "次のファイルへ移動",
   "settings.last_page.first_page": "最初のページへ戻る",

@@ -662,6 +662,10 @@ pub struct AppSettings {
     pub image_sizing_mode: ImageSizingMode,
     #[serde(default)]
     pub spread_center_offset: f32,
+    /// 奇数ページ開始のとき、1枚目を白紙と並べて見開きで見せる（ミーヤの先頭ページ挿入。MM-VIEW-07）。
+    /// オフなら1枚目を単独で中央に見せる
+    #[serde(default)]
+    pub cover_blank_page: bool,
     /// ルーペの半径（ピクセル）と倍率（MM-LOUPE-02）
     #[serde(default = "default_loupe_radius")]
     pub loupe_radius: f32,
@@ -754,6 +758,7 @@ impl Default for AppSettings {
             auto_page_layout_lr: false,
             image_sizing_mode: ImageSizingMode::FitHeight,
             spread_center_offset: 0.0,
+            cover_blank_page: false,
             loupe_radius: default_loupe_radius(),
             loupe_magnification: default_loupe_magnification(),
             image_panel_background: default_image_panel_background(),

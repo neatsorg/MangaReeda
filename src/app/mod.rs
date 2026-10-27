@@ -97,6 +97,8 @@ pub struct MangaReader {
     /// reset_pan のあと、ページを読み始めの位置に合わせるのを待っている
     pan_to_start_pending: bool,
     loupe_enabled: bool,
+    /// 先頭ページ挿入で1枚目の隣に置く白紙
+    cover_blank: Option<egui::TextureHandle>,
     /// このフレームで描いたページ。ルーペはこれを拡大して描く
     drawn_pages: Vec<view::DrawnPage>,
     pending_mouse_click: [Option<(Instant, MangaAction)>; 5],
@@ -180,6 +182,7 @@ impl MangaReader {
             mouse_chord_used: [false; 5],
             pan_to_start_pending: false,
             loupe_enabled: false,
+            cover_blank: None,
             drawn_pages: Vec::new(),
             pending_mouse_click: [None; 5],
             gamepad: Gilrs::new().ok(),
@@ -897,6 +900,79 @@ mod tests {
             config.top_down_mouse.button2_held_scroll_up,
             MangaAction::ZoomIn
         );
+    }
+
+    #[test]
+    fn cover_blank_page_pairs_the_first_page_with_a_blank() {
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20], [10, 20]]);
+        let ctx = egui::Context::default();
+        for (auto_layout, caching) in [(false, false), (false, true), (true, false)] {
+            let mut reader = pages.reader(
+                AppSettings {
+                    page_view_options: PageViewOptions::DoubleRL,
+                    auto_page_layout_rl: auto_layout,
+                    enable_single_file_caching: caching,
+                    cover_blank_page: true,
+                    enable_animated_images: false,
+                    resize_method: ResizeMethod::None,
+                    ..AppSettings::default()
+                },
+                &ctx,
+            );
+            reader.change_shifted_mode(&ctx);
+            let is_blank = |reader: &MangaReader| reader.is_cover_blank(&reader.textures[0]);
+            // テクスチャの名前はページのファイル名
+            let first_page = reader.image_files[0].clone();
+
+            // 白紙が先に読む側（スロット0）、1枚目がその隣（スロット1）
+            assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
+            assert!(is_blank(&reader), "auto_layout={auto_layout}");
+            assert_eq!(reader.textures[1].as_ref().unwrap().name(), first_page);
+            // 見開きとして描く（1枚目を単独で中央に置かない）
+            assert!(!reader.cover_shown_alone());
+
+            // 2〜3枚目、戻ると白紙と1枚目
+            reader.update_buffers(&ctx);
+            reader.next_page(&ctx, false);
+            assert_view(&reader, 1, PageViewOptions::DoubleRL, 2);
+            assert!(!is_blank(&reader));
+            reader.update_buffers(&ctx);
+            reader.prev_page(&ctx, false);
+            assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
+            assert!(is_blank(&reader));
+
+            // 設定を切ると1枚目が単独に戻る
+            reader.config.cover_blank_page = false;
+            reader.sync_cover_blank(&ctx);
+            assert_view(&reader, 0, PageViewOptions::DoubleRL, 1);
+            assert_eq!(reader.textures[0].as_ref().unwrap().name(), first_page);
+            assert!(reader.cover_shown_alone());
+        }
+    }
+
+    #[test]
+    fn cover_blank_page_is_not_used_for_single_page_or_even_mode() {
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
+        let ctx = egui::Context::default();
+        for (mode, shifted) in [
+            (PageViewOptions::Single, true),
+            (PageViewOptions::DoubleRL, false),
+        ] {
+            let mut reader = pages.reader(
+                AppSettings {
+                    page_view_options: mode,
+                    cover_blank_page: true,
+                    enable_animated_images: false,
+                    resize_method: ResizeMethod::None,
+                    ..AppSettings::default()
+                },
+                &ctx,
+            );
+            if shifted {
+                reader.change_shifted_mode(&ctx);
+            }
+            assert!(!reader.is_cover_blank(&reader.textures[0]), "{mode:?}");
+        }
     }
 
     #[test]

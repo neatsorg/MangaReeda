@@ -88,6 +88,7 @@ impl MangaReader {
     pub(super) fn load_current_pair(&mut self, ctx: &egui::Context) {
         self.textures = self.load_pair(self.current_index, ctx);
         self.apply_automatic_page_layout();
+        self.sync_cover_blank(ctx);
     }
 
     pub(super) fn automatic_previous_index(&mut self, ctx: &egui::Context) -> usize {
@@ -222,6 +223,7 @@ impl MangaReader {
             self.apply_automatic_page_layout();
             self.reset_buffer();
         }
+        self.sync_cover_blank(ctx);
         self.page_indicator_time = Some(Instant::now());
     }
 
@@ -275,6 +277,7 @@ impl MangaReader {
             self.apply_automatic_page_layout();
             self.reset_buffer();
         }
+        self.sync_cover_blank(ctx);
         self.page_indicator_time = Some(Instant::now());
     }
 

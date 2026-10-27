@@ -44,6 +44,7 @@ impl MangaReader {
                 let rect = ui.available_rect_before_wrap();
                 self.last_page_view_rect = Some(rect);
                 self.drawn_pages.clear();
+                self.sync_cover_blank(ctx);
                 self.apply_pending_pan_start();
 
                 // Create a 'Response' for the entire background area first,
@@ -54,8 +55,7 @@ impl MangaReader {
                     // Show single image on center or if in shifted cover mode
                     let is_zoomed = (self.zoom_factor - 1.0).abs() > 0.01;
                     let double_needs_drag = self.double_page_needs_drag(rect);
-                    let viewing_single =
-                        self.is_single_page() || (self.is_shifted && self.current_index == 0);
+                    let viewing_single = self.is_single_page() || self.cover_shown_alone();
                     let single_image_size = self.textures[0]
                         .as_ref()
                         .map(|tex| self.image_draw_size(tex, rect.size(), self.zoom_factor))

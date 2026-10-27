@@ -39,6 +39,8 @@
   "settings.page_view.double_rl": "Double Page (Right to Left)",
   "settings.page_view.double_lr": "Double Page (Left to Right)",
   "settings.page_view.top_down": "Top Down (Web Manga)",
+  "settings.cover_blank_page": "Pair the first page with a blank page in odd mode",
+  "settings.cover_blank_page.tooltip": "In odd page mode, show a blank page before the first page so it appears as a spread (MangaMeeya's \"insert first page\"). When off, the first page is shown alone in the center.",
   "settings.last_page": "Last Page Options:",
   "settings.last_page.next_file": "Go to Next File",
   "settings.last_page.first_page": "To First Page",
