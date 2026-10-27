@@ -831,27 +831,39 @@ impl AppSettings {
         }
     }
 
-    /// 利用者がページ表示を選んだとき、自動見開きをそれに合わせる。
-    /// 自動見開きはページごとに表示を上書きするので、そのままだと選んだ表示に変えられない
-    pub fn follow_chosen_page_view(&mut self) {
-        let auto_on = self.auto_page_layout_rl || self.auto_page_layout_lr;
-        match self.page_view_options {
-            PageViewOptions::Single => {
-                self.auto_page_layout_rl = false;
-                self.auto_page_layout_lr = false;
-                self.page_view_before_auto = None;
+    fn auto_page_layout_applies(&self) -> bool {
+        (self.auto_page_layout_rl || self.auto_page_layout_lr)
+            && self.page_view_options != PageViewOptions::TopDown
+    }
+
+    /// 利用者が選んでいるページ表示（ミーヤの1ページ／2ページ表示の設定）。
+    /// 自動見開きがオンのあいだは、ページごとの表示ではなく、オフにしたときの戻り先を返す
+    pub fn chosen_page_view(&self) -> PageViewOptions {
+        if !self.auto_page_layout_applies() {
+            return self.page_view_options;
+        }
+        match self.page_view_before_auto {
+            Some(PageViewOptions::Single) => PageViewOptions::Single,
+            _ if self.auto_page_layout_lr => PageViewOptions::DoubleLR,
+            _ => PageViewOptions::DoubleRL,
+        }
+    }
+
+    /// 利用者がページ表示を選んだとき。自動見開きがオンなら、オンのまま
+    /// オフにしたときの戻り先を変える（ミーヤと同じ）。見開きを選んだら自動見開きの向きもそれに合わせる
+    pub fn choose_page_view(&mut self, view: PageViewOptions) {
+        if !self.auto_page_layout_applies() || view == PageViewOptions::TopDown {
+            self.page_view_options = view;
+            return;
+        }
+        self.page_view_before_auto = Some(view);
+        match view {
+            PageViewOptions::DoubleRL | PageViewOptions::DoubleLR => {
+                self.auto_page_layout_rl = view == PageViewOptions::DoubleRL;
+                self.auto_page_layout_lr = view == PageViewOptions::DoubleLR;
+                self.page_view_options = view;
             }
-            // 見開きを選び直したら、自動見開きを外したときの戻り先も見開きにする
-            PageViewOptions::DoubleRL if auto_on => {
-                self.auto_page_layout_rl = true;
-                self.auto_page_layout_lr = false;
-                self.page_view_before_auto = Some(self.page_view_options);
-            }
-            PageViewOptions::DoubleLR if auto_on => {
-                self.auto_page_layout_rl = false;
-                self.auto_page_layout_lr = true;
-                self.page_view_before_auto = Some(self.page_view_options);
-            }
+            // 表示は自動見開きが決めるので、今の表示は変えない
             _ => {}
         }
     }

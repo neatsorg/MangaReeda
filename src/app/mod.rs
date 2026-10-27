@@ -856,8 +856,7 @@ mod tests {
         assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
         // 設定画面で選んだときと同じ手順
         let choose = |reader: &mut MangaReader, mode| {
-            reader.config.page_view_options = mode;
-            reader.config.follow_chosen_page_view();
+            reader.config.choose_page_view(mode);
             reader.reset_buffer();
             reader.texture_cache.clear();
             reader.load_current_pair(&ctx);
@@ -873,15 +872,20 @@ mod tests {
         assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
         assert!(reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
 
-        // 単ページを選ぶと自動見開きは切れる
+        // 単ページを選んでも自動見開きはオンのまま（ミーヤと同じ）。
+        // 表示は自動見開きが決め、選んだ単ページはオフにしたときの戻り先になる
         choose(&mut reader, PageViewOptions::Single);
-        assert_eq!(reader.current_index, 0);
+        assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
+        assert!(reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+        assert_eq!(reader.config.chosen_page_view(), PageViewOptions::Single);
+        reader.toggle_auto_page_layout(&ctx);
         assert_eq!(reader.config.page_view_options, PageViewOptions::Single);
-        assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+        assert_eq!(reader.config.chosen_page_view(), PageViewOptions::Single);
 
         // 自動見開きが切れているときに見開きを選んでも、自動見開きは入らない
         choose(&mut reader, PageViewOptions::DoubleLR);
         assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+        assert_eq!(reader.config.chosen_page_view(), PageViewOptions::DoubleLR);
     }
 
     #[test]
@@ -1020,8 +1024,9 @@ mod tests {
 
         // 自動見開きのまま見開きを選び直すと、外したときは見開き（今の向き）に戻る
         config.set_auto_page_layout(Some(true));
-        config.page_view_options = PageViewOptions::DoubleRL;
-        config.follow_chosen_page_view();
+        assert_eq!(config.chosen_page_view(), PageViewOptions::Single);
+        config.choose_page_view(PageViewOptions::DoubleRL);
+        assert_eq!(config.chosen_page_view(), PageViewOptions::DoubleRL);
         config.set_auto_page_layout(None);
         assert_eq!(config.page_view_options, PageViewOptions::DoubleRL);
 

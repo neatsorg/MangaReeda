@@ -651,31 +651,32 @@ impl MangaReader {
 
                                 {
                                     let previous_page_view = self.config.page_view_options;
+                                    let mut chosen = self.config.chosen_page_view();
                                     let mut changed = false;
                                     changed |= ui
                                         .radio_value(
-                                            &mut self.config.page_view_options,
+                                            &mut chosen,
                                             PageViewOptions::Single,
                                             egui::RichText::new(tr("settings.page_view.single")),
                                         )
                                         .clicked();
                                     changed |= ui
                                         .radio_value(
-                                            &mut self.config.page_view_options,
+                                            &mut chosen,
                                             PageViewOptions::DoubleRL,
                                             egui::RichText::new(tr("settings.page_view.double_rl")),
                                         )
                                         .clicked();
                                     changed |= ui
                                         .radio_value(
-                                            &mut self.config.page_view_options,
+                                            &mut chosen,
                                             PageViewOptions::DoubleLR,
                                             egui::RichText::new(tr("settings.page_view.double_lr")),
                                         )
                                         .clicked();
                                     changed |= ui
                                         .radio_value(
-                                            &mut self.config.page_view_options,
+                                            &mut chosen,
                                             PageViewOptions::TopDown,
                                             egui::RichText::new(tr("settings.page_view.top_down")),
                                         )
@@ -715,7 +716,7 @@ impl MangaReader {
                                     ui.spacing_mut().slider_width = previous_slider_width - 40.0;
 
                                     if changed {
-                                        self.config.follow_chosen_page_view();
+                                        self.config.choose_page_view(chosen);
                                         self.reset_buffer();
                                         self.texture_cache.clear();
                                         self.reset_pan();
