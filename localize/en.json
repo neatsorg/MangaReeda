@@ -211,7 +211,6 @@
   "toolbar.auto_scroll_delay.tooltip": "Delay between automatic page advances.",
   "toolbar.reload_current_image": "Reload",
   "toolbar.reload_current_image.tooltip": "Clear image cache and buffers, then reload the current page.",
-  "toolbar.hide": "Hide Toolbar (Re-enable in Settings)",
   "toolbar.odd": "Odd",
   "toolbar.even": "Even",
   "start.open_zip": "Click anywhere to open a Zip file",

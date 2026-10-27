@@ -392,15 +392,9 @@ impl MangaReader {
                                 self.go_to_page(page_val - 1, ctx);
                             }
 
-                            // --- Hide Button ---
-                            // --- Hide Button ---
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.button("❌").on_hover_text(tr("toolbar.hide")).clicked()
-                                    {
-                                        self.config.show_top_bar = false;
-                                    }
                                     if ui.button("⚙").on_hover_text(tr("settings.title")).clicked()
                                     {
                                         self.config.show_settings = !self.config.show_settings;

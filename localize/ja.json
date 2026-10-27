@@ -211,7 +211,6 @@
   "toolbar.auto_scroll_delay.tooltip": "自動でページを送る間隔です。",
   "toolbar.reload_current_image": "再読込",
   "toolbar.reload_current_image.tooltip": "画像を再読込します。",
-  "toolbar.hide": "ツールバーを隠す (設定から再表示可能)",
   "toolbar.odd": "奇",
   "toolbar.even": "偶",
   "start.open_zip": "どこかをクリックして Zip ファイルを開く",
