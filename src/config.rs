@@ -836,36 +836,21 @@ impl AppSettings {
             && self.page_view_options != PageViewOptions::TopDown
     }
 
-    /// 利用者が選んでいるページ表示（ミーヤの1ページ／2ページ表示の設定）。
-    /// 自動見開きがオンのあいだは、ページごとの表示ではなく、オフにしたときの戻り先を返す
-    pub fn chosen_page_view(&self) -> PageViewOptions {
-        if !self.auto_page_layout_applies() {
-            return self.page_view_options;
-        }
-        match self.page_view_before_auto {
-            Some(PageViewOptions::Single) => PageViewOptions::Single,
-            _ if self.auto_page_layout_lr => PageViewOptions::DoubleLR,
-            _ => PageViewOptions::DoubleRL,
-        }
-    }
-
-    /// 利用者がページ表示を選んだとき。自動見開きがオンなら、オンのまま
-    /// オフにしたときの戻り先を変える（ミーヤと同じ）。見開きを選んだら自動見開きの向きもそれに合わせる
-    pub fn choose_page_view(&mut self, view: PageViewOptions) {
-        if !self.auto_page_layout_applies() || view == PageViewOptions::TopDown {
-            self.page_view_options = view;
-            return;
-        }
-        self.page_view_before_auto = Some(view);
-        match view {
-            PageViewOptions::DoubleRL | PageViewOptions::DoubleLR => {
+    /// 利用者がページ表示を選んだとき。自動見開きがオンでも、オンのまま今のページを選んだ表示にする。
+    /// 次にページをめくると自動見開きがまた表示を決める（ミーヤと同じ）。
+    /// 選んだ表示は自動見開きをオフにしたときの戻り先にもなり、見開きなら自動見開きの向きもそれに合わせる。
+    /// 自動見開きより選んだ表示を優先する（次のページ送りまで）なら true を返す
+    pub fn choose_page_view(&mut self, view: PageViewOptions) -> bool {
+        let overrides_auto = self.auto_page_layout_applies() && view != PageViewOptions::TopDown;
+        if overrides_auto {
+            self.page_view_before_auto = Some(view);
+            if view != PageViewOptions::Single {
                 self.auto_page_layout_rl = view == PageViewOptions::DoubleRL;
                 self.auto_page_layout_lr = view == PageViewOptions::DoubleLR;
-                self.page_view_options = view;
             }
-            // 表示は自動見開きが決めるので、今の表示は変えない
-            _ => {}
         }
+        self.page_view_options = view;
+        overrides_auto
     }
 }
 

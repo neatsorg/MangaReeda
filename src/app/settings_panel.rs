@@ -651,7 +651,7 @@ impl MangaReader {
 
                                 {
                                     let previous_page_view = self.config.page_view_options;
-                                    let mut chosen = self.config.chosen_page_view();
+                                    let mut chosen = self.config.page_view_options;
                                     let mut changed = false;
                                     changed |= ui
                                         .radio_value(
@@ -716,7 +716,8 @@ impl MangaReader {
                                     ui.spacing_mut().slider_width = previous_slider_width - 40.0;
 
                                     if changed {
-                                        self.config.choose_page_view(chosen);
+                                        self.manual_page_view =
+                                            self.config.choose_page_view(chosen);
                                         self.reset_buffer();
                                         self.texture_cache.clear();
                                         self.reset_pan();

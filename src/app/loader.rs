@@ -511,6 +511,7 @@ impl MangaReader {
             self.show_fading_error(&msg);
         } else {
             self.remember_current_book();
+            self.manual_page_view = false;
             self.reset_buffer();
             self.texture_cache.clear();
             self.image_dimensions.clear();

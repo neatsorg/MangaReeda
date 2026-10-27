@@ -114,6 +114,9 @@ pub struct MangaReader {
     history_path: Option<PathBuf>,
     /// サブフォルダを読むかを聞いているあいだの、開こうとしている冊
     subfolder_question: Option<loader::SubfolderQuestion>,
+    /// 自動見開きがオンのまま利用者がページ表示を選んだ。次にページをめくるまで、
+    /// 自動見開きより選んだ表示を優先する（ミーヤと同じ）
+    manual_page_view: bool,
 }
 
 impl MangaReader {
@@ -197,6 +200,7 @@ impl MangaReader {
             history: History::default(),
             history_path: None,
             subfolder_question: None,
+            manual_page_view: false,
         }
     }
 
@@ -842,7 +846,7 @@ mod tests {
     #[test]
     fn choosing_a_page_view_is_not_undone_by_automatic_layout() {
         // 縦長のページなので、自動見開きがあると見開きに戻されていた
-        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
+        let pages = TestPages::new(&[[10, 20]; 5]);
         let ctx = egui::Context::default();
         let mut reader = pages.reader(
             AppSettings {
@@ -856,7 +860,7 @@ mod tests {
         assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
         // 設定画面で選んだときと同じ手順
         let choose = |reader: &mut MangaReader, mode| {
-            reader.config.choose_page_view(mode);
+            reader.manual_page_view = reader.config.choose_page_view(mode);
             reader.reset_buffer();
             reader.texture_cache.clear();
             reader.load_current_pair(&ctx);
@@ -872,20 +876,38 @@ mod tests {
         assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
         assert!(reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
 
-        // 単ページを選んでも自動見開きはオンのまま（ミーヤと同じ）。
-        // 表示は自動見開きが決め、選んだ単ページはオフにしたときの戻り先になる
+        // ミーヤと同じく、自動見開きのまま単ページを選ぶと、その場は単ページになり、
+        // 自動見開きはオンのまま（単ページ表示でも先読みでテクスチャは2枚）
         choose(&mut reader, PageViewOptions::Single);
-        assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
+        assert_view(&reader, 0, PageViewOptions::Single, 2);
         assert!(reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
-        assert_eq!(reader.config.chosen_page_view(), PageViewOptions::Single);
+        // 先読みがあっても、次のページは1枚だけ進み、そこからは自動見開きがまた見開きにする
+        reader.update_buffers(&ctx);
+        reader.next_page(&ctx, false);
+        assert_view(&reader, 1, PageViewOptions::DoubleRL, 2);
+        reader.update_buffers(&ctx);
+        reader.next_page(&ctx, false);
+        assert_view(&reader, 3, PageViewOptions::DoubleRL, 2);
+
+        // 単ページにしたまま戻っても、自動見開きがまた表示を決める
+        // （戻る先は縦長の続きの先頭から組んだ位置になる）
+        choose(&mut reader, PageViewOptions::Single);
+        reader.update_buffers(&ctx);
+        reader.prev_page(&ctx, false);
+        assert_eq!(reader.config.page_view_options, PageViewOptions::DoubleRL);
+        assert_eq!(reader.textures.iter().flatten().count(), 2);
+        assert!(!reader.manual_page_view);
+
+        // 単ページを選んでから自動見開きをオフにすると、単ページのまま
+        choose(&mut reader, PageViewOptions::Single);
         reader.toggle_auto_page_layout(&ctx);
+        assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
         assert_eq!(reader.config.page_view_options, PageViewOptions::Single);
-        assert_eq!(reader.config.chosen_page_view(), PageViewOptions::Single);
 
         // 自動見開きが切れているときに見開きを選んでも、自動見開きは入らない
         choose(&mut reader, PageViewOptions::DoubleLR);
         assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
-        assert_eq!(reader.config.chosen_page_view(), PageViewOptions::DoubleLR);
+        assert!(!reader.manual_page_view);
     }
 
     #[test]
@@ -1024,9 +1046,7 @@ mod tests {
 
         // 自動見開きのまま見開きを選び直すと、外したときは見開き（今の向き）に戻る
         config.set_auto_page_layout(Some(true));
-        assert_eq!(config.chosen_page_view(), PageViewOptions::Single);
-        config.choose_page_view(PageViewOptions::DoubleRL);
-        assert_eq!(config.chosen_page_view(), PageViewOptions::DoubleRL);
+        assert!(config.choose_page_view(PageViewOptions::DoubleRL));
         config.set_auto_page_layout(None);
         assert_eq!(config.page_view_options, PageViewOptions::DoubleRL);
 

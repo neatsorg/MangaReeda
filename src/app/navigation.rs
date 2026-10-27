@@ -71,6 +71,9 @@ impl MangaReader {
     }
 
     pub(super) fn apply_automatic_page_layout(&mut self) {
+        if self.manual_page_view {
+            return;
+        }
         let Some(direction) = self.automatic_page_direction() else {
             return;
         };
@@ -230,6 +233,11 @@ impl MangaReader {
             self.buffer_next = [None, None];
             self.buffer_prev = [None, None];
             1
+        } else if self.manual_page_view {
+            // 先読みは自動見開きの組み方なので使わず、選んだ表示のページ数だけ進む
+            self.manual_page_view = false;
+            self.reset_buffer();
+            if self.is_single_page() { 1 } else { 2 }
         } else if self.automatic_page_direction().is_some() {
             self.automatic_page_count(self.current_index)
         } else if self.is_single_page() || (self.is_shifted && self.current_index == 0) {
@@ -290,6 +298,10 @@ impl MangaReader {
             self.buffer_prev = [None, None];
             1
         } else if self.automatic_page_direction().is_some() {
+            if self.manual_page_view {
+                self.manual_page_view = false;
+                self.reset_buffer();
+            }
             self.current_index - self.automatic_previous_index(ctx)
         } else if self.is_single_page() || (self.is_shifted && self.current_index == 1) {
             1
@@ -411,6 +423,7 @@ impl MangaReader {
 
     pub(super) fn go_to_first_page(&mut self, ctx: &egui::Context) {
         if !self.image_files.is_empty() && self.current_index != 0 {
+            self.manual_page_view = false;
             self.reset_buffer();
             self.reset_pan();
             self.current_index = 0;
@@ -421,6 +434,7 @@ impl MangaReader {
 
     pub(super) fn go_to_page(&mut self, index: usize, ctx: &egui::Context) {
         if index < self.image_files.len() && self.current_index != index {
+            self.manual_page_view = false;
             self.reset_buffer();
             self.reset_pan();
             self.current_index = index;
@@ -431,6 +445,7 @@ impl MangaReader {
 
     pub(super) fn go_to_last_page(&mut self, ctx: &egui::Context) {
         if !self.image_files.is_empty() {
+            self.manual_page_view = false;
             // Find the start of the final view using the active layout's grouping.
             let last_idx = if self.automatic_page_direction().is_some() {
                 // Treat the position just past the end as a backward page turn.
@@ -505,6 +520,7 @@ impl MangaReader {
         if !self.config.toggle_auto_page_layout() {
             return;
         }
+        self.manual_page_view = false;
         self.reset_buffer();
         self.texture_cache.clear();
         self.clear_animated_image_cache();
