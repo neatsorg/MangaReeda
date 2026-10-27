@@ -90,6 +90,8 @@ pub struct MangaReader {
     mouse_press_origin: [Option<egui::Pos2>; 5],
     mouse_long_triggered: [bool; 5],
     mouse_drag_suppressed: [bool; 5],
+    /// 押したまま他のボタンやホイールと組み合わせて使ったボタン。離したときにクリック扱いしない
+    mouse_chord_used: [bool; 5],
     pending_mouse_click: [Option<(Instant, MangaAction)>; 5],
     gamepad: Option<Gilrs>,
     gamepad_repeat_deadlines: [Option<Instant>; 16],
@@ -168,6 +170,7 @@ impl MangaReader {
             mouse_press_origin: [None; 5],
             mouse_long_triggered: [false; 5],
             mouse_drag_suppressed: [false; 5],
+            mouse_chord_used: [false; 5],
             pending_mouse_click: [None; 5],
             gamepad: Gilrs::new().ok(),
             gamepad_repeat_deadlines: [None; 16],
@@ -482,6 +485,184 @@ mod tests {
         for book in ["a", "b"] {
             fs::remove_dir_all(parent.0.join(book)).unwrap();
         }
+    }
+
+    /// 1フレーム分のマウス入力を与え、画面全体を覆う領域で拾った操作を返す
+    fn mouse_frame(
+        reader: &mut MangaReader,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> Option<MangaAction> {
+        let pos = egui::pos2(100.0, 100.0);
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        input.events.push(egui::Event::PointerMoved(pos));
+        input.events.extend(events);
+        let mut action = None;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let response = ui.allocate_rect(ui.max_rect(), egui::Sense::click());
+                action = reader.collect_mouse_action(&response, ctx);
+            });
+        });
+        action
+    }
+
+    fn button(button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: egui::pos2(100.0, 100.0),
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn wheel(delta_y: f32) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, delta_y),
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn mouse_chords_fire_their_action_and_swallow_the_held_button_click() {
+        use crate::config::MouseConfig;
+        use egui::PointerButton::{Primary, Secondary};
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                mouse: MouseConfig::mangameeya(),
+                ..AppSettings::default()
+            },
+            None,
+        );
+        assert_eq!(mouse_frame(&mut reader, &ctx, vec![]), None);
+
+        // 右を押したまま左クリック → 1ページ進む。右を離してもクリック（前に戻る）にならない
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, true)]),
+            None
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Primary, true)]),
+            None
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Primary, false)]),
+            Some(MangaAction::OneNextPage)
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, false)]),
+            None
+        );
+
+        // 左を押したまま右クリック → 1ページ戻る。左を離してもクリックにならない
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Primary, true)]),
+            None
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, true)]),
+            None
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, false)]),
+            Some(MangaAction::OnePrevPage)
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Primary, false)]),
+            None
+        );
+
+        // 右を押したままホイール → 拡大・縮小。右を離してもクリックにならない
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, true)]),
+            None
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![wheel(5.0)]),
+            Some(MangaAction::ZoomIn)
+        );
+        assert_eq!(mouse_frame(&mut reader, &ctx, vec![]), None);
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![wheel(-5.0)]),
+            Some(MangaAction::ZoomOut)
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, false)]),
+            None
+        );
+
+        // 単独のクリックとホイールは従来どおり
+        assert_eq!(mouse_frame(&mut reader, &ctx, vec![]), None);
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![wheel(-5.0)]),
+            Some(MangaAction::NextPage)
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, true)]),
+            None
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, false)]),
+            Some(MangaAction::PrevPage)
+        );
+    }
+
+    #[test]
+    fn unassigned_chords_keep_the_previous_behavior() {
+        use egui::PointerButton::{Primary, Secondary};
+        let ctx = egui::Context::default();
+        // MangaReeda の既定では同時押しは未割り当てで、これまでと同じ動きになる
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                mouse: crate::config::MouseConfig {
+                    button1_double_click: MangaAction::None,
+                    ..Default::default()
+                },
+                ..AppSettings::default()
+            },
+            None,
+        );
+        assert_eq!(mouse_frame(&mut reader, &ctx, vec![]), None);
+        // 右を押したまま左クリックすると左クリックだけが効く
+        // （他のボタンを離すと、押したままのボタンは egui がクリックと見なさなくなる）
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, true)]),
+            None
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Primary, true)]),
+            None
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Primary, false)]),
+            Some(MangaAction::NextPage)
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, false)]),
+            None
+        );
+
+        // 右を押したままのホイールはページ送りで、右を離すと右クリックになる
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, true)]),
+            None
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![wheel(-5.0)]),
+            Some(MangaAction::NextPage)
+        );
+        assert_eq!(
+            mouse_frame(&mut reader, &ctx, vec![button(Secondary, false)]),
+            Some(MangaAction::PrevPage)
+        );
     }
 
     #[test]

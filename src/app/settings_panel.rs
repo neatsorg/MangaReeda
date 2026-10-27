@@ -379,6 +379,26 @@ pub(super) fn render_control_mapping_settings(
                         "mouse_button5_long_click",
                         &mut mouse.button5_long_click,
                     ),
+                    (
+                        tr("settings.mouse.button2_held_button1_click"),
+                        "mouse_button2_held_button1_click",
+                        &mut mouse.button2_held_button1_click,
+                    ),
+                    (
+                        tr("settings.mouse.button1_held_button2_click"),
+                        "mouse_button1_held_button2_click",
+                        &mut mouse.button1_held_button2_click,
+                    ),
+                    (
+                        tr("settings.mouse.button2_held_scroll_up"),
+                        "mouse_button2_held_scroll_up",
+                        &mut mouse.button2_held_scroll_up,
+                    ),
+                    (
+                        tr("settings.mouse.button2_held_scroll_down"),
+                        "mouse_button2_held_scroll_down",
+                        &mut mouse.button2_held_scroll_down,
+                    ),
                 ] {
                     ui.label(label);
                     changed |= render_mouse_action_dropdown(

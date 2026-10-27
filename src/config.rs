@@ -374,6 +374,13 @@ pub struct MouseConfig {
     pub button3_long_click: MangaAction,
     pub button4_long_click: MangaAction,
     pub button5_long_click: MangaAction,
+    /// 右ボタンを押したまま左クリック（MM-IN-M05）
+    pub button2_held_button1_click: MangaAction,
+    /// 左ボタンを押したまま右クリック（MM-IN-M05）
+    pub button1_held_button2_click: MangaAction,
+    /// 右ボタンを押したままホイール（MM-IN-M06）
+    pub button2_held_scroll_up: MangaAction,
+    pub button2_held_scroll_down: MangaAction,
 }
 
 impl Default for MouseConfig {
@@ -396,6 +403,10 @@ impl Default for MouseConfig {
             button3_long_click: MangaAction::None,
             button4_long_click: MangaAction::None,
             button5_long_click: MangaAction::None,
+            button2_held_button1_click: MangaAction::None,
+            button1_held_button2_click: MangaAction::None,
+            button2_held_scroll_up: MangaAction::None,
+            button2_held_scroll_down: MangaAction::None,
         }
     }
 }
@@ -422,6 +433,28 @@ impl MouseConfig {
             button3_long_click: MangaAction::None,
             button4_long_click: MangaAction::None,
             button5_long_click: MangaAction::None,
+            button2_held_button1_click: MangaAction::OneNextPage,
+            button1_held_button2_click: MangaAction::OnePrevPage,
+            button2_held_scroll_up: MangaAction::ZoomIn,
+            button2_held_scroll_down: MangaAction::ZoomOut,
+        }
+    }
+
+    /// `held` を押したまま `clicked` をクリックしたときの操作
+    pub fn chord_click_action(&self, held: MouseButton, clicked: MouseButton) -> MangaAction {
+        match (held, clicked) {
+            (MouseButton::Button2, MouseButton::Button1) => self.button2_held_button1_click,
+            (MouseButton::Button1, MouseButton::Button2) => self.button1_held_button2_click,
+            _ => MangaAction::None,
+        }
+    }
+
+    /// `held` を押したままホイールを回したときの操作
+    pub fn chord_scroll_action(&self, held: MouseButton, up: bool) -> MangaAction {
+        match (held, up) {
+            (MouseButton::Button2, true) => self.button2_held_scroll_up,
+            (MouseButton::Button2, false) => self.button2_held_scroll_down,
+            _ => MangaAction::None,
         }
     }
 

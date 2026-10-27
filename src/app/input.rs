@@ -1,7 +1,7 @@
 use super::settings_panel::{BindingTarget, ControlProfile};
 use super::{GAMEPAD_INITIAL_REPEAT_DELAY, LONG_CLICK_DURATION, MOUSE_DRAG_THRESHOLD, MangaReader};
 use crate::config::{
-    GamepadButton, MangaAction, MouseButton, MouseGesture, PageViewOptions, Shortcut,
+    GamepadButton, MangaAction, MouseButton, MouseConfig, MouseGesture, PageViewOptions, Shortcut,
 };
 use crate::utils::{
     gamepad_action_for_button, gamepad_button_index, is_repeatable_gamepad_action,
@@ -159,12 +159,41 @@ impl MangaReader {
         action_to_run
     }
 
-    pub(super) fn get_mouse_action(&self, gesture: MouseGesture) -> MangaAction {
-        let mouse = if self.config.page_view_options == PageViewOptions::TopDown {
+    pub(super) fn current_mouse_config(&self) -> MouseConfig {
+        if self.config.page_view_options == PageViewOptions::TopDown {
             self.config.top_down_mouse
         } else {
             self.config.mouse
-        };
+        }
+    }
+
+    /// `clicked` が他のボタンを押したままクリックされ、その組み合わせに操作があれば返す
+    fn chord_click(
+        &self,
+        clicked: MouseButton,
+        ctx: &egui::Context,
+    ) -> Option<(MouseButton, MangaAction)> {
+        let mouse = self.current_mouse_config();
+        MouseButton::ALL
+            .into_iter()
+            .filter(|&held| held != clicked)
+            .filter(|&held| ctx.input(|i| i.pointer.button_down(mouse_button_to_pointer(held))))
+            .map(|held| (held, mouse.chord_click_action(held, clicked)))
+            .find(|&(_, action)| action != MangaAction::None)
+    }
+
+    /// 押したままホイールを回すと操作が割り当てられているボタンのうち、押されているもの
+    fn held_chord_scroll_button(&self, ctx: &egui::Context) -> Option<MouseButton> {
+        let mouse = self.current_mouse_config();
+        MouseButton::ALL.into_iter().find(|&held| {
+            (mouse.chord_scroll_action(held, true) != MangaAction::None
+                || mouse.chord_scroll_action(held, false) != MangaAction::None)
+                && ctx.input(|i| i.pointer.button_down(mouse_button_to_pointer(held)))
+        })
+    }
+
+    pub(super) fn get_mouse_action(&self, gesture: MouseGesture) -> MangaAction {
+        let mouse = self.current_mouse_config();
         match gesture {
             MouseGesture::Unassigned => MangaAction::None,
             MouseGesture::ScrollUp => mouse.scroll_up,
@@ -311,6 +340,7 @@ impl MangaReader {
                     self.mouse_press_origin[index] = None;
                     self.mouse_long_triggered[index] = false;
                     self.mouse_drag_suppressed[index] = false;
+                    self.mouse_chord_used[index] = false;
                 }
             }
             return None;
@@ -343,6 +373,7 @@ impl MangaReader {
 
                 if !self.mouse_drag_suppressed[button_index]
                     && !self.mouse_long_triggered[button_index]
+                    && !self.mouse_chord_used[button_index]
                     && self.mouse_press_started[button_index]
                         .map(|started| now.duration_since(started) >= LONG_CLICK_DURATION)
                         .unwrap_or(false)
@@ -360,9 +391,23 @@ impl MangaReader {
                 }
             }
 
+            if response.clicked_by(pointer_button) {
+                // 他のボタンを押したままのクリック（同時押し）
+                if let Some((held, action)) = self.chord_click(button, ctx) {
+                    self.mouse_chord_used[mouse_button_index(held)] = true;
+                    self.pending_mouse_click[button_index] = None;
+                    return Some(action);
+                }
+            }
+
             let was_long_click = self.mouse_long_triggered[button_index];
             let was_dragging = self.mouse_drag_suppressed[button_index];
-            if response.clicked_by(pointer_button) && !was_long_click && !was_dragging {
+            let was_chord = self.mouse_chord_used[button_index];
+            if response.clicked_by(pointer_button) && was_chord {
+                // 同時押しに使ったボタンを離しただけなので、クリックとしては扱わない
+                self.mouse_chord_used[button_index] = false;
+                self.pending_mouse_click[button_index] = None;
+            } else if response.clicked_by(pointer_button) && !was_long_click && !was_dragging {
                 self.mouse_press_started[button_index] = None;
                 self.mouse_press_origin[button_index] = None;
                 self.mouse_long_triggered[button_index] = false;
@@ -397,11 +442,31 @@ impl MangaReader {
                 self.mouse_press_origin[button_index] = None;
                 self.mouse_long_triggered[button_index] = false;
                 self.mouse_drag_suppressed[button_index] = false;
+                self.mouse_chord_used[button_index] = false;
             }
         }
 
         let scroll_delta = ctx.input(|i| i.smooth_scroll_delta);
         let scroll_threshold = 2.0;
+
+        // ボタンを押したままのホイール（同時押し）。1回のホイール操作につき1回だけ実行する
+        if let Some(held) = self.held_chord_scroll_button(ctx) {
+            if self.can_scroll {
+                let up = scroll_delta.y > scroll_threshold || scroll_delta.x > scroll_threshold;
+                let down = scroll_delta.y < -scroll_threshold || scroll_delta.x < -scroll_threshold;
+                if up || down {
+                    self.can_scroll = false;
+                    self.mouse_chord_used[mouse_button_index(held)] = true;
+                    let action = self.current_mouse_config().chord_scroll_action(held, up);
+                    return Some(action);
+                }
+            } else if scroll_delta.y.abs() <= scroll_threshold
+                && scroll_delta.x.abs() <= scroll_threshold
+            {
+                self.can_scroll = true;
+            }
+            return None;
+        }
         if self.config.page_view_options == PageViewOptions::TopDown {
             if scroll_delta.y > scroll_threshold || scroll_delta.x > scroll_threshold {
                 let action = self.get_mouse_action(MouseGesture::ScrollUp);
