@@ -373,6 +373,14 @@ impl KeyConfig {
         }
     }
 
+    /// 縦スクロール表示用のミーヤ風: 方向キーは縦スクロールのまま、ルーペを L に足す
+    pub fn mangameeya_top_down() -> Self {
+        Self {
+            toggle_loupe: Some(Shortcut::new(egui::Key::L, false, false, false)),
+            ..Self::top_down_default()
+        }
+    }
+
     pub fn top_down_default() -> Self {
         Self {
             slide_image_down: Some(Shortcut::new(egui::Key::ArrowDown, false, false, false)),
@@ -506,6 +514,15 @@ impl MouseConfig {
             (MouseButton::Button2, true) => self.button2_held_scroll_up,
             (MouseButton::Button2, false) => self.button2_held_scroll_down,
             _ => MangaAction::None,
+        }
+    }
+
+    /// 縦スクロール表示用のミーヤ風: ホイールは縦スクロールのまま、ほかはミーヤ風と同じ
+    pub fn mangameeya_top_down() -> Self {
+        Self {
+            scroll_up: MangaAction::SlideImageUp,
+            scroll_down: MangaAction::SlideImageDown,
+            ..Self::mangameeya()
         }
     }
 
@@ -693,6 +710,39 @@ pub struct AppSettings {
     pub show_top_bar: bool,
     pub enable_auto_image_byte_fix: bool,
     pub last_page_action: LastPageAction,
+}
+
+impl AppSettings {
+    /// キーとマウスの割り当てを、通常表示・縦スクロール表示ともにミーヤ風にする
+    pub fn apply_mangameeya_controls(&mut self) {
+        self.keys = KeyConfig::mangameeya();
+        self.mouse = MouseConfig::mangameeya();
+        self.double_click_threshold_ms = MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS;
+        self.top_down_keys = KeyConfig::mangameeya_top_down();
+        self.top_down_mouse = MouseConfig::mangameeya_top_down();
+        self.top_down_double_click_threshold_ms = MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS;
+    }
+
+    /// 利用者がページ表示を選んだとき、自動見開きをそれに合わせる。
+    /// 自動見開きはページごとに表示を上書きするので、そのままだと選んだ表示に変えられない
+    pub fn follow_chosen_page_view(&mut self) {
+        let auto_on = self.auto_page_layout_rl || self.auto_page_layout_lr;
+        match self.page_view_options {
+            PageViewOptions::Single => {
+                self.auto_page_layout_rl = false;
+                self.auto_page_layout_lr = false;
+            }
+            PageViewOptions::DoubleRL if auto_on => {
+                self.auto_page_layout_rl = true;
+                self.auto_page_layout_lr = false;
+            }
+            PageViewOptions::DoubleLR if auto_on => {
+                self.auto_page_layout_rl = false;
+                self.auto_page_layout_lr = true;
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Default for AppSettings {

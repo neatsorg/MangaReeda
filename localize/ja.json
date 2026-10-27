@@ -89,7 +89,7 @@
   "settings.control.default_view": "通常表示の操作設定",
   "settings.control.top_down_view": "縦スクロール表示の操作設定",
   "settings.control.preset_mangameeya": "マンガミーヤ風の操作にする",
-  "settings.control.preset_mangameeya.tooltip": "キーとマウスの割り当てを、マンガミーヤのマンガ用設定に近いものに置き換えます（→で次へ、←で前へ、Shift+→/←で次/前のファイル、Enterでフルスクリーン、F8でリピート切り替え、Ctrl+方向キーでスクロール、ホイールでスクロール兼ページ送りなど）。ゲームパッドは変えません",
+  "settings.control.preset_mangameeya.tooltip": "キーとマウスの割り当てを、マンガミーヤのマンガ用設定に近いものに置き換えます（→で次へ、←で前へ、Shift+→/←で次/前のファイル、Enterでフルスクリーン、F8でリピート切り替え、Ctrl+方向キーでスクロール、ホイールでスクロール兼ページ送りなど）。通常表示と縦スクロール表示の両方に適用します（縦スクロール表示では方向キーとホイールは縦スクロールのまま）。ゲームパッドは変えません",
   "settings.control.preset_reset": "既定の操作に戻す",
   "settings.control.preset_reset.tooltip": "このモードのキー・マウス・ゲームパッドの割り当てを MangaReeda の既定に戻します",
   "settings.control.mode_default": "通常",

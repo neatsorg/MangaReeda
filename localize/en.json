@@ -89,7 +89,7 @@
   "settings.control.default_view": "Default View Controls",
   "settings.control.top_down_view": "Top Down View Controls",
   "settings.control.preset_mangameeya": "Use MangaMeeya-style controls",
-  "settings.control.preset_mangameeya.tooltip": "Replace the key and mouse bindings with ones close to MangaMeeya's manga settings (Right for next, Left for previous, Shift+Right/Left for next/previous file, Enter for fullscreen, F8 to cycle repeat mode, Ctrl+arrows to scroll, the wheel to scroll or turn pages, etc.). Gamepad bindings are left unchanged",
+  "settings.control.preset_mangameeya.tooltip": "Replace the key and mouse bindings with ones close to MangaMeeya's manga settings (Right for next, Left for previous, Shift+Right/Left for next/previous file, Enter for fullscreen, F8 to cycle repeat mode, Ctrl+arrows to scroll, the wheel to scroll or turn pages, etc.). Applies to both the normal and the top-down view (the top-down view keeps the arrows and the wheel for vertical scrolling). Gamepad bindings are left unchanged",
   "settings.control.preset_reset": "Restore default controls",
   "settings.control.preset_reset.tooltip": "Restore this mode's key, mouse and gamepad bindings to MangaReeda's defaults",
   "settings.control.mode_default": "Default",

@@ -3,8 +3,7 @@ use super::{
 };
 use crate::config::{
     AppSettings, GamepadButton, GamepadConfig, ImageSizingMode, KeyConfig, LastPageAction,
-    MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS, MangaAction, MouseConfig, PageViewOptions, ResizeMethod,
-    Shortcut, UiLanguage,
+    MangaAction, MouseConfig, PageViewOptions, ResizeMethod, Shortcut, UiLanguage,
 };
 use crate::localize::tr;
 use crate::utils::{
@@ -103,23 +102,21 @@ pub(super) fn render_control_mapping_settings(
     gamepad: &mut GamepadConfig,
     double_click_threshold_ms: &mut u64,
     binding_action: &mut Option<BindingTarget>,
+    mangameeya_requested: &mut bool,
 ) -> bool {
     let mut changed = false;
     let listening_text = tr("common.listening").to_owned();
 
     // 操作の割り当てをまとめて差し替えるボタン
     ui.horizontal_wrapped(|ui| {
-        if profile == ControlProfile::Default
-            && ui
-                .button(tr("settings.control.preset_mangameeya"))
-                .on_hover_text(tr("settings.control.preset_mangameeya.tooltip"))
-                .clicked()
+        // 通常表示と縦スクロール表示の両方を変えるので、ここでは押されたことだけを伝える
+        if ui
+            .button(tr("settings.control.preset_mangameeya"))
+            .on_hover_text(tr("settings.control.preset_mangameeya.tooltip"))
+            .clicked()
         {
-            *keys = KeyConfig::mangameeya();
-            *mouse = MouseConfig::mangameeya();
-            *double_click_threshold_ms = MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS;
             *binding_action = None;
-            changed = true;
+            *mangameeya_requested = true;
         }
         if ui
             .button(tr("settings.control.preset_reset"))
@@ -692,6 +689,7 @@ impl MangaReader {
                                     ui.spacing_mut().slider_width = previous_slider_width - 40.0;
 
                                     if changed {
+                                        self.config.follow_chosen_page_view();
                                         self.reset_buffer();
                                         self.texture_cache.clear();
                                         self.reset_pan();
@@ -1108,6 +1106,7 @@ impl MangaReader {
                                 });
                                 separator_pct(ui);
 
+                                let mut mangameeya_requested = false;
                                 let controls_changed = match self.selected_control_profile {
                                     ControlProfile::Default => render_control_mapping_settings(
                                         ui,
@@ -1117,6 +1116,7 @@ impl MangaReader {
                                         &mut self.config.gamepad,
                                         &mut self.config.double_click_threshold_ms,
                                         &mut self.binding_action,
+                                        &mut mangameeya_requested,
                                     ),
                                     ControlProfile::TopDown => render_control_mapping_settings(
                                         ui,
@@ -1126,9 +1126,13 @@ impl MangaReader {
                                         &mut self.config.top_down_gamepad,
                                         &mut self.config.top_down_double_click_threshold_ms,
                                         &mut self.binding_action,
+                                        &mut mangameeya_requested,
                                     ),
                                 };
-                                if controls_changed {
+                                if mangameeya_requested {
+                                    self.config.apply_mangameeya_controls();
+                                }
+                                if controls_changed || mangameeya_requested {
                                     self.save_settings();
                                 }
 

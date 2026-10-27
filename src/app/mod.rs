@@ -827,6 +827,79 @@ mod tests {
     }
 
     #[test]
+    fn choosing_a_page_view_is_not_undone_by_automatic_layout() {
+        // 縦長のページなので、自動見開きがあると見開きに戻されていた
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                auto_page_layout_rl: true,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
+        // 設定画面で選んだときと同じ手順
+        let choose = |reader: &mut MangaReader, mode| {
+            reader.config.page_view_options = mode;
+            reader.config.follow_chosen_page_view();
+            reader.reset_buffer();
+            reader.texture_cache.clear();
+            reader.load_current_pair(&ctx);
+        };
+
+        // 左から右を選ぶと、自動見開きも左から右になる
+        choose(&mut reader, PageViewOptions::DoubleLR);
+        assert_view(&reader, 0, PageViewOptions::DoubleLR, 2);
+        assert!(reader.config.auto_page_layout_lr && !reader.config.auto_page_layout_rl);
+
+        // 右から左に戻すと、自動見開きも右から左に戻る
+        choose(&mut reader, PageViewOptions::DoubleRL);
+        assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
+        assert!(reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+
+        // 単ページを選ぶと自動見開きは切れる
+        choose(&mut reader, PageViewOptions::Single);
+        assert_eq!(reader.current_index, 0);
+        assert_eq!(reader.config.page_view_options, PageViewOptions::Single);
+        assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+
+        // 自動見開きが切れているときに見開きを選んでも、自動見開きは入らない
+        choose(&mut reader, PageViewOptions::DoubleLR);
+        assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
+    }
+
+    #[test]
+    fn mangameeya_controls_also_give_the_top_down_view_the_loupe() {
+        let mut config = AppSettings::default();
+        config.apply_mangameeya_controls();
+        let l = Some((egui::Key::L, false, false, false));
+        let parts = |s: Option<Shortcut>| s.map(|s| (s.key, s.ctrl, s.alt, s.shift));
+        assert_eq!(parts(config.keys.toggle_loupe), l);
+        assert_eq!(parts(config.top_down_keys.toggle_loupe), l);
+        assert_eq!(config.mouse.button3_click, MangaAction::ToggleLoupe);
+        assert_eq!(
+            config.top_down_mouse.button3_click,
+            MangaAction::ToggleLoupe
+        );
+        // 縦スクロール表示では方向キーとホイールは縦スクロールのまま
+        assert_eq!(
+            parts(config.top_down_keys.slide_image_down),
+            Some((egui::Key::ArrowDown, false, false, false))
+        );
+        assert_eq!(
+            config.top_down_mouse.scroll_down,
+            MangaAction::SlideImageDown
+        );
+        assert_eq!(
+            config.top_down_mouse.button2_held_scroll_up,
+            MangaAction::ZoomIn
+        );
+    }
+
+    #[test]
     fn reopening_a_book_resumes_at_its_bookmark() {
         let parent = TestPages::new(&[]);
         for book in ["a", "b"] {
