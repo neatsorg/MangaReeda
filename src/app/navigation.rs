@@ -535,13 +535,9 @@ impl MangaReader {
         self.show_fading_error(msg);
     }
 
-    /// 右開きで読んでいるか。1ページ表示のときは自動見開きの向きに従い、決まっていなければ右開き
+    /// 右開きで読んでいるか（AppSettings::reads_right_to_left）
     pub(super) fn reads_right_to_left(&self) -> bool {
-        match self.config.page_view_options {
-            PageViewOptions::DoubleLR => false,
-            PageViewOptions::DoubleRL => true,
-            _ => !self.config.auto_page_layout_lr || self.config.auto_page_layout_rl,
-        }
+        self.config.reads_right_to_left()
     }
 
     fn scroll_step(&self) -> scroll::Position {

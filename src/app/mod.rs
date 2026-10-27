@@ -998,10 +998,13 @@ mod tests {
         reader.next_page(&ctx, false);
         assert_view(&reader, 2, PageViewOptions::Single, 1);
 
-        // オフにすると、1ページ表示のページにいても右から左の見開きに戻る
+        // オフにすると、ミーヤと同じく必ず1ページ表示になる
+        // （1ページ表示でも次のページを先読みするので、テクスチャは2枚）
         reader.toggle_auto_page_layout(&ctx);
         assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
-        assert_view(&reader, 2, PageViewOptions::DoubleRL, 2);
+        assert_view(&reader, 2, PageViewOptions::Single, 2);
+        reader.go_to_first_page(&ctx);
+        assert_view(&reader, 0, PageViewOptions::Single, 2);
 
         // 左から右の見開きからオンにすると、左から右の自動見開きになる
         let mut config = AppSettings {
@@ -1010,45 +1013,32 @@ mod tests {
         };
         assert!(config.toggle_auto_page_layout());
         assert!(config.auto_page_layout_lr && !config.auto_page_layout_rl);
-        // 自動見開きが1ページ表示にしていても、向きは左から右のまま
-        config.page_view_options = PageViewOptions::Single;
+        // オフにすると1ページ表示になるが、向きは左から右のまま覚えていて、
+        // もう一度オンにすると左から右の自動見開きになる。再起動しても同じ
         assert!(config.toggle_auto_page_layout());
-        assert_eq!(config.page_view_options, PageViewOptions::DoubleLR);
-
-        // 単ページで読んでいたときは、オフにすると単ページに戻る（ミーヤと同じ）
-        let mut reader = pages.reader(
-            AppSettings {
-                page_view_options: PageViewOptions::Single,
-                enable_animated_images: false,
-                resize_method: ResizeMethod::None,
-                ..AppSettings::default()
-            },
-            &ctx,
-        );
-        reader.toggle_auto_page_layout(&ctx);
-        assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
-        reader.toggle_auto_page_layout(&ctx);
-        assert!(!reader.config.auto_page_layout_rl && !reader.config.auto_page_layout_lr);
-        // 単ページ表示でも次のページを先読みするので、テクスチャは2枚
-        assert_view(&reader, 0, PageViewOptions::Single, 2);
-
-        // 設定画面のチェックボックスで外したときも同じ。戻り先は再起動しても覚えている
-        let mut config = AppSettings {
-            page_view_options: PageViewOptions::Single,
-            ..AppSettings::default()
-        };
-        config.set_auto_page_layout(Some(false));
-        assert_eq!(config.page_view_options, PageViewOptions::DoubleLR);
+        assert_eq!(config.page_view_options, PageViewOptions::Single);
+        assert!(!config.reads_right_to_left());
         let mut config: AppSettings =
             serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert!(config.toggle_auto_page_layout());
+        assert_eq!(config.page_view_options, PageViewOptions::DoubleLR);
+        assert!(config.auto_page_layout_lr && !config.auto_page_layout_rl);
+
+        // 見開きを選んでいてもオフにすれば1ページ表示（設定画面のチェックボックスと同じ処理）
+        config.set_auto_page_layout(None);
+        config.choose_page_view(PageViewOptions::DoubleRL);
+        config.set_auto_page_layout(Some(true));
         config.set_auto_page_layout(None);
         assert_eq!(config.page_view_options, PageViewOptions::Single);
+        assert!(config.reads_right_to_left());
 
-        // 自動見開きのまま見開きを選び直すと、外したときは見開き（今の向き）に戻る
-        config.set_auto_page_layout(Some(true));
-        assert!(config.choose_page_view(PageViewOptions::DoubleRL));
-        config.set_auto_page_layout(None);
-        assert_eq!(config.page_view_options, PageViewOptions::DoubleRL);
+        // 左から右の見開きから1ページ表示を選んでも、向きは左から右のまま
+        let mut config = AppSettings {
+            page_view_options: PageViewOptions::DoubleLR,
+            ..AppSettings::default()
+        };
+        config.choose_page_view(PageViewOptions::Single);
+        assert!(!config.reads_right_to_left());
 
         // 縦スクロール表示では切り替えない
         let mut config = AppSettings {

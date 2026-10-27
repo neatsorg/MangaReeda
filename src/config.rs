@@ -705,11 +705,9 @@ pub struct AppSettings {
     pub auto_page_layout_rl: bool,
     #[serde(default)]
     pub auto_page_layout_lr: bool,
-    /// 自動見開きをオンにする前のページ表示。オフにしたらこれに戻す。
-    /// ミーヤの自動見開きは1ページ／2ページ表示の設定に上乗せされるもので、
-    /// オフにするとその設定に戻る（MM-VIEW-01, 03）
+    /// 左から右に読むか。1ページ表示のときの読む向きで、自動見開きをオフにしても向きを忘れないようにする
     #[serde(default)]
-    pub page_view_before_auto: Option<PageViewOptions>,
+    pub left_to_right: bool,
     #[serde(default)]
     pub image_sizing_mode: ImageSizingMode,
     #[serde(default)]
@@ -781,51 +779,51 @@ impl AppSettings {
         self.top_down_double_click_threshold_ms = MANGAMEEYA_DOUBLE_CLICK_THRESHOLD_MS;
     }
 
-    /// 自動見開きのオン・オフを切り替える（MM-IN-K05）。今の読む向きでオンにし、
-    /// オフにしたときはオンにする前のページ表示に戻す。縦スクロール表示では何もせず false を返す
-    pub fn toggle_auto_page_layout(&mut self) -> bool {
-        let right_to_left = match self.page_view_options {
-            PageViewOptions::TopDown => return false,
+    /// 右から左に読んでいるか。見開きならその向き、1ページ表示なら自動見開きの向き、
+    /// どちらも無ければ覚えている向き
+    pub fn reads_right_to_left(&self) -> bool {
+        match self.page_view_options {
             PageViewOptions::DoubleLR => false,
             PageViewOptions::DoubleRL => true,
-            PageViewOptions::Single => !self.auto_page_layout_lr,
-        };
+            _ if self.auto_page_layout_rl => true,
+            _ if self.auto_page_layout_lr => false,
+            _ => !self.left_to_right,
+        }
+    }
+
+    /// 自動見開きのオン・オフを切り替える（MM-IN-K05）。縦スクロール表示では何もせず false を返す
+    pub fn toggle_auto_page_layout(&mut self) -> bool {
+        if self.page_view_options == PageViewOptions::TopDown {
+            return false;
+        }
         if self.auto_page_layout_rl || self.auto_page_layout_lr {
             self.set_auto_page_layout(None);
         } else {
-            self.set_auto_page_layout(Some(right_to_left));
+            self.set_auto_page_layout(Some(self.reads_right_to_left()));
         }
         true
     }
 
     /// 自動見開きを `right_to_left` の向きでオンにする。None ならオフにして、
-    /// オンにする前のページ表示に戻す（見開きだったときは今の読む向きの見開き）
+    /// ミーヤと同じく1ページ表示にする（読む向きは覚えておく）
     pub fn set_auto_page_layout(&mut self, right_to_left: Option<bool>) {
         let was_on = self.auto_page_layout_rl || self.auto_page_layout_lr;
-        let double = |right_to_left| {
-            if right_to_left {
-                PageViewOptions::DoubleRL
-            } else {
-                PageViewOptions::DoubleLR
-            }
-        };
         match right_to_left {
             Some(right_to_left) => {
-                if !was_on {
-                    self.page_view_before_auto = Some(self.page_view_options);
-                }
                 self.auto_page_layout_rl = right_to_left;
                 self.auto_page_layout_lr = !right_to_left;
-                self.page_view_options = double(right_to_left);
+                self.left_to_right = !right_to_left;
+                self.page_view_options = if right_to_left {
+                    PageViewOptions::DoubleRL
+                } else {
+                    PageViewOptions::DoubleLR
+                };
             }
             None if was_on => {
-                let right_to_left = !self.auto_page_layout_lr;
+                self.left_to_right = self.auto_page_layout_lr;
                 self.auto_page_layout_rl = false;
                 self.auto_page_layout_lr = false;
-                self.page_view_options = match self.page_view_before_auto.take() {
-                    Some(view @ (PageViewOptions::Single | PageViewOptions::TopDown)) => view,
-                    _ => double(right_to_left),
-                };
+                self.page_view_options = PageViewOptions::Single;
             }
             None => {}
         }
@@ -838,13 +836,15 @@ impl AppSettings {
 
     /// 利用者がページ表示を選んだとき。自動見開きがオンでも、オンのまま今のページを選んだ表示にする。
     /// 次にページをめくると自動見開きがまた表示を決める（ミーヤと同じ）。
-    /// 選んだ表示は自動見開きをオフにしたときの戻り先にもなり、見開きなら自動見開きの向きもそれに合わせる。
+    /// 見開きを選んだら、読む向き（自動見開きの向きも）をそれに合わせる。
     /// 自動見開きより選んだ表示を優先する（次のページ送りまで）なら true を返す
     pub fn choose_page_view(&mut self, view: PageViewOptions) -> bool {
         let overrides_auto = self.auto_page_layout_applies() && view != PageViewOptions::TopDown;
-        if overrides_auto {
-            self.page_view_before_auto = Some(view);
-            if view != PageViewOptions::Single {
+        // 1ページ表示にしても、それまでの向きで読み続ける
+        self.left_to_right = !self.reads_right_to_left();
+        if matches!(view, PageViewOptions::DoubleRL | PageViewOptions::DoubleLR) {
+            self.left_to_right = view == PageViewOptions::DoubleLR;
+            if overrides_auto {
                 self.auto_page_layout_rl = view == PageViewOptions::DoubleRL;
                 self.auto_page_layout_lr = view == PageViewOptions::DoubleLR;
             }
@@ -861,7 +861,7 @@ impl Default for AppSettings {
             page_view_options: PageViewOptions::DoubleRL,
             auto_page_layout_rl: false,
             auto_page_layout_lr: false,
-            page_view_before_auto: None,
+            left_to_right: false,
             image_sizing_mode: ImageSizingMode::FitHeight,
             spread_center_offset: 0.0,
             cover_blank_page: false,
