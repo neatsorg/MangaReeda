@@ -396,6 +396,18 @@ impl MangaReader {
         }
     }
 
+    /// リピート状態（冊の端に来たときの動作）を順に切り替えて保存する（MM-NAV-20）
+    pub(super) fn cycle_last_page_action(&mut self) {
+        self.config.last_page_action = self.config.last_page_action.next_in_cycle();
+        self.save_settings();
+        let msg = match self.config.last_page_action {
+            LastPageAction::Nothing => tr("mode.repeat_off"),
+            LastPageAction::ToFirstPage => tr("mode.repeat_on"),
+            LastPageAction::GotoNextFile => tr("mode.repeat_folder"),
+        };
+        self.show_fading_error(msg);
+    }
+
     pub(super) fn reset_buffer(&mut self) {
         self.last_buffered_index = None;
         self.buffer_prev = [None, None];

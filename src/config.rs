@@ -23,6 +23,17 @@ pub enum LastPageAction {
     Nothing,
 }
 
+impl LastPageAction {
+    /// リピート状態の切り替え順（MM-NAV-20）: 非リピート → リピート → フォルダ移動 → 非リピート…
+    pub fn next_in_cycle(self) -> Self {
+        match self {
+            Self::Nothing => Self::ToFirstPage,
+            Self::ToFirstPage => Self::GotoNextFile,
+            Self::GotoNextFile => Self::Nothing,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
 pub enum UiLanguage {
     English,
@@ -130,10 +141,11 @@ pub enum MangaAction {
     ViewMode,
     OpenFile,
     QuitApp,
+    CycleLastPageAction,
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -155,6 +167,7 @@ impl MangaAction {
         Self::ViewMode,
         Self::OpenFile,
         Self::QuitApp,
+        Self::CycleLastPageAction,
     ];
 }
 
@@ -253,6 +266,13 @@ pub struct KeyConfig {
     pub view_mode: Option<Shortcut>,
     pub open_file: Option<Shortcut>,
     pub quit_app: Option<Shortcut>,
+    #[serde(default = "default_cycle_last_page_action_key")]
+    pub cycle_last_page_action: Option<Shortcut>,
+}
+
+// 既存の設定ファイルにこの項目が無いときもミーヤと同じ F8 を割り当てる
+fn default_cycle_last_page_action_key() -> Option<Shortcut> {
+    Some(Shortcut::new(egui::Key::F8, false, false, false))
 }
 
 impl Default for KeyConfig {
@@ -276,6 +296,7 @@ impl Default for KeyConfig {
             view_mode: Some(Shortcut::new(egui::Key::Enter, false, false, false)),
             open_file: Some(Shortcut::new(egui::Key::O, false, false, false)),
             quit_app: Some(Shortcut::new(egui::Key::Escape, false, false, false)),
+            cycle_last_page_action: default_cycle_last_page_action_key(),
         }
     }
 }
@@ -301,6 +322,7 @@ impl KeyConfig {
             view_mode: Some(Shortcut::new(egui::Key::Enter, false, false, false)),
             open_file: Some(Shortcut::new(egui::Key::O, false, false, false)),
             quit_app: Some(Shortcut::new(egui::Key::Escape, false, false, false)),
+            cycle_last_page_action: default_cycle_last_page_action_key(),
         }
     }
 }

@@ -90,6 +90,7 @@ pub fn action_label(action: MangaAction) -> &'static str {
         MangaAction::ViewMode => tr("action.view_mode"),
         MangaAction::OpenFile => tr("action.open_file"),
         MangaAction::QuitApp => tr("action.quit_app"),
+        MangaAction::CycleLastPageAction => tr("action.cycle_last_page_action"),
     }
 }
 

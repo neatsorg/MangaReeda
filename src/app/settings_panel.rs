@@ -205,6 +205,11 @@ pub(super) fn render_control_mapping_settings(
                         &mut keys.open_file,
                     ),
                     (tr("settings.key.quit_app"), "Quit App", &mut keys.quit_app),
+                    (
+                        tr("settings.key.cycle_last_page_action"),
+                        "Cycle Last Page Action",
+                        &mut keys.cycle_last_page_action,
+                    ),
                 ] {
                     ui.label(label);
                     render_binding_button(

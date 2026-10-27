@@ -233,7 +233,7 @@ impl eframe::App for MangaReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AppSettings, LastPageAction, PageViewOptions, ResizeMethod};
+    use crate::config::{AppSettings, LastPageAction, PageViewOptions, ResizeMethod, Shortcut};
     use crate::engine::layout::automatic_pair_count;
     use std::fs;
     use std::path::PathBuf;
@@ -495,6 +495,41 @@ mod tests {
         let config: AppSettings = serde_json::from_value(json).unwrap();
         assert_eq!(config.last_page_action, LastPageAction::GotoNextFile);
         assert!(config.show_top_bar);
+    }
+
+    #[test]
+    fn repeat_mode_cycles_off_loop_folder() {
+        let order = [
+            LastPageAction::Nothing,
+            LastPageAction::ToFirstPage,
+            LastPageAction::GotoNextFile,
+        ];
+        for (index, action) in order.iter().enumerate() {
+            assert_eq!(action.next_in_cycle(), order[(index + 1) % order.len()]);
+        }
+    }
+
+    #[test]
+    fn settings_without_repeat_key_default_to_f8() {
+        let mut json = serde_json::to_value(AppSettings::default()).unwrap();
+        for keys in ["keys", "top_down_keys"] {
+            json[keys]
+                .as_object_mut()
+                .unwrap()
+                .remove("cycle_last_page_action");
+        }
+        let config: AppSettings = serde_json::from_value(json).unwrap();
+        // Shortcut は Debug を持たないので、比較できる組に直す
+        let parts = |s: Option<Shortcut>| s.map(|s| (s.key, s.ctrl, s.alt, s.shift));
+        let f8 = Some((egui::Key::F8, false, false, false));
+        assert_eq!(parts(config.keys.cycle_last_page_action), f8);
+        assert_eq!(parts(config.top_down_keys.cycle_last_page_action), f8);
+
+        // 利用者が割り当てを外した（null の）ときは外したままにする
+        let mut json = serde_json::to_value(AppSettings::default()).unwrap();
+        json["keys"]["cycle_last_page_action"] = serde_json::Value::Null;
+        let config: AppSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(parts(config.keys.cycle_last_page_action), None);
     }
 
     #[test]

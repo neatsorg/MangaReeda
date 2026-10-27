@@ -58,6 +58,9 @@ impl MangaReader {
                                     "View Mode" => keys.view_mode = Some(new_shortcut),
                                     "Open File" => keys.open_file = Some(new_shortcut),
                                     "Quit App" => keys.quit_app = Some(new_shortcut),
+                                    "Cycle Last Page Action" => {
+                                        keys.cycle_last_page_action = Some(new_shortcut)
+                                    }
                                     _ => {}
                                 }
                                 self.binding_action = None;
@@ -140,6 +143,9 @@ impl MangaReader {
                 }
                 if is_triggered(&keys.quit_app) {
                     action_to_run = MangaAction::QuitApp;
+                }
+                if is_triggered(&keys.cycle_last_page_action) {
+                    action_to_run = MangaAction::CycleLastPageAction;
                 }
             });
         }
@@ -473,6 +479,7 @@ impl MangaReader {
                 self.save_settings();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            MangaAction::CycleLastPageAction => self.cycle_last_page_action(),
             MangaAction::None => {}
         }
     }
