@@ -99,8 +99,6 @@ pub struct MangaReader {
     /// reset_pan のあと、ページを読み始めの位置に合わせるのを待っている
     pan_to_start_pending: bool,
     loupe_enabled: bool,
-    /// 先頭ページ挿入で1枚目の隣に置く白紙
-    cover_blank: Option<egui::TextureHandle>,
     /// このフレームで描いたページ。ルーペはこれを拡大して描く
     drawn_pages: Vec<view::DrawnPage>,
     pending_mouse_click: [Option<(Instant, MangaAction)>; 5],
@@ -189,7 +187,6 @@ impl MangaReader {
             mouse_chord_used: [false; 5],
             pan_to_start_pending: false,
             loupe_enabled: false,
-            cover_blank: None,
             drawn_pages: Vec::new(),
             pending_mouse_click: [None; 5],
             gamepad: Gilrs::new().ok(),
@@ -460,6 +457,95 @@ mod tests {
         reader.update_buffers(&ctx);
         reader.prev_page(&ctx, false);
         assert_eq!(view(&reader), [1, 2]);
+    }
+
+    #[test]
+    fn last_lone_page_is_paired_with_a_blank_like_mangameeya() {
+        // 実機 の odd.zip・mixed.zip での観察（2026-10-27）。白紙は後に読む側（右開きなら左）
+        let (p, l) = ([10, 20], [20, 10]);
+        let odd = TestPages::new(&[p; 9]);
+        let mixed = TestPages::new(&[p, p, p, l, p, l, p, p, l, l, p, p, p]);
+        let ctx = egui::Context::default();
+        let config = |auto: bool, cover_blank_page: bool| AppSettings {
+            auto_page_layout_rl: auto,
+            cover_blank_page,
+            enable_animated_images: false,
+            resize_method: ResizeMethod::None,
+            last_page_action: LastPageAction::Nothing,
+            image_delay: 0,
+            ..AppSettings::default()
+        };
+        // 右開きでは textures[0] が右、textures[1] が左
+        let trailing_blank = |reader: &MangaReader| {
+            reader.textures[0].is_some()
+                && !reader.is_cover_blank(&reader.textures[0])
+                && reader.is_cover_blank(&reader.textures[1])
+        };
+
+        // 2ページ表示: 最後の (9) は白紙と並ぶ。戻ると白紙は消える
+        let mut reader = odd.reader(config(false, false), &ctx);
+        for _ in 0..4 {
+            reader.update_buffers(&ctx);
+            reader.next_page(&ctx, false);
+        }
+        assert_eq!(reader.current_index, 8);
+        assert!(trailing_blank(&reader));
+        reader.update_buffers(&ctx);
+        reader.prev_page(&ctx, false);
+        assert_eq!(reader.current_index, 6);
+        assert!(!reader.is_cover_blank(&reader.textures[1]));
+        reader.go_to_last_page(&ctx);
+        assert!(trailing_blank(&reader));
+
+        // 自動見開きでは、最後の (9) は単ページ
+        let mut reader = odd.reader(config(true, false), &ctx);
+        reader.go_to_last_page(&ctx);
+        assert_eq!(reader.current_index, 8);
+        assert!(!reader.is_cover_blank(&reader.textures[1]));
+
+        // 1枚目を単独で中央に見せる奇数ページ開始では、最後の1枚も白紙と並べない
+        let pages = TestPages::new(&[p; 10]);
+        let mut reader = pages.reader(config(false, false), &ctx);
+        reader.change_shifted_mode(&ctx);
+        reader.go_to_last_page(&ctx);
+        assert_eq!(reader.current_index, 9);
+        assert!(!reader.is_cover_blank(&reader.textures[1]));
+
+        // 先頭ページ挿入と自動見開き: (白紙,1) … (11,12) (13,白紙)。途中の (5) は単ページのまま
+        let mut reader = mixed.reader(config(true, true), &ctx);
+        reader.change_shifted_mode(&ctx);
+        assert!(reader.is_cover_blank(&reader.textures[0]));
+        let mut seen_trailing = Vec::new();
+        for _ in 0..9 {
+            reader.update_buffers(&ctx);
+            reader.next_page(&ctx, false);
+            if reader.is_cover_blank(&reader.textures[1]) {
+                seen_trailing.push(reader.current_index + 1);
+            }
+        }
+        assert_eq!(reader.current_index, 12);
+        assert_eq!(seen_trailing, [13]);
+        assert!(trailing_blank(&reader));
+        // 先頭まで戻ると、先頭の白紙が正しく並ぶ
+        for _ in 0..9 {
+            reader.update_buffers(&ctx);
+            reader.prev_page(&ctx, false);
+        }
+        assert_eq!(reader.current_index, 0);
+        assert!(reader.is_cover_blank(&reader.textures[0]));
+        assert!(!reader.is_cover_blank(&reader.textures[1]));
+
+        // 2ページだけの本で、先頭と最後の白紙を行き来しても取り違えない
+        let pages = TestPages::new(&[p; 2]);
+        let mut reader = pages.reader(config(false, true), &ctx);
+        reader.change_shifted_mode(&ctx);
+        reader.update_buffers(&ctx);
+        reader.next_page(&ctx, false);
+        assert!(trailing_blank(&reader));
+        reader.update_buffers(&ctx);
+        reader.prev_page(&ctx, false);
+        assert!(reader.is_cover_blank(&reader.textures[0]));
+        assert!(!reader.is_cover_blank(&reader.textures[1]));
     }
 
     #[test]
@@ -1009,8 +1095,8 @@ mod tests {
         };
         let mut reader = pages.reader(config(), &ctx);
         let rl = PageViewOptions::DoubleRL;
-        // 見開きは (0,1), (2,3)… なので、最後の44ページ目は単独
-        for (index, count) in [(20, 2), (40, 2), (44, 1), (44, 1)] {
+        // 見開きは (0,1), (2,3)… なので、最後の44ページ目は白紙と並ぶ
+        for (index, count) in [(20, 2), (40, 2), (44, 2), (44, 2)] {
             reader.jump_pages(true, &ctx);
             assert_view(&reader, index, rl, count);
         }
@@ -1668,7 +1754,9 @@ mod tests {
         assert_view(&reader, 0, PageViewOptions::DoubleRL, 2);
         reader.update_buffers(&ctx);
         reader.next_page(&ctx, false);
-        assert_view(&reader, 2, PageViewOptions::DoubleRL, 1);
+        // 最後の1枚は白紙と並ぶ
+        assert_view(&reader, 2, PageViewOptions::DoubleRL, 2);
+        assert!(reader.is_cover_blank(&reader.textures[1]));
 
         reader.config.auto_page_layout_rl = true;
         reader.config.page_view_options = PageViewOptions::TopDown;

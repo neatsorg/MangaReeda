@@ -2,6 +2,8 @@ use super::{MangaReader, ZOOM_MAX, ZOOM_MIN, ZOOM_RELOAD_DELAY, ZOOM_STEP};
 
 /// 先頭ページ挿入の白紙のテクスチャの長辺（ピクセル）
 const COVER_BLANK_MAX_SIDE: f32 = 64.0;
+/// 白紙のテクスチャの名前。ページのテクスチャはファイル名なので重ならない
+const BLANK_TEXTURE_NAME: &str = "mangareeda:blank";
 /// ルーペの円を近似する多角形の頂点数
 const LOUPE_SEGMENTS: usize = 96;
 use crate::config::{ImageSizingMode, PageViewOptions};
@@ -283,16 +285,62 @@ impl MangaReader {
             && !self.is_single_page()
     }
 
-    pub(super) fn is_cover_blank(&self, texture: &Option<egui::TextureHandle>) -> bool {
-        match (texture, &self.cover_blank) {
-            (Some(texture), Some(blank)) => texture.id() == blank.id(),
-            _ => false,
+    /// 最後の1枚を白紙と並べて見開きで見せる状態か（MM-NAV-01）。ミーヤと同じく、
+    /// 2ページ表示ではいつも、自動見開きでは先頭ページ挿入のときだけ（観察リスト4, 5）。
+    /// 1枚目を単独で中央に見せる設定のときは、最後の1枚も白紙と並べない
+    pub(super) fn last_page_paired_with_blank(&self) -> bool {
+        if self.is_single_page()
+            || self.image_files.len().checked_sub(1) != Some(self.current_index)
+            || (self.is_shifted && self.current_index == 0)
+        {
+            return false;
+        }
+        let inserting_blank = self.is_shifted && self.config.cover_blank_page;
+        if self.automatic_page_direction().is_some() {
+            inserting_blank
+        } else {
+            inserting_blank || !self.is_shifted
         }
     }
 
-    /// 表示中の2枚を、先頭ページ挿入の状態に合わせる。
-    /// 白紙は「先に読む側」（右開きなら右）に置き、1枚目をその隣に移す
+    /// 先頭や最後に並べた白紙か。白紙は作るたびに別のテクスチャになるので、名前で見分ける
+    pub(super) fn is_cover_blank(&self, texture: &Option<egui::TextureHandle>) -> bool {
+        texture
+            .as_ref()
+            .is_some_and(|texture| texture.name() == BLANK_TEXTURE_NAME)
+    }
+
+    /// `page` と同じ縦横比の白紙（色が一様なので小さくてよい）
+    fn blank_like(&self, page: &egui::TextureHandle, ctx: &egui::Context) -> egui::TextureHandle {
+        let [width, height] = page.size();
+        let scale = COVER_BLANK_MAX_SIDE / width.max(height).max(1) as f32;
+        let size = [
+            ((width as f32 * scale).round() as usize).max(1),
+            ((height as f32 * scale).round() as usize).max(1),
+        ];
+        ctx.load_texture(
+            BLANK_TEXTURE_NAME,
+            egui::ColorImage::new(size, vec![egui::Color32::WHITE; size[0] * size[1]]),
+            egui::TextureOptions::LINEAR,
+        )
+    }
+
+    /// 表示中の2枚を、先頭ページ挿入と最後の1枚の白紙の状態に合わせる。
+    /// 白紙はどちらも読む順で来る側に置く: 先頭は「先に読む側」（右開きなら右）に置いて1枚目をその隣に移し、
+    /// 最後は「後に読む側」（右開きなら左）に置く
     pub(super) fn sync_cover_blank(&mut self, ctx: &egui::Context) {
+        let want_trailing = self.last_page_paired_with_blank();
+        let has_trailing = self.is_cover_blank(&self.textures[1]);
+        if has_trailing && !want_trailing {
+            self.textures[1] = None;
+        } else if want_trailing
+            && !has_trailing
+            && self.textures[1].is_none()
+            && let Some(page) = self.textures[0].clone()
+        {
+            self.textures[1] = Some(self.blank_like(&page, ctx));
+        }
+
         let want_blank = self.cover_paired_with_blank();
         let has_blank = self.is_cover_blank(&self.textures[0]);
         if has_blank && want_blank && self.textures[1].is_some() {
@@ -311,19 +359,8 @@ impl MangaReader {
             let Some(cover) = self.textures[0].take() else {
                 return;
             };
-            // 白紙は1枚目と同じ縦横比にする（色が一様なので小さくてよい）
-            let [width, height] = cover.size();
-            let scale = COVER_BLANK_MAX_SIDE / width.max(height).max(1) as f32;
-            let size = [
-                ((width as f32 * scale).round() as usize).max(1),
-                ((height as f32 * scale).round() as usize).max(1),
-            ];
-            let blank = ctx.load_texture(
-                "cover_blank",
-                egui::ColorImage::new(size, vec![egui::Color32::WHITE; size[0] * size[1]]),
-                egui::TextureOptions::LINEAR,
-            );
-            self.cover_blank = Some(blank.clone());
+            // 白紙は1枚目と同じ縦横比にする
+            let blank = self.blank_like(&cover, ctx);
             self.textures = [Some(blank), Some(cover)];
         }
     }
