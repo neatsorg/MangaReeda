@@ -345,10 +345,8 @@ impl MangaReader {
                             );
                             self.is_scrubbing = slider.dragged();
                             if slider.changed() {
-                                self.current_index = page_val - 1;
-                                self.reset_buffer();
-                                self.reset_pan();
-                                self.load_current_pair(ctx);
+                                // ほかのページ移動と同じく、分割表示の半分などの状態も戻す
+                                self.go_to_page(page_val - 1, ctx);
                             }
 
                             // --- Hide Button ---
