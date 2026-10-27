@@ -79,13 +79,37 @@ impl MangaReader {
             PageViewOptions::Single
         };
         if self.automatic_page_count(self.current_index) == 1 {
+            // 先頭ページ挿入の白紙が入っていると、スロット1は1枚目なので、先に白紙を外す
+            if self.is_cover_blank(&self.textures[0]) {
+                self.textures = [self.textures[1].take(), None];
+            }
             self.textures[1] = None;
             self.active_animations[1] = None;
             self.active_animation_keys[1] = None;
         }
     }
 
+    /// 固定の見開き（自動見開きでない）では、見開きの組の先頭に位置を合わせる。
+    /// 1ページ表示から切り替えたときなどに、組が1枚ずれたままになるのを防ぐ
+    fn align_to_spread_start(&mut self) {
+        if self.is_single_page() || self.automatic_page_direction().is_some() {
+            return;
+        }
+        let index = self.current_index;
+        self.current_index = if self.is_shifted {
+            // 1枚目だけ単独で、以降は (1,2), (3,4)…
+            if index == 0 || index % 2 == 1 {
+                index
+            } else {
+                index - 1
+            }
+        } else {
+            index - index % 2
+        };
+    }
+
     pub(super) fn load_current_pair(&mut self, ctx: &egui::Context) {
+        self.align_to_spread_start();
         self.textures = self.load_pair(self.current_index, ctx);
         self.apply_automatic_page_layout();
         self.sync_cover_blank(ctx);
@@ -205,6 +229,8 @@ impl MangaReader {
                 self.textures = std::mem::take(&mut self.buffer_next);
             } else {
                 // Fallback if buffer wasn't ready (e.g., very fast clicking)
+                // 前のページの先読みは古いページのままなので捨てる（残すと「前へ」で古いページが出る）
+                self.buffer_prev = [None, None];
                 self.load_current_pair(ctx);
             }
             self.buffer_next = [None, None];
@@ -259,6 +285,8 @@ impl MangaReader {
                 self.buffer_next = std::mem::take(&mut self.textures);
                 self.textures = std::mem::take(&mut self.buffer_prev);
             } else {
+                // 次のページの先読みは古いページのままなので捨てる
+                self.buffer_next = [None, None];
                 self.load_current_pair(ctx);
             }
             self.buffer_prev = [None, None];

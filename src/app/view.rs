@@ -253,11 +253,21 @@ impl MangaReader {
     /// 表示中の2枚を、先頭ページ挿入の状態に合わせる。
     /// 白紙は「先に読む側」（右開きなら右）に置き、1枚目をその隣に移す
     pub(super) fn sync_cover_blank(&mut self, ctx: &egui::Context) {
+        let want_blank = self.cover_paired_with_blank();
         let has_blank = self.is_cover_blank(&self.textures[0]);
-        if self.cover_paired_with_blank() {
-            if has_blank {
-                return;
+        if has_blank && want_blank && self.textures[1].is_some() {
+            return;
+        }
+        if has_blank {
+            // いったん白紙を外して、1枚目を元の位置に戻す
+            self.textures = [self.textures[1].take(), None];
+            if self.textures[0].is_none() && self.current_index < self.image_files.len() {
+                // 白紙だけが残っていた（1枚目が失われていた）ときは読み直す
+                self.textures = self.load_pair(self.current_index, ctx);
+                self.apply_automatic_page_layout();
             }
+        }
+        if want_blank {
             let Some(cover) = self.textures[0].take() else {
                 return;
             };
@@ -275,9 +285,6 @@ impl MangaReader {
             );
             self.cover_blank = Some(blank.clone());
             self.textures = [Some(blank), Some(cover)];
-        } else if has_blank {
-            // 設定を切ったときなど: 1枚目を元の位置に戻す
-            self.textures = [self.textures[1].take(), None];
         }
     }
 

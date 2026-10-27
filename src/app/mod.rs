@@ -975,6 +975,91 @@ mod tests {
         }
     }
 
+    fn shown_pages(reader: &MangaReader) -> Vec<String> {
+        reader.textures.iter().flatten().map(|t| t.name()).collect()
+    }
+
+    #[test]
+    fn automatic_layout_keeps_the_cover_next_to_its_blank() {
+        // 先読みから白紙と1枚目の組が戻ってきたとき、自動見開きが「1枚だけ」と判断して
+        // スロット1（1枚目）を消し、白紙だけが残っていた
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                auto_page_layout_rl: true,
+                cover_blank_page: true,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        reader.change_shifted_mode(&ctx);
+        assert!(reader.is_cover_blank(&reader.textures[0]));
+        reader.apply_automatic_page_layout();
+        reader.sync_cover_blank(&ctx);
+        assert!(reader.is_cover_blank(&reader.textures[0]));
+        assert_eq!(shown_pages(&reader)[1], reader.image_files[0]);
+
+        // 白紙だけが残っていても、1枚目を読み直して並べ直す
+        reader.textures[1] = None;
+        reader.sync_cover_blank(&ctx);
+        assert_eq!(shown_pages(&reader)[1], reader.image_files[0]);
+    }
+
+    #[test]
+    fn previous_page_after_an_unbuffered_turn_shows_the_right_pages() {
+        // 先読みが間に合わずに直接読んだあと、前のページの先読みに古いページが残っていた
+        let pages = TestPages::new(&[[10, 20]; 6]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::DoubleRL,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        reader.update_buffers(&ctx);
+        reader.next_page(&ctx, false); // 先読みを使って 2〜3 へ
+        reader.next_page(&ctx, false); // 先読みなしで 4〜5 へ
+        assert_eq!(reader.current_index, 4);
+        reader.prev_page(&ctx, false);
+        assert_eq!(reader.current_index, 2);
+        assert_eq!(shown_pages(&reader), reader.image_files[2..4]);
+    }
+
+    #[test]
+    fn switching_to_a_spread_realigns_the_pairs() {
+        // 奇数ページ開始の1ページ表示で偶数番目にいるとき見開きに切り替えると、組が1枚ずれていた
+        let pages = TestPages::new(&[[10, 20]; 6]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        reader.change_shifted_mode(&ctx);
+        reader.go_to_page(2, &ctx);
+        reader.config.page_view_options = PageViewOptions::DoubleRL;
+        reader.reset_buffer();
+        reader.load_current_pair(&ctx);
+        // 奇数ページ開始の組は (1,2), (3,4)…
+        assert_eq!(reader.current_index, 1);
+        assert_eq!(shown_pages(&reader), reader.image_files[1..3]);
+
+        // 偶数ページ開始では (0,1), (2,3)…
+        reader.change_shifted_mode(&ctx);
+        reader.go_to_page(3, &ctx);
+        assert_eq!(reader.current_index, 2);
+    }
+
     #[test]
     fn reopening_a_book_resumes_at_its_bookmark() {
         let parent = TestPages::new(&[]);
