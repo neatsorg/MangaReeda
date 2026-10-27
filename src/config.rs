@@ -726,6 +726,11 @@ fn default_settings_button_x_offset() -> f32 {
     0.0
 }
 
+// 既存の設定ファイルにこの項目が無いときも、ミーヤと同じく下に置く
+fn default_toolbar_at_bottom() -> bool {
+    true
+}
+
 fn default_top_toolbar_scale() -> f32 {
     1.0
 }
@@ -803,6 +808,9 @@ pub struct AppSettings {
     #[serde(default = "default_top_toolbar_scale")]
     pub top_toolbar_scale: f32,
     pub show_top_bar: bool,
+    /// ツールバーを画面の下に置く（ミーヤと同じ）。偽なら上
+    #[serde(default = "default_toolbar_at_bottom")]
+    pub toolbar_at_bottom: bool,
     pub enable_auto_image_byte_fix: bool,
     pub last_page_action: LastPageAction,
     #[serde(default)]
@@ -958,6 +966,7 @@ impl Default for AppSettings {
             settings_button_y_offset: default_settings_button_y_offset(),
             top_toolbar_scale: default_top_toolbar_scale(),
             show_top_bar: true,
+            toolbar_at_bottom: default_toolbar_at_bottom(),
             enable_auto_image_byte_fix: true,
             last_page_action: LastPageAction::GotoNextFile,
             subfolder_mode: SubfolderMode::Ask,

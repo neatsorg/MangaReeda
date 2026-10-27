@@ -108,6 +108,8 @@ pub struct MangaReader {
     selected_control_profile: ControlProfile,
     settings_toggle_last_visible_at: Instant,
     fullscreen_top_chrome_visible: bool,
+    /// 全画面で、下に置いたツールバーを出しているか
+    fullscreen_bottom_toolbar_visible: bool,
     history: History,
     /// 履歴の保存先。None なら保存しない（テスト用）
     history_path: Option<PathBuf>,
@@ -202,6 +204,7 @@ impl MangaReader {
             selected_control_profile: ControlProfile::Default,
             settings_toggle_last_visible_at: Instant::now(),
             fullscreen_top_chrome_visible: false,
+            fullscreen_bottom_toolbar_visible: false,
             history: History::default(),
             history_path: None,
             subfolder_question: None,
@@ -257,7 +260,7 @@ impl eframe::App for MangaReader {
 
         self.render_settings_panel(ctx);
         self.render_settings_toggle(ctx);
-        self.render_top_toolbar(ctx);
+        self.render_toolbar(ctx);
         self.tick_auto_scroll(ctx, action_to_run);
 
         if self.thumbnails.is_some() {
@@ -1868,6 +1871,20 @@ mod tests {
         for (index, action) in order.iter().enumerate() {
             assert_eq!(action.next_in_cycle(), order[(index + 1) % order.len()]);
         }
+    }
+
+    #[test]
+    fn toolbar_goes_to_the_bottom_unless_chosen_otherwise() {
+        // 既存の設定ファイルに項目が無くても、ミーヤと同じく下に置く
+        let mut json = serde_json::to_value(AppSettings::default()).unwrap();
+        json.as_object_mut().unwrap().remove("toolbar_at_bottom");
+        let config: AppSettings = serde_json::from_value(json).unwrap();
+        assert!(config.toolbar_at_bottom);
+        // 上を選んだら上のまま
+        let mut json = serde_json::to_value(AppSettings::default()).unwrap();
+        json["toolbar_at_bottom"] = serde_json::Value::Bool(false);
+        let config: AppSettings = serde_json::from_value(json).unwrap();
+        assert!(!config.toolbar_at_bottom);
     }
 
     #[test]

@@ -1018,6 +1018,15 @@ impl MangaReader {
                                     &mut self.config.show_top_bar,
                                     tr("settings.show_toolbar"),
                                 );
+                                if ui
+                                    .checkbox(
+                                        &mut self.config.toolbar_at_bottom,
+                                        tr("settings.toolbar_at_bottom"),
+                                    )
+                                    .changed()
+                                {
+                                    self.save_settings();
+                                }
                                 // setting for auto hide the setting button
                                 if ui
                                     .checkbox(

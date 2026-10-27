@@ -14,6 +14,7 @@ impl MangaReader {
         self.is_fullscreen = fullscreen;
         if !fullscreen {
             self.fullscreen_top_chrome_visible = false;
+            self.fullscreen_bottom_toolbar_visible = false;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fullscreen));
     }
@@ -22,25 +23,42 @@ impl MangaReader {
         self.set_fullscreen(!self.is_fullscreen, ctx);
     }
 
+    /// 全画面で、マウスを画面の端に近づけたときだけタイトルバーとツールバーを出す。
+    /// タイトルバーは上端、ツールバーは置いている側の端で出す
     pub(super) fn update_fullscreen_top_chrome_visibility(&mut self, ctx: &egui::Context) {
         if !self.is_fullscreen {
             self.fullscreen_top_chrome_visible = false;
+            self.fullscreen_bottom_toolbar_visible = false;
             return;
         }
 
         let toolbar_scale = self.config.top_toolbar_scale.clamp(1.0, 3.0);
-        let visible_hover_height = FULLSCREEN_TITLE_BAR_HEIGHT + (42.0 * toolbar_scale);
-        let hover_height = if self.fullscreen_top_chrome_visible {
-            visible_hover_height
-        } else {
-            FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT
+        let toolbar_height = 42.0 * toolbar_scale;
+        let at_bottom = self.config.toolbar_at_bottom;
+        // 出しているあいだは、出ているものの上にマウスがあれば出したままにする
+        let reveal = |visible: bool, height: f32| {
+            if visible {
+                height
+            } else {
+                FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT
+            }
         };
-        let should_show = ctx
-            .input(|i| i.pointer.hover_pos())
-            .is_some_and(|pos| pos.y <= hover_height);
+        let top_height = reveal(
+            self.fullscreen_top_chrome_visible,
+            FULLSCREEN_TITLE_BAR_HEIGHT + if at_bottom { 0.0 } else { toolbar_height },
+        );
+        let bottom_height = reveal(self.fullscreen_bottom_toolbar_visible, toolbar_height);
+        let screen = ctx.content_rect();
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        let show_top = pointer.is_some_and(|pos| pos.y <= screen.top() + top_height);
+        let show_bottom =
+            at_bottom && pointer.is_some_and(|pos| pos.y >= screen.bottom() - bottom_height);
 
-        if self.fullscreen_top_chrome_visible != should_show {
-            self.fullscreen_top_chrome_visible = should_show;
+        if self.fullscreen_top_chrome_visible != show_top
+            || self.fullscreen_bottom_toolbar_visible != show_bottom
+        {
+            self.fullscreen_top_chrome_visible = show_top;
+            self.fullscreen_bottom_toolbar_visible = show_bottom;
             ctx.request_repaint();
         }
     }
@@ -122,17 +140,27 @@ impl MangaReader {
         }
     }
 
-    pub(super) fn render_top_toolbar(&mut self, ctx: &egui::Context) {
+    /// ツールバー。設定に従って画面の下（ミーヤと同じ）か上に置く
+    pub(super) fn render_toolbar(&mut self, ctx: &egui::Context) {
         self.update_fullscreen_top_chrome_visibility(ctx);
-        let show_top_toolbar =
-            self.config.show_top_bar && (!self.is_fullscreen || self.fullscreen_top_chrome_visible);
+        let revealed = if self.config.toolbar_at_bottom {
+            self.fullscreen_bottom_toolbar_visible
+        } else {
+            self.fullscreen_top_chrome_visible
+        };
+        let show_toolbar = self.config.show_top_bar && (!self.is_fullscreen || revealed);
 
         if self.is_fullscreen && self.fullscreen_top_chrome_visible {
             self.render_fullscreen_title_bar(ctx);
         }
 
-        if show_top_toolbar {
-            egui::TopBottomPanel::top("top_toolbar")
+        if show_toolbar {
+            let panel = if self.config.toolbar_at_bottom {
+                egui::TopBottomPanel::bottom("toolbar")
+            } else {
+                egui::TopBottomPanel::top("toolbar")
+            };
+            panel
                 .frame(
                     egui::Frame::NONE
                         .fill(egui::Color32::from_gray(30))
