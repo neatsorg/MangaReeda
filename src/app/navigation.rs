@@ -1,4 +1,7 @@
-use super::{AUTO_SCROLL_MAX_DELAY_MS, AUTO_SCROLL_MIN_DELAY_MS, MangaReader, SCROLL_STEP_RATIO};
+use super::{
+    AUTO_SCROLL_MAX_DELAY_MS, AUTO_SCROLL_MIN_DELAY_MS, JUMP_PAGE_COUNT, MangaReader,
+    SCROLL_STEP_RATIO,
+};
 use crate::config::{LastPageAction, MangaAction, PageViewOptions};
 use crate::engine::layout::{automatic_pair_count, is_portrait};
 use crate::engine::library::{get_adjacent_directories, scan_folder};
@@ -92,11 +95,17 @@ impl MangaReader {
     /// 固定の見開き（自動見開きでない）では、見開きの組の先頭に位置を合わせる。
     /// 1ページ表示から切り替えたときなどに、組が1枚ずれたままになるのを防ぐ
     fn align_to_spread_start(&mut self) {
-        if self.is_single_page() || self.automatic_page_direction().is_some() {
+        if self.automatic_page_direction().is_some() {
             return;
         }
-        let index = self.current_index;
-        self.current_index = if self.is_shifted {
+        self.current_index = self.fixed_spread_start(self.current_index);
+    }
+
+    /// 固定の表示（自動見開きでない）で、`index` のページを含む見開きの先頭
+    fn fixed_spread_start(&self, index: usize) -> usize {
+        if self.is_single_page() {
+            index
+        } else if self.is_shifted {
             // 1枚目だけ単独で、以降は (1,2), (3,4)…
             if index == 0 || index % 2 == 1 {
                 index
@@ -105,7 +114,20 @@ impl MangaReader {
             }
         } else {
             index - index % 2
-        };
+        }
+    }
+
+    /// `index` のページを含む見開きの先頭。自動見開きでは縦長の続きの中で組を合わせる
+    fn spread_start(&mut self, index: usize, ctx: &egui::Context) -> usize {
+        if self.automatic_page_direction().is_none() {
+            return self.fixed_spread_start(index);
+        }
+        // index の次から戻ったときに表示する組を求める
+        let current_index = self.current_index;
+        self.current_index = index + 1;
+        let start = self.automatic_previous_index(ctx);
+        self.current_index = current_index;
+        start
     }
 
     pub(super) fn load_current_pair(&mut self, ctx: &egui::Context) {
@@ -450,6 +472,30 @@ impl MangaReader {
             LastPageAction::GotoNextFile => tr("mode.repeat_folder"),
         };
         self.show_fading_error(msg);
+    }
+
+    /// 決まったページ数だけ進む／戻る（MM-NAV-03）。行き先のページを含む見開きから表示する。
+    /// 冊の端を越えるときは端のページで止まり、すでに端にいるときは「次へ」「前へ」と同じく
+    /// リピート状態に従う
+    pub(super) fn jump_pages(&mut self, forward: bool, ctx: &egui::Context) {
+        let Some(last) = self.image_files.len().checked_sub(1) else {
+            return;
+        };
+        let target = if forward {
+            (self.current_index + JUMP_PAGE_COUNT).min(last)
+        } else {
+            self.current_index.saturating_sub(JUMP_PAGE_COUNT)
+        };
+        let start = self.spread_start(target, ctx);
+        if forward && start <= self.current_index {
+            self.next_page(ctx, false);
+        } else if !forward && start >= self.current_index {
+            self.prev_page(ctx, false);
+        } else {
+            self.top_down_scroll_offset = 0.0;
+            self.go_to_page(start, ctx);
+            self.ensure_top_down_loaded_around(self.current_index, ctx);
+        }
     }
 
     /// 自動見開きを切り替えて、今のページから表示し直す（MM-IN-K05）

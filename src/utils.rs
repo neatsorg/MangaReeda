@@ -99,6 +99,8 @@ pub fn action_label(action: MangaAction) -> &'static str {
         MangaAction::ScrollRight => tr("action.scroll_right"),
         MangaAction::ToggleLoupe => tr("action.toggle_loupe"),
         MangaAction::ToggleAutoPageLayout => tr("action.toggle_auto_page_layout"),
+        MangaAction::JumpForward => tr("action.jump_forward"),
+        MangaAction::JumpBackward => tr("action.jump_backward"),
     }
 }
 

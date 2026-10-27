@@ -36,6 +36,8 @@ const ZOOM_MAX: f32 = 3.0;
 const ZOOM_STEP: f32 = 1.1;
 /// スクロール1回で動かす量（表示領域の大きさに対する割合）
 const SCROLL_STEP_RATIO: f32 = 0.8;
+/// 固定ページ進む／戻るで動くページ数（ミーヤのマンガ用設定と同じ。MM-NAV-03）
+const JUMP_PAGE_COUNT: usize = 20;
 const ZOOM_RELOAD_DELAY: Duration = Duration::from_secs(1);
 const FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT: f32 = 20.0;
 const FULLSCREEN_TITLE_BAR_HEIGHT: f32 = 28.0;
@@ -875,6 +877,74 @@ mod tests {
     }
 
     #[test]
+    fn jumping_moves_twenty_pages_and_stops_at_the_ends() {
+        let pages = TestPages::new(&[[10, 20]; 45]);
+        let ctx = egui::Context::default();
+        let config = || AppSettings {
+            enable_animated_images: false,
+            resize_method: ResizeMethod::None,
+            last_page_action: LastPageAction::Nothing,
+            ..AppSettings::default()
+        };
+        let mut reader = pages.reader(config(), &ctx);
+        let rl = PageViewOptions::DoubleRL;
+        // 見開きは (0,1), (2,3)… なので、最後の44ページ目は単独
+        for (index, count) in [(20, 2), (40, 2), (44, 1), (44, 1)] {
+            reader.jump_pages(true, &ctx);
+            assert_view(&reader, index, rl, count);
+        }
+        for index in [24, 4, 0, 0] {
+            reader.jump_pages(false, &ctx);
+            assert_view(&reader, index, rl, 2);
+        }
+
+        // 奇数ページ開始では、行き先の20ページ目を含む (19,20) の組から見せる
+        reader.change_shifted_mode(&ctx);
+        reader.jump_pages(true, &ctx);
+        assert_view(&reader, 19, rl, 2);
+
+        // 端で止まっているときは、リピート状態に従って反対の端へ戻る
+        let mut reader = pages.reader(
+            AppSettings {
+                last_page_action: LastPageAction::ToFirstPage,
+                ..config()
+            },
+            &ctx,
+        );
+        reader.go_to_last_page(&ctx);
+        reader.jump_pages(true, &ctx);
+        assert_view(&reader, 0, rl, 2);
+    }
+
+    #[test]
+    fn jumping_with_automatic_layout_keeps_pairs_within_portrait_runs() {
+        // 4ページ目が横長なので、その後の縦長は (5,6), (7,8)… と組む
+        let mut sizes = [[10, 20]; 30];
+        sizes[4] = [30, 10];
+        let pages = TestPages::new(&sizes);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                auto_page_layout_rl: true,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        let rl = PageViewOptions::DoubleRL;
+        reader.jump_pages(true, &ctx);
+        assert_view(&reader, 19, rl, 2);
+        // 戻ると先頭の組 (0,1) に戻る
+        reader.jump_pages(false, &ctx);
+        assert_view(&reader, 0, rl, 2);
+        // 最後の組は (27,28) の次の、単独の29ページ目
+        reader.jump_pages(true, &ctx);
+        reader.jump_pages(true, &ctx);
+        assert_view(&reader, 29, rl, 1);
+    }
+
+    #[test]
     fn toggling_automatic_layout_keeps_the_reading_direction() {
         let pages = TestPages::new(&[[10, 20], [10, 20], [30, 10], [10, 20]]);
         let ctx = egui::Context::default();
@@ -1300,6 +1370,9 @@ mod tests {
             parts(keys.toggle_auto_page_layout),
             key(egui::Key::Space, false)
         );
+        let alt = |k| Some((k, false, true, false));
+        assert_eq!(parts(keys.jump_forward), alt(egui::Key::ArrowRight));
+        assert_eq!(parts(keys.jump_backward), alt(egui::Key::ArrowLeft));
 
         // 同じキーに2つの操作が割り当てられていないこと
         let all = [
@@ -1330,6 +1403,8 @@ mod tests {
             keys.scroll_right,
             keys.toggle_loupe,
             keys.toggle_auto_page_layout,
+            keys.jump_forward,
+            keys.jump_backward,
         ];
         let assigned: Vec<_> = all.into_iter().filter_map(parts).collect();
         for (index, shortcut) in assigned.iter().enumerate() {

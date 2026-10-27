@@ -287,6 +287,16 @@ pub(super) fn render_control_mapping_settings(
                         "Toggle Auto Page Layout",
                         &mut keys.toggle_auto_page_layout,
                     ),
+                    (
+                        tr("settings.key.jump_forward"),
+                        "Jump Forward",
+                        &mut keys.jump_forward,
+                    ),
+                    (
+                        tr("settings.key.jump_backward"),
+                        "Jump Backward",
+                        &mut keys.jump_backward,
+                    ),
                 ] {
                     ui.label(label);
                     render_binding_button(

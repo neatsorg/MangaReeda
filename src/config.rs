@@ -161,10 +161,12 @@ pub enum MangaAction {
     ScrollRight,
     ToggleLoupe,
     ToggleAutoPageLayout,
+    JumpForward,
+    JumpBackward,
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 32] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -195,6 +197,8 @@ impl MangaAction {
         Self::ScrollRight,
         Self::ToggleLoupe,
         Self::ToggleAutoPageLayout,
+        Self::JumpForward,
+        Self::JumpBackward,
     ];
 }
 
@@ -311,6 +315,10 @@ pub struct KeyConfig {
     pub toggle_loupe: Option<Shortcut>,
     #[serde(default)]
     pub toggle_auto_page_layout: Option<Shortcut>,
+    #[serde(default)]
+    pub jump_forward: Option<Shortcut>,
+    #[serde(default)]
+    pub jump_backward: Option<Shortcut>,
 }
 
 // 既存の設定ファイルにこの項目が無いときもミーヤと同じ F8 を割り当てる
@@ -348,6 +356,8 @@ impl Default for KeyConfig {
             scroll_right: None,
             toggle_loupe: None,
             toggle_auto_page_layout: None,
+            jump_forward: None,
+            jump_backward: None,
         }
     }
 }
@@ -388,6 +398,9 @@ impl KeyConfig {
             toggle_loupe: Some(Shortcut::new(egui::Key::L, false, false, false)),
             // MM-IN-K05
             toggle_auto_page_layout: Some(Shortcut::new(egui::Key::Space, false, false, false)),
+            // MM-IN-K04
+            jump_forward: Some(Shortcut::new(egui::Key::ArrowRight, false, true, false)),
+            jump_backward: Some(Shortcut::new(egui::Key::ArrowLeft, false, true, false)),
         }
     }
 
@@ -428,6 +441,8 @@ impl KeyConfig {
             scroll_right: None,
             toggle_loupe: None,
             toggle_auto_page_layout: None,
+            jump_forward: None,
+            jump_backward: None,
         }
     }
 }
