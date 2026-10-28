@@ -12,8 +12,10 @@ use crate::config::{ImageSizingMode, PageViewOptions};
 use crate::engine::imaging::{matched_height, shrink_only_scale};
 use crate::engine::loupe;
 use crate::engine::scroll::{self, Span};
+use crate::localize::tr;
 use eframe::egui;
 use egui::Rect;
+use std::path::Path;
 use std::time::Instant;
 
 impl MangaReader {
@@ -228,6 +230,85 @@ impl MangaReader {
             egui::vec2(half_size.x * 2.0, half_size.y),
         );
         Some((full, visible))
+    }
+
+    /// タイトルバーの文字。マンガミーヤと同じ形
+    /// （`1,2/6 : 02.png | 01.png  Scale=64%  <本.zip>`。見ているページの番号/総ページ数 : 左から並べたファイル名
+    ///  Scale=実寸に対する縮尺  <本の名前>）に、ソフトの名前を付ける。本を開いていなければソフトの名前だけ
+    pub(super) fn window_title(&self, ctx: &egui::Context) -> String {
+        let app = tr("app.title");
+        let Some(book) = self
+            .zip_path
+            .as_ref()
+            .filter(|_| !self.image_files.is_empty())
+        else {
+            return app.to_owned();
+        };
+        let file_name = |name: &str| {
+            Path::new(name)
+                .file_name()
+                .map_or_else(|| name.to_owned(), |n| n.to_string_lossy().into_owned())
+        };
+        // 見ているページ（テクスチャの名前はページのファイル名）。白紙は数えない
+        let slots = if self.is_single_page() || self.cover_shown_alone() {
+            1
+        } else {
+            2
+        };
+        let mut shown: Vec<(usize, &egui::TextureHandle)> = Vec::new();
+        if self.config.page_view_options != PageViewOptions::TopDown {
+            for texture in self.textures.iter().take(slots).flatten() {
+                if texture.name() == BLANK_TEXTURE_NAME {
+                    continue;
+                }
+                if let Some(index) = self.image_files.iter().position(|f| *f == texture.name()) {
+                    shown.push((index, texture));
+                }
+            }
+        }
+        // 左から並べる（右開きでは、2枚目が左）
+        let mut names: Vec<String> = shown
+            .iter()
+            .map(|(i, _)| file_name(&self.image_files[*i]))
+            .collect();
+        if self.config.page_view_options != PageViewOptions::DoubleLR {
+            names.reverse();
+        }
+        let mut numbers: Vec<usize> = shown.iter().map(|(i, _)| i + 1).collect();
+        numbers.sort_unstable();
+        if numbers.is_empty() {
+            // まだ読み込んでいない（縦スクロールでも、いまのページだけを出す）
+            let index = self.current_index.min(self.image_files.len() - 1);
+            numbers.push(index + 1);
+            names.push(file_name(&self.image_files[index]));
+        }
+        let numbers = numbers
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        // 縮尺は、番号の小さいほうのページの、描いた高さと元の高さの比（ミーヤと同じく1つだけ出す）
+        let scale = shown
+            .iter()
+            .min_by_key(|(i, _)| *i)
+            .and_then(|(_, texture)| {
+                let drawn = self
+                    .drawn_pages
+                    .iter()
+                    .find(|p| p.texture == texture.id())?;
+                let original = self.original_size(texture).y;
+                (original > 0.0).then(|| drawn.rect.height() * ctx.pixels_per_point() / original)
+            })
+            .map(|scale| format!("  Scale={}%", (scale * 100.0).round() as u32))
+            .unwrap_or_default();
+        let book = book
+            .file_name()
+            .map_or_else(|| book.to_string_lossy(), |n| n.to_string_lossy());
+        format!(
+            "{numbers}/{} : {}{scale}  <{book}> - {app}",
+            self.image_files.len(),
+            names.join(" | ")
+        )
     }
 
     /// 元画像の大きさ。テクスチャは表示用に縮めてあることがあるので、読み込み時の記録を使う

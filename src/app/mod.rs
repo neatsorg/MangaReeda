@@ -79,6 +79,8 @@ pub struct MangaReader {
     binding_action: Option<BindingTarget>,
     texture_cache: sized_cache::SizedCache<egui::TextureHandle>,
     image_dimensions: std::collections::HashMap<String, [u32; 2]>,
+    /// いまタイトルバーに出している文字
+    window_title: String,
     active_animations: [Option<AnimatedPage>; 2],
     active_animation_keys: [Option<String>; 2],
     animated_image_byte_cache: sized_cache::SizedCache<Vec<u8>>,
@@ -192,6 +194,7 @@ impl MangaReader {
             binding_action: None,
             texture_cache: sized_cache::SizedCache::new(TEXTURE_CACHE_BYTES),
             image_dimensions: Default::default(),
+            window_title: String::new(),
             active_animations: std::array::from_fn(|_| None),
             active_animation_keys: std::array::from_fn(|_| None),
             animated_image_byte_cache: sized_cache::SizedCache::new(ANIMATION_CACHE_BYTES),
@@ -283,7 +286,6 @@ impl eframe::App for MangaReader {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         set_language(self.config.language);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("app.title").to_owned()));
         self.sync_animation_scan(ctx);
         self.update_active_animations(ctx);
 
@@ -375,6 +377,13 @@ impl eframe::App for MangaReader {
 
         // Keep preloading buffers
         self.update_buffers(ctx);
+
+        // タイトルバー。変わったときだけ送る
+        let title = self.window_title(ctx);
+        if title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.remember_current_book();
@@ -1899,6 +1908,54 @@ esac
             // 横は1回 160 動かすが、反対側の端（-start_x）で止まる
             assert_eq!(pan(&reader), (-start_x, 100.0));
         }
+    }
+
+    /// タイトルバーは、マンガミーヤと同じ形（ページ番号/総ページ数 : 左から並べたファイル名  Scale  <本>）
+    #[test]
+    fn the_title_bar_shows_pages_files_scale_and_book_like_mangameeya() {
+        let pages = TestPages::new(&[[100, 200], [100, 200], [100, 200]]);
+        let ctx = egui::Context::default();
+        let draw = |reader: &mut MangaReader| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 400.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                let mut action = MangaAction::None;
+                reader.render_page_view(ctx, &mut action);
+            });
+            reader.window_title(&ctx)
+        };
+        let book = pages.0.file_name().unwrap().to_string_lossy().into_owned();
+        let settings = |mode| AppSettings {
+            page_view_options: mode,
+            enable_animated_images: false,
+            resize_method: ResizeMethod::None,
+            image_sizing_mode: crate::config::ImageSizingMode::OriginalSize,
+            ..AppSettings::default()
+        };
+
+        // 何も開いていなければ、ソフトの名前だけ
+        let empty = MangaReader::with_settings(settings(PageViewOptions::Single), None);
+        assert_eq!(empty.window_title(&ctx), "MangaReeda");
+
+        let mut single = pages.reader(settings(PageViewOptions::Single), &ctx);
+        assert_eq!(
+            draw(&mut single),
+            format!("1/3 : 000.png  Scale=100%  <{book}> - MangaReeda")
+        );
+
+        // 右開きの見開きでは、2枚目が左
+        let mut spread = pages.reader(settings(PageViewOptions::DoubleRL), &ctx);
+        assert_eq!(
+            draw(&mut spread),
+            format!("1,2/3 : 001.png | 000.png  Scale=100%  <{book}> - MangaReeda")
+        );
+        let mut left_to_right = pages.reader(settings(PageViewOptions::DoubleLR), &ctx);
+        assert!(draw(&mut left_to_right).starts_with("1,2/3 : 000.png | 001.png  Scale="));
     }
 
     #[test]

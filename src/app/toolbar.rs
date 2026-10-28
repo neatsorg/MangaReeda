@@ -76,7 +76,7 @@ impl MangaReader {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let title = tr("app.title");
+                    let title = self.window_title.clone();
                     let title_width = (ui.available_width() - 92.0).max(0.0);
                     let title_response = ui.add_sized(
                         [title_width, ui.available_height()],
