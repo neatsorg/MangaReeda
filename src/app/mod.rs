@@ -1,6 +1,7 @@
 // このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
 
 mod animation;
+mod commands;
 mod input;
 mod loader;
 mod navigation;

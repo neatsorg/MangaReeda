@@ -607,7 +607,7 @@ impl MangaReader {
                                             .changed();
                                     });
                                 if language_changed {
-                                    self.save_settings();
+                                    self.set_ui_language(self.config.language);
                                 }
 
                                 ui.add_space(20.0);
@@ -661,10 +661,7 @@ impl MangaReader {
                                         .clicked();
 
                                     if changed {
-                                        self.reset_buffer();
-                                        self.texture_cache.clear();
-                                        self.load_current_pair(ctx);
-                                        self.save_settings(); // Save when algorithm changes
+                                        self.set_resize_method(self.config.resize_method, ctx);
                                     }
                                 }
 
@@ -677,7 +674,6 @@ impl MangaReader {
                                 separator_pct(ui);
 
                                 {
-                                    let previous_page_view = self.config.page_view_options;
                                     let mut chosen = self.config.page_view_options;
                                     let mut changed = false;
                                     changed |= ui
@@ -708,16 +704,13 @@ impl MangaReader {
                                             egui::RichText::new(tr("settings.page_view.top_down")),
                                         )
                                         .clicked();
+                                    let mut cover_blank = self.config.cover_blank_page;
                                     if ui
-                                        .checkbox(
-                                            &mut self.config.cover_blank_page,
-                                            tr("settings.cover_blank_page"),
-                                        )
+                                        .checkbox(&mut cover_blank, tr("settings.cover_blank_page"))
                                         .on_hover_text(tr("settings.cover_blank_page.tooltip"))
                                         .changed()
                                     {
-                                        self.sync_cover_blank(ctx);
-                                        self.save_settings();
+                                        self.set_cover_blank_page(cover_blank, ctx);
                                     }
                                     let mut split = self.config.split_landscape_pages;
                                     if ui
@@ -751,28 +744,7 @@ impl MangaReader {
                                     ui.spacing_mut().slider_width = previous_slider_width - 40.0;
 
                                     if changed {
-                                        self.manual_page_view =
-                                            self.config.choose_page_view(chosen);
-                                        self.reset_buffer();
-                                        self.texture_cache.clear();
-                                        self.reset_pan();
-                                        if self.config.page_view_options == PageViewOptions::TopDown
-                                        {
-                                            self.textures = [None, None];
-                                            self.top_down_textures =
-                                                vec![None; self.image_files.len()];
-                                            self.top_down_scroll_offset = 0.0;
-                                            self.ensure_top_down_loaded_around(
-                                                self.current_index,
-                                                ctx,
-                                            );
-                                        } else {
-                                            if previous_page_view == PageViewOptions::TopDown {
-                                                self.top_down_textures.clear();
-                                            }
-                                            self.load_current_pair(ctx);
-                                        }
-                                        self.save_settings();
+                                        self.set_page_view(chosen, ctx);
                                     }
                                 }
 
@@ -811,9 +783,7 @@ impl MangaReader {
                                         .clicked();
 
                                     if changed {
-                                        self.reset_buffer();
-                                        self.load_current_pair(ctx);
-                                        self.save_settings();
+                                        self.set_last_page_action(self.config.last_page_action);
                                     }
                                 }
 
@@ -958,11 +928,7 @@ impl MangaReader {
                                     )
                                     .clicked();
                                 if image_sizing_changed {
-                                    self.reset_buffer();
-                                    self.texture_cache.clear();
-                                    self.reset_pan();
-                                    self.load_current_pair(ctx);
-                                    self.save_settings();
+                                    self.set_image_sizing_mode(self.config.image_sizing_mode, ctx);
                                 }
                                 separator_pct(ui);
 
@@ -984,18 +950,12 @@ impl MangaReader {
                                     .on_hover_text(tr("settings.auto_page_layout.tooltip"))
                                     .changed();
                                 if rl_changed || lr_changed {
-                                    // 外したときはオンにする前のページ表示に戻す
-                                    self.config.set_auto_page_layout(if rl_changed {
+                                    let direction = if rl_changed {
                                         rl.then_some(true)
                                     } else {
                                         lr.then_some(false)
-                                    });
-                                    self.reset_buffer();
-                                    self.texture_cache.clear();
-                                    self.clear_animated_image_cache();
-                                    self.reset_pan();
-                                    self.load_current_pair(ctx);
-                                    self.save_settings();
+                                    };
+                                    self.set_auto_page_layout(direction, ctx);
                                 }
                                 ui.horizontal(|ui| {
                                     ui.label(tr("settings.image_panel_background"));
