@@ -11,9 +11,9 @@ use crate::config::SourceMode;
 use crate::engine::plugin::PluginError;
 use crate::engine::source::page_key;
 use crate::engine::thumbnail::{
-    CoverEntry, CoverOptions, CoverSource, Direction, Grid, THUMBNAIL_MAX_SIDE, ThumbnailMode,
-    cover_cache_name, cover_entries, folder_shelf, move_selection, spawn_cover_loader,
-    spawn_loader,
+    CoverEntry, CoverOptions, CoverQueue, CoverSource, Direction, Grid, THUMBNAIL_MAX_SIDE,
+    ThumbnailMode, cover_cache_name, cover_entries, folder_shelf, move_selection,
+    spawn_cover_loader, spawn_loader,
 };
 use crate::localize::tr;
 use eframe::egui;
@@ -73,6 +73,8 @@ struct CoverShelf {
     textures: Vec<Option<egui::TextureHandle>>,
     /// 読み込み中の表紙の、送られてくる番号から entries の番号への対応
     loading: Vec<usize>,
+    /// 表紙を作る順番（見えている冊を先にする）
+    queue: Arc<CoverQueue>,
 }
 
 /// 何秒前かを「3日前」のように短く言う
@@ -580,7 +582,9 @@ impl MangaReader {
                 }
             })
             .collect();
-        let rx = options.map(|options| spawn_cover_loader(sources, options, cancel.clone()));
+        let queue = Arc::new(CoverQueue::new(sources.len()));
+        let rx = options
+            .map(|options| spawn_cover_loader(sources, options, cancel.clone(), queue.clone()));
         self.thumbnails = Some(ThumbnailView {
             mode: ThumbnailMode::Covers,
             selected,
@@ -593,6 +597,7 @@ impl MangaReader {
                 entries,
                 textures,
                 loading,
+                queue,
             }),
         });
     }
@@ -1183,6 +1188,13 @@ impl MangaReader {
                 let last_row = ((scroll + rect.height()) / grid.cell).ceil() as usize;
                 let first = first_row * grid.columns;
                 let last = (last_row * grid.columns).min(count);
+                // 見えている冊の表紙を先に作る
+                if let Some(shelf) = &view.covers {
+                    shelf.queue.show(
+                        shelf.loading.partition_point(|&index| index < first),
+                        shelf.loading.partition_point(|&index| index < last),
+                    );
+                }
                 for index in first..last {
                     let [x, y] = grid.cell_origin(index);
                     let cell = egui::Rect::from_min_size(

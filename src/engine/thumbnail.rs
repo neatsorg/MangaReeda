@@ -280,24 +280,34 @@ fn note_fetch(cache: &Path, url: &str, ok: bool, now: u64) {
 
 /// 表紙の画像をサイトから取って、手元に置く。サイトに負担をかけないよう、一度に1枚ずつ、
 /// 前に取ってから `COVER_FETCH_INTERVAL` 空けて取る。最近取れなかった表紙は取りに行かない。
-/// 待っているあいだに `cancel` が立ったら（一覧を離れたら）取りに行かない
-fn fetch_url_cover(url: &str, cache: &Path, cancel: &AtomicBool) -> Option<Vec<u8>> {
+/// 順番を待っているあいだに `stop()` が真になったら（一覧を離れた、スクロールしてほかの冊を先に取る）取りに行かない
+fn fetch_url_cover(url: &str, cache: &Path, stop: &dyn Fn() -> bool) -> Option<Vec<u8>> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return None;
     }
     static LAST_FETCH: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-    let mut last = LAST_FETCH
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // ほかのスレッドが取っているあいだも、止める印を見ながら待つ（遅いサイトでは1枚に1分かかることもある）
+    let mut last = loop {
+        match LAST_FETCH.try_lock() {
+            Ok(last) => break last,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if stop() {
+                    return None;
+                }
+                thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    };
     // 待っているあいだに、ほかのスレッドが同じ表紙を取ったかもしれない
     if let Ok(bytes) = std::fs::read(cache) {
         return Some(bytes);
     }
-    if cancel.load(Ordering::Relaxed) || recently_failed(cache, url, unix_now()) {
+    if stop() || recently_failed(cache, url, unix_now()) {
         return None;
     }
     while last.is_some_and(|at| at.elapsed() < COVER_FETCH_INTERVAL) {
-        if cancel.load(Ordering::Relaxed) {
+        if stop() {
             return None;
         }
         thread::sleep(std::time::Duration::from_millis(100));
@@ -449,29 +459,91 @@ pub fn cover_thumbnail(path: &Path, options: &CoverOptions) -> Option<RgbaImage>
     cover_image(path, COVER_SEARCH_DEPTH, options)
 }
 
-/// `indices` の順に、`make_worker` で作った処理でサムネイルを作って送る。処理はスレッドごとに作る
+/// 冊の表紙を作る順番。画面に見えている冊（`show` で知らせる）を先に、次にその下の冊、最後に上の冊を作る
+pub struct CoverQueue {
+    /// 作り始めた冊（番号は `spawn_cover_loader` に渡した並び）
+    taken: std::sync::Mutex<Vec<bool>>,
+    /// 見えている冊の範囲（start..end）
+    start: AtomicUsize,
+    end: AtomicUsize,
+}
+
+impl CoverQueue {
+    pub fn new(count: usize) -> Self {
+        Self {
+            taken: std::sync::Mutex::new(vec![false; count]),
+            start: AtomicUsize::new(0),
+            end: AtomicUsize::new(count),
+        }
+    }
+
+    /// 見えている冊の範囲を知らせる
+    pub fn show(&self, start: usize, end: usize) {
+        self.start.store(start, Ordering::Relaxed);
+        self.end.store(end.max(start), Ordering::Relaxed);
+    }
+
+    fn taken(&self) -> std::sync::MutexGuard<'_, Vec<bool>> {
+        self.taken
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 次に作る冊
+    fn take(&self) -> Option<usize> {
+        let mut taken = self.taken();
+        let start = self.start.load(Ordering::Relaxed).min(taken.len());
+        let index = (start..taken.len())
+            .chain(0..start)
+            .find(|&index| !taken[index])?;
+        taken[index] = true;
+        Some(index)
+    }
+
+    /// 作り始めた冊を、あとで作り直すよう戻す
+    fn put_back(&self, index: usize) {
+        if let Some(slot) = self.taken().get_mut(index) {
+            *slot = false;
+        }
+    }
+
+    /// `index` の冊が見えておらず、見えている冊にまだ作り始めていないものがある（そちらを先にしたい）
+    fn behind(&self, index: usize) -> bool {
+        let (start, end) = (
+            self.start.load(Ordering::Relaxed),
+            self.end.load(Ordering::Relaxed),
+        );
+        if (start..end).contains(&index) {
+            return false;
+        }
+        let taken = self.taken();
+        let end = end.min(taken.len());
+        taken[start.min(end)..end].iter().any(|taken| !taken)
+    }
+}
+
+/// `take` が返す順に、`make_worker` で作った処理でサムネイルを作って送る。処理はスレッドごとに作る
 /// （書庫を開いたまま続けて読めるように）。`cancel` を立てるか受け手を捨てると止まる
-fn spawn_workers<F, W>(
-    indices: Vec<usize>,
+fn spawn_workers<T, F, W>(
+    take: T,
     cancel: Arc<AtomicBool>,
     make_worker: F,
 ) -> Receiver<(usize, RgbaImage)>
 where
+    T: Fn() -> Option<usize> + Send + Sync + 'static,
     F: Fn() -> W + Send + Sync + 'static,
     W: FnMut(usize) -> Option<RgbaImage>,
 {
     let (tx, rx) = channel();
-    let indices = Arc::new(indices);
-    let next = Arc::new(AtomicUsize::new(0));
+    let take = Arc::new(take);
     let make_worker = Arc::new(make_worker);
     let workers = thread::available_parallelism()
         .map_or(2, |n| n.get())
         .clamp(1, 4);
     for _ in 0..workers {
-        let (tx, indices, next, cancel, make_worker) = (
+        let (tx, take, cancel, make_worker) = (
             tx.clone(),
-            indices.clone(),
-            next.clone(),
+            take.clone(),
             cancel.clone(),
             make_worker.clone(),
         );
@@ -481,7 +553,7 @@ where
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                let Some(&index) = indices.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                let Some(index) = take() else {
                     return;
                 };
                 // 1冊で失敗して（パニックして）も、その冊を飛ばして続ける
@@ -511,7 +583,7 @@ fn url_cover(
     cache: &Path,
     local: Option<&Path>,
     options: &CoverOptions,
-    cancel: &AtomicBool,
+    stop: &dyn Fn() -> bool,
 ) -> Option<RgbaImage> {
     let local = local.filter(|path| path.is_file());
     // 小さすぎる画像は表紙として使わない（Amazon などは、画像が無いと 1×1 の透明な GIF を返す）
@@ -531,24 +603,44 @@ fn url_cover(
     if let Some(image) = local.and_then(|local| cover_thumbnail(local, options)) {
         return Some(image);
     }
-    fetch_url_cover(url, cache, cancel).and_then(decode)
+    fetch_url_cover(url, cache, stop).and_then(decode)
 }
 
-/// 冊の表紙のサムネイルを、別スレッドで作って送る。(冊の番号, 画像) を送る
+/// 冊の表紙のサムネイルを、別スレッドで作って送る。(冊の番号, 画像) を送る。
+/// `queue` の順に作る。サイトに取りに行く順番を待っているあいだに、見えている冊が変わったら、
+/// その冊は後回しにして、見えている冊を先に取る
 pub fn spawn_cover_loader(
     books: Vec<CoverSource>,
     options: CoverOptions,
     cancel: Arc<AtomicBool>,
+    queue: Arc<CoverQueue>,
 ) -> Receiver<(usize, RgbaImage)> {
-    let indices = (0..books.len()).collect();
     let books = Arc::new(books);
     let stop = cancel.clone();
-    spawn_workers(indices, cancel, move || {
-        let (books, options, stop) = (books.clone(), options.clone(), stop.clone());
+    let take = {
+        let queue = queue.clone();
+        move || queue.take()
+    };
+    spawn_workers(take, cancel, move || {
+        let (books, options, stop, queue) =
+            (books.clone(), options.clone(), stop.clone(), queue.clone());
         move |index| match books.get(index)? {
             CoverSource::Local(path) => cover_thumbnail(path, &options),
             CoverSource::Url { url, cache, local } => {
-                url_cover(url, cache, local.as_deref(), &options, &stop)
+                let later = std::cell::Cell::new(false);
+                let stop_or_later = || {
+                    if stop.load(Ordering::Relaxed) {
+                        return true;
+                    }
+                    let behind = queue.behind(index);
+                    later.set(behind);
+                    behind
+                };
+                let image = url_cover(url, cache, local.as_deref(), &options, &stop_or_later);
+                if later.get() && image.is_none() && !stop.load(Ordering::Relaxed) {
+                    queue.put_back(index);
+                }
+                image
             }
         }
     })
@@ -569,7 +661,9 @@ pub fn spawn_loader(
         return channel().1;
     }
     let names = Arc::new(names);
-    spawn_workers(indices, cancel, move || {
+    let next = AtomicUsize::new(0);
+    let take = move || indices.get(next.fetch_add(1, Ordering::Relaxed)).copied();
+    spawn_workers(take, cancel, move || {
         let names = names.clone();
         // 書庫は開いたまま続けて読む
         let mut reader = SourceReader::open(mode, &root);
@@ -741,7 +835,7 @@ mod tests {
         // 最近取れなかった表紙は、サイトに取りに行かない（ここでは通信しない）
         note_fetch(&cache, url, false, unix_now());
         let started = std::time::Instant::now();
-        assert_eq!(fetch_url_cover(url, &cache, &AtomicBool::new(false)), None);
+        assert_eq!(fetch_url_cover(url, &cache, &|| false), None);
         assert!(started.elapsed() < COVER_FETCH_INTERVAL);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -757,8 +851,7 @@ mod tests {
         let cache = dir.join("cover.png");
         let url = "unreachable:cover.png";
         let cover = |options: &CoverOptions| {
-            url_cover(url, &cache, Some(&book), options, &AtomicBool::new(false))
-                .map(|image| image.dimensions())
+            url_cover(url, &cache, Some(&book), options, &|| false).map(|image| image.dimensions())
         };
         let plain = CoverOptions::default();
         // 手元に表紙の画像が無ければ、ダウンロードした本の最初のページ
@@ -769,10 +862,7 @@ mod tests {
         // 「画像なし」の印（1×1 の画像）は表紙にせず、ダウンロードした本から作る
         std::fs::write(&cache, png(1, 1)).unwrap();
         assert_eq!(cover(&plain), Some((10, 20)));
-        assert_eq!(
-            url_cover(url, &cache, None, &plain, &AtomicBool::new(false)),
-            None
-        );
+        assert_eq!(url_cover(url, &cache, None, &plain, &|| false), None);
         // 表紙を選んであれば、それがいちばん先
         let chosen = CoverOptions {
             chosen: Arc::new([(normalize(&book), "02.png".to_owned())].into()),
@@ -906,10 +996,12 @@ mod tests {
             cache: root.join("missing-cache.png"),
             local: Some(root.join("02 B.zip")),
         });
+        let count = books.len();
         let rx = spawn_cover_loader(
             books,
             CoverOptions::default(),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(CoverQueue::new(count)),
         );
         let mut received: Vec<_> = rx
             .iter()
@@ -928,6 +1020,29 @@ mod tests {
             ]
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 表紙は、見えている冊、その下の冊、上の冊の順に作る。見えていない冊は、見えている冊を先にするため後回しにできる
+    #[test]
+    fn covers_are_made_from_the_visible_books_first() {
+        let queue = CoverQueue::new(6);
+        queue.show(2, 4);
+        assert_eq!(queue.take(), Some(2));
+        assert!(!queue.behind(2));
+        // 見えている冊が残っているあいだ、見えていない冊は後回しにできる
+        assert!(queue.behind(0));
+        assert_eq!(queue.take(), Some(3));
+        assert!(!queue.behind(0));
+        assert_eq!(queue.take(), Some(4));
+        // スクロールしたら、そこから
+        queue.show(0, 2);
+        assert!(queue.behind(4));
+        queue.put_back(4);
+        assert_eq!(queue.take(), Some(0));
+        assert_eq!(queue.take(), Some(1));
+        assert_eq!(queue.take(), Some(4));
+        assert_eq!(queue.take(), Some(5));
+        assert_eq!(queue.take(), None);
     }
 
     #[test]
