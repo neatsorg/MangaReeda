@@ -188,17 +188,32 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// Windows の API に渡すパス。絶対パスにそろえ、長いパスの書き方（`\\?\`、ネットワークのパスは
+/// `\\?\UNC\`）にする。ふつうの書き方では 260 文字までしか扱えないため
+/// （Rust の標準のファイル操作は自分で長いパスを扱うので、書けたのに名前を変えられない、とならないように）
+#[cfg(windows)]
+fn verbatim_wide(path: &Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let full: Vec<u16> = std::path::absolute(path)?
+        .as_os_str()
+        .encode_wide()
+        .collect();
+    let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+    let mut out = if full.starts_with(&wide(r"\\?\")) {
+        full
+    } else if let Some(rest) = full.strip_prefix(wide(r"\\").as_slice()) {
+        [wide(r"\\?\UNC\").as_slice(), rest].concat()
+    } else {
+        [wide(r"\\?\").as_slice(), &full].concat()
+    };
+    out.push(0);
+    Ok(out)
+}
+
 #[cfg(windows)]
 fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-    let wide = |path: &Path| -> Vec<u16> {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
-    };
-    let (from, to) = (wide(from), wide(to));
+    let (from, to) = (verbatim_wide(from)?, verbatim_wide(to)?);
     // 置き換えの指定（MOVEFILE_REPLACE_EXISTING）を付けないので、同じ名前があれば失敗する
     if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } != 0 {
         Ok(())
@@ -272,6 +287,32 @@ mod tests {
         place(&partial, &dest).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"new");
         assert!(!partial.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Windows でも、260 文字を超える保存先に、置き換えずに置ける
+    #[cfg(windows)]
+    #[test]
+    fn long_paths_can_be_placed_on_windows() {
+        let dir = temp("long");
+        let mut deep = dir.clone();
+        for _ in 0..6 {
+            deep.push("a".repeat(50));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        let dest = deep.join("book.pdf");
+        assert!(dest.as_os_str().len() > 300);
+        save_book::<SaveError>(&mut &b"data"[..], &dest, Some(4), |_| Ok(())).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"data");
+        let again = save_book::<SaveError>(&mut &b"new"[..], &dest, Some(3), |_| Ok(()));
+        assert!(matches!(again, Err(SaveError::Exists)));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"data");
+        // ネットワークのパスの書き方も変える
+        let unc = verbatim_wide(Path::new(r"\\server\share\a.pdf")).unwrap();
+        assert_eq!(
+            String::from_utf16_lossy(&unc[..unc.len() - 1]),
+            r"\\?\UNC\server\share\a.pdf"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
