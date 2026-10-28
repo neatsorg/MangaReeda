@@ -300,6 +300,7 @@
   "search.hint": "探す語（Enter で次へ）",
   "search.loading": "文字を読み込んでいます… {done}/{total}",
   "search.no_text": "この本には文字の情報がありません（いまは PDF の透明テキストだけを探せます）",
+  "search.failed": "（{n} ページの文字を読めませんでした。次に開いたときにまた読みます）",
   "search.none": "見つかりません",
   "search.count": "{n} 件",
   "search.count_more": "{n} 件以上",

@@ -3,7 +3,7 @@
 
 use super::MangaReader;
 use crate::config::SourceMode;
-use crate::engine::book_text::{BookText, Hit, TextProgress, search, spawn_book_text};
+use crate::engine::book_text::{Hit, LoadedText, SearchIndex, TextProgress, spawn_book_text};
 use crate::engine::settings_store;
 use crate::localize::tr;
 use eframe::egui;
@@ -21,12 +21,14 @@ pub(super) struct BookSearch {
     pub(super) query: String,
     /// 次のフレームで入力欄に移る
     focus: bool,
-    text: Option<BookText>,
-    loading: Option<Receiver<Option<BookText>>>,
+    index: Option<SearchIndex>,
+    loading: Option<Receiver<Option<LoadedText>>>,
     progress: Arc<TextProgress>,
     cancel: Arc<AtomicBool>,
     /// 文字の層が無い（探せない）
     no_text: bool,
+    /// 文字を読めなかったページの数
+    failed: usize,
     pub(super) hits: Vec<Hit>,
     /// `hits` を探した語
     searched: String,
@@ -48,10 +50,13 @@ impl BookSearch {
             return false;
         };
         match rx.try_recv() {
-            Ok(text) => {
+            Ok(loaded) => {
                 self.loading = None;
-                match text.filter(|text| !text.is_empty()) {
-                    Some(text) => self.text = Some(text),
+                match loaded.filter(|loaded| !loaded.empty) {
+                    Some(loaded) => {
+                        self.failed = loaded.failed;
+                        self.index = Some(loaded.index);
+                    }
                     None => self.no_text = true,
                 }
                 false
@@ -67,11 +72,11 @@ impl BookSearch {
 
     /// 語が変わっていれば探し直す
     fn refresh(&mut self) {
-        let Some(text) = &self.text else {
+        let Some(index) = &self.index else {
             return;
         };
         if self.query != self.searched {
-            self.hits = search(text, &self.query, HIT_LIMIT);
+            self.hits = index.search(&self.query, HIT_LIMIT);
             self.searched = self.query.clone();
             self.selected = None;
         }
@@ -92,14 +97,23 @@ impl BookSearch {
                     &self.progress.total.load(Ordering::Relaxed).to_string(),
                 );
         }
+        let failed = if self.failed > 0 {
+            format!(
+                " {}",
+                tr("search.failed").replace("{n}", &self.failed.to_string())
+            )
+        } else {
+            String::new()
+        };
         if self.query.trim().is_empty() {
-            return String::new();
+            return failed.trim_start().to_owned();
         }
-        match self.hits.len() {
+        let count = match self.hits.len() {
             0 => tr("search.none").to_owned(),
             HIT_LIMIT => tr("search.count_more").replace("{n}", &HIT_LIMIT.to_string()),
             n => tr("search.count").replace("{n}", &n.to_string()),
-        }
+        };
+        count + &failed
     }
 }
 
@@ -131,8 +145,9 @@ impl MangaReader {
             book,
             query: String::new(),
             focus: true,
-            text: None,
+            index: None,
             no_text: loading.is_none(),
+            failed: 0,
             loading,
             progress,
             cancel,

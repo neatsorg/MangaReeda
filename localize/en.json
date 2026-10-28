@@ -300,6 +300,7 @@
   "search.hint": "Words to find (Enter for next)",
   "search.loading": "Reading the text… {done}/{total}",
   "search.no_text": "This book has no text (only the text layer of PDFs can be searched for now)",
+  "search.failed": "({n} pages could not be read; they will be read again next time)",
   "search.none": "Not found",
   "search.count": "{n} found",
   "search.count_more": "{n} or more found",

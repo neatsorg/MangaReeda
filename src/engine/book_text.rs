@@ -1,5 +1,5 @@
 //! 本の文字（いまは PDF の透明テキスト）を取り出し、ためておき、検索する。
-//! 取り出した文字は、本の場所・大きさ・更新日時ごとにファイルにためておき、次からはそれを使う。
+//! 取り出した文字は本ごとにファイルにためておき、本が変わっていなければ次からはそれを使う。
 
 use crate::engine::pdf::SharedPdfium;
 use crate::engine::thumbnail::cover_cache_name;
@@ -8,12 +8,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 本の、ページごとの文字
-#[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
+#[derive(Default, Debug, PartialEq)]
 pub struct BookText {
     pub pages: Vec<String>,
+    /// 文字を読めなかったページの数（そのページは探せない）
+    pub failed: usize,
 }
 
 impl BookText {
@@ -30,23 +32,94 @@ pub struct TextProgress {
     pub total: AtomicUsize,
 }
 
-/// ためておくファイル。本が変わったら（大きさか更新日時が違えば）別のファイルになる
-fn cache_path(book: &Path, cache_dir: &Path) -> Option<PathBuf> {
+/// ためておく本の数の上限。超えたら、長く使っていないものから消す
+/// （消したり動かしたりした本のぶんが、たまり続けないように）
+const CACHE_LIMIT: usize = 300;
+
+/// ためておくファイルの中身。本が変わったか見分けるため、大きさと更新日時も書く
+#[derive(Serialize, Deserialize)]
+struct CacheFile {
+    size: u64,
+    modified: u64,
+    pages: Vec<String>,
+}
+
+/// 本の版（大きさ, 更新日時）
+fn version(book: &Path) -> Option<(u64, u64)> {
     let meta = std::fs::metadata(book).ok()?;
     let modified = meta
         .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs());
-    let key = format!("{}\n{}\n{modified}", book.display(), meta.len());
-    Some(
-        cache_dir
-            .join("text")
-            .join(format!("{}.json", cover_cache_name(&key))),
-    )
+    Some((meta.len(), modified))
 }
 
-/// PDF の文字を取り出す（ためておいたものがあればそれを使う）。止められたら None
+/// ためておくファイル。本の場所ごとに1つ（本が変わったら書き直す）
+fn cache_path(book: &Path, cache_dir: &Path) -> PathBuf {
+    cache_dir.join("text").join(format!(
+        "{}.json",
+        cover_cache_name(&book.to_string_lossy())
+    ))
+}
+
+/// ためておいた文字。本が変わっていれば None。使ったものとして、ファイルの時刻を新しくする
+fn load_cache(book: &Path, cache_dir: &Path) -> Option<BookText> {
+    let path = cache_path(book, cache_dir);
+    let cache: CacheFile = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    if version(book)? != (cache.size, cache.modified) {
+        return None;
+    }
+    if let Ok(file) = std::fs::File::options().write(true).open(&path) {
+        let _ = file.set_modified(SystemTime::now());
+    }
+    Some(BookText {
+        pages: cache.pages,
+        failed: 0,
+    })
+}
+
+/// 取り出した文字をためておき、上限を超えたら古いものから消す
+fn save_cache(book: &Path, cache_dir: &Path, text: &BookText) {
+    let Some((size, modified)) = version(book) else {
+        return;
+    };
+    let path = cache_path(book, cache_dir);
+    let cache = CacheFile {
+        size,
+        modified,
+        pages: text.pages.clone(),
+    };
+    if let Some(parent) = path.parent()
+        && std::fs::create_dir_all(parent).is_ok()
+        && let Ok(json) = serde_json::to_string(&cache)
+    {
+        let _ = crate::engine::settings_store::write_atomic(&path, json.as_bytes());
+    }
+    prune_cache(&cache_dir.join("text"), CACHE_LIMIT);
+}
+
+/// `dir` の、ためておいた文字のファイルを `limit` 個まで残し、長く使っていないものから消す
+fn prune_cache(dir: &Path, limit: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    if files.len() <= limit {
+        return;
+    }
+    files.sort();
+    for (_, path) in &files[..files.len() - limit] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// PDF の文字を取り出す（ためておいたものがあればそれを使う）。止められたら None。
+/// 読めなかったページがあれば、ためておかない（次に開いたときにまた取り出す）
 fn pdf_text(
     pdfium: SharedPdfium,
     book: &Path,
@@ -54,48 +127,60 @@ fn pdf_text(
     progress: &TextProgress,
     cancel: &AtomicBool,
 ) -> Option<BookText> {
-    let cache = cache_path(book, cache_dir);
-    if let Some(text) = cache
-        .as_ref()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|data| serde_json::from_str::<BookText>(&data).ok())
-    {
+    if let Some(text) = load_cache(book, cache_dir) {
         return Some(text);
     }
     let document = pdfium.open(book)?;
     let count = document.page_count();
     progress.total.store(count, Ordering::Relaxed);
-    let mut pages = Vec::with_capacity(count);
+    let mut text = BookText {
+        pages: Vec::with_capacity(count),
+        failed: 0,
+    };
     for index in 0..count {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
         // ページごとに鍵を取るので、画面のページを描くのを長く止めない
-        pages.push(document.page_text(index).unwrap_or_default());
+        let page = document.page_text(index);
+        if page.is_none() {
+            text.failed += 1;
+        }
+        text.pages.push(page.unwrap_or_default());
         progress.done.store(index + 1, Ordering::Relaxed);
     }
-    let text = BookText { pages };
-    if let Some(path) = cache
-        && let Some(parent) = path.parent()
-        && std::fs::create_dir_all(parent).is_ok()
-        && let Ok(json) = serde_json::to_string(&text)
-    {
-        let _ = crate::engine::settings_store::write_atomic(&path, json.as_bytes());
+    if text.failed == 0 {
+        save_cache(book, cache_dir, &text);
     }
     Some(text)
 }
 
-/// 本の文字を別のスレッドで取り出す。`cancel` を立てると止まる
+/// 取り出した本の文字
+pub struct LoadedText {
+    pub index: SearchIndex,
+    /// 文字が1つも無い（透明テキストの無い本）
+    pub empty: bool,
+    /// 文字を読めなかったページの数
+    pub failed: usize,
+}
+
+/// 本の文字を別のスレッドで取り出し、検索のための形にする。`cancel` を立てると止まる
 pub fn spawn_book_text(
     pdfium: SharedPdfium,
     book: PathBuf,
     cache_dir: PathBuf,
     progress: Arc<TextProgress>,
     cancel: Arc<AtomicBool>,
-) -> Receiver<Option<BookText>> {
+) -> Receiver<Option<LoadedText>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let _ = tx.send(pdf_text(pdfium, &book, &cache_dir, &progress, &cancel));
+        let loaded =
+            pdf_text(pdfium, &book, &cache_dir, &progress, &cancel).map(|text| LoadedText {
+                index: SearchIndex::new(&text),
+                empty: text.is_empty(),
+                failed: text.failed,
+            });
+        let _ = tx.send(loaded);
     });
     rx
 }
@@ -157,59 +242,108 @@ pub struct Hit {
 
 /// 前後に出す文字数
 const SNIPPET_AROUND: usize = 16;
+/// 探す語の長さの上限（文字）
+pub const MAX_QUERY_CHARS: usize = 200;
 
-/// `query` を本の中から探す。空白は無視するので、行をまたいでも見つかる。多くても `limit` 件まで
-pub fn search(text: &BookText, query: &str, limit: usize) -> Vec<Hit> {
-    let query: Vec<char> = query.chars().filter_map(fold_char).collect();
-    if query.is_empty() {
-        return Vec::new();
+/// 検索のための形にした1ページ
+struct IndexedPage {
+    /// 比べやすい形にした文字（空白は除く）
+    folded: String,
+    /// `folded` の各文字の、元の文字（前後の文を出すのに使う）
+    kept: Vec<char>,
+    /// `folded` の各文字の、先頭からの位置（バイト）
+    starts: Vec<usize>,
+}
+
+/// 検索のための形にした本。本を読み込んだときに一度だけ作り、語を打つたびには作らない
+pub struct SearchIndex {
+    pages: Vec<IndexedPage>,
+}
+
+impl SearchIndex {
+    pub fn new(text: &BookText) -> Self {
+        let pages = text
+            .pages
+            .iter()
+            .map(|content| {
+                let mut page = IndexedPage {
+                    folded: String::new(),
+                    kept: Vec::new(),
+                    starts: Vec::new(),
+                };
+                for c in content.chars() {
+                    if let Some(folded) = fold_char(c) {
+                        page.starts.push(page.folded.len());
+                        page.folded.push(folded);
+                        page.kept.push(c);
+                    }
+                }
+                page
+            })
+            .collect();
+        Self { pages }
     }
-    let mut hits = Vec::new();
-    for (page, content) in text.pages.iter().enumerate() {
-        // 空白を除いた元の文字と、比べやすい形の文字を、同じ位置で並べる
-        let (kept, folded): (Vec<char>, Vec<char>) = content
+
+    /// `query` を探す。空白は無視するので、行をまたいでも見つかる。多くても `limit` 件まで。
+    /// 標準の文字列検索を使うので、本の長さに比例する時間で済む
+    pub fn search(&self, query: &str, limit: usize) -> Vec<Hit> {
+        let query: String = query
             .chars()
-            .filter_map(|c| fold_char(c).map(|folded| (c, folded)))
-            .unzip();
-        let mut start = 0;
-        while start + query.len() <= folded.len() {
-            if folded[start..start + query.len()] == query[..] {
-                let from = start.saturating_sub(SNIPPET_AROUND);
-                let to = (start + query.len() + SNIPPET_AROUND).min(kept.len());
-                let mut snippet: String = kept[from..to].iter().collect();
-                if from > 0 {
+            .filter_map(fold_char)
+            .take(MAX_QUERY_CHARS)
+            .collect();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let length = query.chars().count();
+        let mut hits = Vec::new();
+        for (page, indexed) in self.pages.iter().enumerate() {
+            let mut from = 0;
+            while let Some(found) = indexed.folded[from..].find(&query) {
+                let byte = from + found;
+                let Ok(start) = indexed.starts.binary_search(&byte) else {
+                    break;
+                };
+                let first = start.saturating_sub(SNIPPET_AROUND);
+                let last = (start + length + SNIPPET_AROUND).min(indexed.kept.len());
+                let mut snippet: String = indexed.kept[first..last].iter().collect();
+                if first > 0 {
                     snippet.insert(0, '…');
                 }
-                if to < kept.len() {
+                if last < indexed.kept.len() {
                     snippet.push('…');
                 }
                 hits.push(Hit { page, snippet });
                 if hits.len() >= limit {
                     return hits;
                 }
-                start += query.len();
-            } else {
-                start += 1;
+                from = byte + query.len();
             }
         }
+        hits
     }
-    hits
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn search(text: &BookText, query: &str, limit: usize) -> Vec<Hit> {
+        SearchIndex::new(text).search(query, limit)
+    }
+
+    fn book_text(pages: Vec<String>) -> BookText {
+        BookText { pages, failed: 0 }
+    }
+
     #[test]
     fn searches_ignore_spaces_and_vertical_forms() {
-        let text = BookText {
-            pages: vec![
-                "表紙".to_owned(),
-                "れ て です ね︒ でも︑ お願 いだ から\nこれ だ け は\n﹃フ ァー マシ ィー﹄"
-                    .to_owned(),
-                "ＭａｎｇａＲｅｅｄａ で読む".to_owned(),
-            ],
-        };
+        let text = book_text(vec![
+            "表紙".to_owned(),
+            "れ て です ね︒ でも︑ お願 いだ から\nこれ だ け は\n﹃フ ァー マシ ィー﹄"
+                .to_owned(),
+            "ＭａｎｇａＲｅｅｄａ で読む".to_owned(),
+        ]);
         // 文字のあいだの空白や改行をまたいでも見つかる
         let hits = search(&text, "お願いだからこれだけは", 10);
         assert_eq!(hits.len(), 1);
@@ -223,19 +357,12 @@ mod tests {
         assert!(search(&text, "無い語", 10).is_empty());
         assert!(search(&text, "  ", 10).is_empty());
         assert!(!text.is_empty());
-        assert!(
-            BookText {
-                pages: vec![" ".to_owned()]
-            }
-            .is_empty()
-        );
+        assert!(book_text(vec![" ".to_owned()]).is_empty());
     }
 
     #[test]
     fn hits_are_limited_and_snippets_are_cut_around_the_word() {
-        let text = BookText {
-            pages: vec!["あ".repeat(40) + "語" + &"い".repeat(40) + "語"],
-        };
+        let text = book_text(vec!["あ".repeat(40) + "語" + &"い".repeat(40) + "語"]);
         let hits = search(&text, "語", 1);
         assert_eq!(hits.len(), 1);
         let expected = format!(
@@ -247,19 +374,63 @@ mod tests {
         assert_eq!(search(&text, "語", 10).len(), 2);
     }
 
-    /// 取り出した文字はためておき、本が変わったら別のものにする
+    /// 取り出した文字は本ごとに1つのファイルにためておき、本が変わったら使わない
     #[test]
-    fn extracted_text_is_cached_per_book_version() {
+    fn extracted_text_is_cached_per_book_and_dropped_when_it_changes() {
         let dir = std::env::temp_dir().join(format!("manga-book-text-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let book = dir.join("a.pdf");
         std::fs::write(&book, "1").unwrap();
-        let first = cache_path(&book, &dir).unwrap();
-        assert_eq!(first, cache_path(&book, &dir).unwrap());
+        let text = book_text(vec!["文字".to_owned()]);
+        save_cache(&book, &dir, &text);
+        assert_eq!(load_cache(&book, &dir), Some(text));
+        // 本が変わったら、ためておいたものは使わず、同じファイルを書き直す
         std::fs::write(&book, "22").unwrap();
-        assert_ne!(first, cache_path(&book, &dir).unwrap());
+        assert_eq!(load_cache(&book, &dir), None);
+        save_cache(&book, &dir, &book_text(vec!["新".to_owned()]));
+        assert_eq!(std::fs::read_dir(dir.join("text")).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// ためておくファイルが上限を超えたら、長く使っていないものから消す
+    #[test]
+    fn the_cache_keeps_only_the_most_recently_used_books() {
+        let dir =
+            std::env::temp_dir().join(format!("manga-book-text-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now();
+        for i in 0..5u64 {
+            let path = dir.join(format!("{i}.json"));
+            std::fs::write(&path, "{}").unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(now - std::time::Duration::from_secs(100 - i))
+                .unwrap();
+        }
+        prune_cache(&dir, 3);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["2.json", "3.json", "4.json"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 長い語で、終わりだけが違うものを探しても、すぐ終わる
+    #[test]
+    fn long_queries_on_large_books_finish_quickly() {
+        let page = "あ".repeat(200_000);
+        let text = book_text(vec![page; 5]);
+        let index = SearchIndex::new(&text);
+        let query = "あ".repeat(MAX_QUERY_CHARS - 1) + "い";
+        let started = std::time::Instant::now();
+        assert!(index.search(&query, 10).is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        // 上限より長い語は、上限の長さまでで探す
+        let too_long = "あ".repeat(MAX_QUERY_CHARS * 2) + "い";
+        assert_eq!(index.search(&too_long, 1).len(), 1);
     }
 
     /// 2ページ目にだけ文字のある PDF
@@ -318,14 +489,15 @@ mod tests {
             progress.clone(),
             Arc::new(AtomicBool::new(false)),
         );
-        let text = rx.recv().unwrap().unwrap();
-        assert_eq!(text.pages.len(), 2);
+        let loaded = rx.recv().unwrap().unwrap();
+        assert!(!loaded.empty);
+        assert_eq!(loaded.failed, 0);
         assert_eq!(progress.done.load(Ordering::Relaxed), 2);
-        let hits = search(&text, "mangareeda", 10);
+        let hits = loaded.index.search("mangareeda", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].page, 1);
         // 2回目は、ためておいたものを使う
-        assert!(cache_path(&book, &dir.join("cache")).unwrap().is_file());
+        assert!(cache_path(&book, &dir.join("cache")).is_file());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
