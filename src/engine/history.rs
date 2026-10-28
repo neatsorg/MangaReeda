@@ -40,6 +40,15 @@ pub struct SubfolderChoice {
     pub include: bool,
 }
 
+/// 利用者が選んだ表紙
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CoverChoice {
+    /// 冊（書庫・フォルダ・PDF）の絶対パス
+    pub path: PathBuf,
+    /// 表紙にするページ（`source::page_key` の形）
+    pub page: String,
+}
+
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
 pub struct History {
     /// 新しいものが先頭
@@ -50,6 +59,9 @@ pub struct History {
     /// 新しく登録したものが先頭。数の上限は無い
     #[serde(default)]
     pub favorites: Vec<FavoriteEntry>,
+    /// 冊ごとに選んだ表紙。数の上限は無い
+    #[serde(default)]
+    pub covers: Vec<CoverChoice>,
 }
 
 /// 同じ冊を別の書き方のパスで開いても同じ記録になるよう、正規化したパスを使う
@@ -129,6 +141,21 @@ impl History {
     pub fn remove_favorite(&mut self, path: &Path) {
         let path = normalize(path);
         self.favorites.retain(|entry| entry.path != path);
+    }
+
+    /// 冊の表紙にするページを覚える
+    pub fn choose_cover(&mut self, path: &Path, page: String) {
+        let path = normalize(path);
+        self.covers.retain(|choice| choice.path != path);
+        self.covers.push(CoverChoice { path, page });
+    }
+
+    /// 選んだ表紙（冊の正規化したパス → ページ）。表紙を作るスレッドに渡す
+    pub fn cover_choices(&self) -> std::collections::HashMap<PathBuf, String> {
+        self.covers
+            .iter()
+            .map(|choice| (choice.path.clone(), choice.page.clone()))
+            .collect()
     }
 
     /// フォルダで覚えたサブフォルダの読み方
@@ -252,6 +279,21 @@ mod tests {
         // この項目が無い古い履歴ファイルも読める
         let old: History = serde_json::from_str(r#"{"entries": []}"#).unwrap();
         assert!(old.subfolder_choices.is_empty());
+    }
+
+    #[test]
+    fn chosen_covers_are_kept_per_book_and_replaced() {
+        let mut history = History::default();
+        let (a, b) = (Path::new("/books/a.zip"), Path::new("/books/b"));
+        history.choose_cover(a, "02.png".to_owned());
+        history.choose_cover(b, "sub/03.png".to_owned());
+        history.choose_cover(a, "05.png".to_owned());
+        let choices = history.cover_choices();
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[&normalize(a)], "05.png");
+        // 古い履歴のファイル（covers が無い）も読める
+        let old: History = serde_json::from_str(r#"{"entries": []}"#).unwrap();
+        assert!(old.covers.is_empty());
     }
 
     #[test]

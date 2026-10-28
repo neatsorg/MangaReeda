@@ -20,6 +20,18 @@ pub struct Listing {
     pub start_at: Option<String>,
 }
 
+/// ページを冊の中で見分ける名前（選んだ表紙の記録に使う）。書庫と PDF はページの名前のまま、
+/// フォルダは冊のフォルダからの相対パス（冊のフォルダを動かしても記録が使えるように）
+pub fn page_key(mode: SourceMode, root: &Path, name: &str) -> String {
+    match mode {
+        SourceMode::Folder => Path::new(name).strip_prefix(root).map_or_else(
+            |_| name.to_owned(),
+            |relative| relative.to_string_lossy().into_owned(),
+        ),
+        _ => name.to_owned(),
+    }
+}
+
 /// Lists the pages of `path`. A single image file opens its whole folder.
 /// PDFs are not handled here: their pages come from the loaded document.
 /// Returns `None` when a ZIP archive cannot be opened at all.

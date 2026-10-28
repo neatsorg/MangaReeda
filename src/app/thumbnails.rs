@@ -9,9 +9,11 @@ use super::loader::OpenAt;
 use super::plugins::DownloadStatus;
 use crate::config::SourceMode;
 use crate::engine::plugin::PluginError;
+use crate::engine::source::page_key;
 use crate::engine::thumbnail::{
-    CoverEntry, CoverSource, Direction, Grid, THUMBNAIL_MAX_SIDE, ThumbnailMode, cover_cache_name,
-    cover_entries, folder_shelf, move_selection, spawn_cover_loader, spawn_loader,
+    CoverEntry, CoverOptions, CoverSource, Direction, Grid, THUMBNAIL_MAX_SIDE, ThumbnailMode,
+    cover_cache_name, cover_entries, folder_shelf, move_selection, spawn_cover_loader,
+    spawn_loader,
 };
 use crate::localize::tr;
 use eframe::egui;
@@ -278,6 +280,34 @@ impl MangaReader {
         }));
     }
 
+    /// いま見ているページを、この冊の表紙にする。MangaReeda の記録（履歴のファイル）に持ち、本のファイルは変えない
+    /// （プラグインからダウンロードした本も同じように選べる）
+    pub(super) fn choose_current_page_as_cover(&mut self) {
+        let Some(book) = self.zip_path.clone() else {
+            return;
+        };
+        let Some(name) = self.image_files.get(self.current_index) else {
+            return;
+        };
+        let page = page_key(self.source_mode, &book, name);
+        self.history.choose_cover(&book, page);
+        self.save_history();
+        // 表紙の一覧を出していれば、この冊の表紙を作り直す
+        if let Some(shelf) = self
+            .thumbnails
+            .as_mut()
+            .and_then(|view| view.covers.as_mut())
+        {
+            for (entry, texture) in shelf.entries.iter().zip(shelf.textures.iter_mut()) {
+                if entry.path == book {
+                    *texture = None;
+                }
+            }
+            self.reshow_shelf();
+        }
+        self.show_fading_error(tr("shelf.cover_chosen"));
+    }
+
     /// 並べているもの。表紙サムネイルを開いていなければ None
     pub(super) fn shelf_source(&self) -> Option<ShelfSource> {
         self.thumbnails
@@ -487,27 +517,30 @@ impl MangaReader {
             .filter(|&index| textures[index].is_none())
             .collect();
         let cancel = Arc::new(AtomicBool::new(false));
-        let rx = (!loading.is_empty()).then(|| {
-            let covers = self.plugins.cover_cache_dir();
-            spawn_cover_loader(
-                loading
-                    .iter()
-                    .map(|&index| {
-                        let entry = &entries[index];
-                        // プラグインの本は表紙の URL から（ダウンロードした PDF は別スレッドで描けない）
-                        match entry.remote.as_ref().and_then(|r| r.cover_url.as_ref()) {
-                            Some(url) => CoverSource::Url {
-                                url: url.clone(),
-                                cache: covers.join(cover_cache_name(url)),
-                            },
-                            None => CoverSource::Local(entry.path.clone()),
-                        }
-                    })
-                    .collect(),
-                self.config.enable_auto_image_byte_fix,
-                cancel.clone(),
-            )
+        let options = (!loading.is_empty()).then(|| CoverOptions {
+            fix_adobe: self.config.enable_auto_image_byte_fix,
+            pdfium: crate::engine::pdf::pdfium(),
+            chosen: Arc::new(self.history.cover_choices()),
         });
+        let covers = self.plugins.cover_cache_dir();
+        let sources: Vec<CoverSource> = loading
+            .iter()
+            .map(|&index| {
+                let entry = &entries[index];
+                // プラグインの本は、手元に置く（置いた）場所で探す
+                let local = self.remote_path(entry);
+                // 表紙の URL があるプラグインの本は URL から。取れなければ、ダウンロードした本から
+                match entry.remote.as_ref().and_then(|r| r.cover_url.as_ref()) {
+                    Some(url) => CoverSource::Url {
+                        url: url.clone(),
+                        cache: covers.join(cover_cache_name(url)),
+                        local: Some(local),
+                    },
+                    None => CoverSource::Local(local),
+                }
+            })
+            .collect();
+        let rx = options.map(|options| spawn_cover_loader(sources, options, cancel.clone()));
         self.thumbnails = Some(ThumbnailView {
             mode: ThumbnailMode::Covers,
             selected,
@@ -1070,16 +1103,30 @@ impl MangaReader {
                     } else {
                         cell
                     };
+                    let cover_entry = self
+                        .thumbnails
+                        .as_ref()
+                        .and_then(|view| view.covers.as_ref())
+                        .and_then(|shelf| shelf.entries.get(index));
                     if let Some(texture) = self.thumbnail_texture(index) {
                         // マスに収まるよう縮める（横長は幅に、縦長は高さに合わせる）
                         let size = texture.size_vec2();
                         let scale = (image_area.width() / size.x).min(image_area.height() / size.y);
+                        let image_rect =
+                            egui::Rect::from_center_size(image_area.center(), size * scale);
                         painter.image(
                             texture.id(),
-                            egui::Rect::from_center_size(image_area.center(), size * scale),
+                            image_rect,
                             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                             egui::Color32::WHITE,
                         );
+                        // 冊の入ったフォルダは、中の表紙に、隅のフォルダの印で本と見分けられるようにする
+                        if cover_entry.is_some_and(|e| e.is_folder && e.loose_pages.is_none()) {
+                            paint_folder_badge(&painter, image_rect);
+                        }
+                    } else if let Some(entry) = cover_entry {
+                        // 表紙が無い（まだ作っていない・作れない）項目は、フォルダか本の絵
+                        paint_placeholder(&painter, image_area, entry);
                     } else {
                         painter.rect_filled(
                             image_area.shrink(image_area.width() * 0.1),
@@ -1387,4 +1434,63 @@ fn draw_shelf_tabs(
         color,
     );
     clicked
+}
+
+/// フォルダの絵の色
+const FOLDER_COLOR: egui::Color32 = egui::Color32::from_rgb(0xc9, 0x9a, 0x3c);
+const FOLDER_TAB_COLOR: egui::Color32 = egui::Color32::from_rgb(0xa8, 0x7c, 0x2a);
+/// 本の絵の色
+const BOOK_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3d, 0x4a, 0x63);
+const BOOK_SPINE_COLOR: egui::Color32 = egui::Color32::from_rgb(0x2a, 0x34, 0x48);
+
+/// フォルダの形を `rect` いっぱいに描く（つまみと本体）
+fn paint_folder(painter: &egui::Painter, rect: egui::Rect) {
+    let tab = egui::Rect::from_min_size(
+        rect.min,
+        egui::vec2(rect.width() * 0.42, rect.height() * 0.2),
+    );
+    let body = egui::Rect::from_min_max(
+        egui::pos2(rect.min.x, rect.min.y + rect.height() * 0.12),
+        rect.max,
+    );
+    let rounding = rect.height() * 0.08;
+    painter.rect_filled(tab, rounding, FOLDER_TAB_COLOR);
+    painter.rect_filled(body, rounding, FOLDER_COLOR);
+}
+
+/// 表紙の無い項目の絵。フォルダはフォルダの形、本は拡張子を書いた本の形
+fn paint_placeholder(painter: &egui::Painter, area: egui::Rect, entry: &CoverEntry) {
+    if entry.is_folder {
+        let width = (area.width() * 0.7).min(area.height() * 0.7 / 0.78);
+        let rect = egui::Rect::from_center_size(area.center(), egui::vec2(width, width * 0.78));
+        paint_folder(painter, rect);
+        return;
+    }
+    let height = (area.height() * 0.78).min(area.width() * 0.78 / 0.72);
+    let rect = egui::Rect::from_center_size(area.center(), egui::vec2(height * 0.72, height));
+    painter.rect_filled(rect, height * 0.03, BOOK_COLOR);
+    let spine = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * 0.1, rect.height()));
+    painter.rect_filled(spine, height * 0.03, BOOK_SPINE_COLOR);
+    let extension = entry
+        .path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_uppercase())
+        .unwrap_or_default();
+    if !extension.is_empty() {
+        painter.text(
+            rect.center() + egui::vec2(rect.width() * 0.05, 0.0),
+            egui::Align2::CENTER_CENTER,
+            extension,
+            egui::FontId::proportional((rect.width() * 0.22).clamp(10.0, 28.0)),
+            egui::Color32::from_gray(230),
+        );
+    }
+}
+
+/// 表紙の右下に付ける、小さなフォルダの印
+fn paint_folder_badge(painter: &egui::Painter, image: egui::Rect) {
+    let size = egui::vec2(30.0, 24.0).min(image.size() * 0.4);
+    let backing = egui::Rect::from_min_size(image.max - size - egui::vec2(4.0, 4.0), size);
+    painter.rect_filled(backing, 4.0, egui::Color32::from_black_alpha(170));
+    paint_folder(painter, backing.shrink2(size * egui::vec2(0.15, 0.18)));
 }

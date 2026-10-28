@@ -17,13 +17,13 @@ mod view;
 
 use crate::config::{AppSettings, MangaAction, SourceMode};
 use crate::engine::history::History;
+use crate::engine::pdf::PdfDoc;
 use crate::engine::settings_store;
 use crate::font;
 use crate::localize::{set_language, tr};
 use animation::{AnimatedFrame, AnimatedPage, AnimationScanEvent, AnimationScanStatus};
 use eframe::egui;
 use gilrs::Gilrs;
-use pdfium_render::prelude::{PdfDocument, Pdfium};
 use settings_panel::{BindingTarget, ControlProfile};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -90,8 +90,7 @@ pub struct MangaReader {
     animation_scan_epoch: Arc<AtomicU64>,
     animation_scan_rx: Option<Receiver<AnimationScanEvent>>,
     animation_scan_status: std::collections::HashMap<String, AnimationScanStatus>,
-    pdfium: Option<&'static Pdfium>,
-    pdf_document: Option<PdfDocument<'static>>,
+    pdf_document: Option<PdfDoc>,
     pdf_document_path: Option<PathBuf>,
     initial_path: Option<PathBuf>,
     source_mode: SourceMode,
@@ -204,7 +203,6 @@ impl MangaReader {
             animation_scan_epoch: Arc::new(AtomicU64::new(0)),
             animation_scan_rx: None,
             animation_scan_status: Default::default(),
-            pdfium: None,
             pdf_document: None,
             pdf_document_path: None,
             source_mode: SourceMode::Zip,
@@ -1034,13 +1032,16 @@ mod tests {
         );
         let mode = reader.source_mode;
         let files = reader.image_files.clone();
-        // 画像の無いフォルダ（PDF は pdfium が1つのプロセスに1つしか持てないので、
-        // ほかのテストと並べて試せない）
+        // 画像の無いフォルダと、壊れた PDF（pdfium はプロセスで1つを使い回すので、ほかのテストと並べられる）
         let empty = TestPages::new(&[]);
-        reader.load_source(empty.0.clone(), false, &ctx);
-        assert_eq!(reader.zip_path, Some(pages.0.clone()));
-        assert_eq!(reader.source_mode, mode);
-        assert_eq!(reader.image_files, files);
+        let broken = empty.0.join("broken.pdf");
+        fs::write(&broken, "not a pdf").unwrap();
+        for path in [empty.0.clone(), broken] {
+            reader.load_source(path, false, &ctx);
+            assert_eq!(reader.zip_path, Some(pages.0.clone()));
+            assert_eq!(reader.source_mode, mode);
+            assert_eq!(reader.image_files, files);
+        }
         reader.go_to_page(2, &ctx);
         assert_eq!(reader.current_index, 2);
         assert!(reader.textures[0].is_some());

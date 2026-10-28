@@ -8,6 +8,7 @@ pub mod imaging;
 pub mod layout;
 pub mod library;
 pub mod loupe;
+pub mod pdf;
 pub mod plugin;
 pub mod scroll;
 pub mod settings_store;

@@ -2,10 +2,13 @@
 //! マスの並べ方、方向キーでの選択の動き、縮小画像の作成と、別スレッドでの読み込み。
 
 use crate::config::SourceMode;
+use crate::engine::history::normalize;
 use crate::engine::imaging::strip_adobe_app14_if_invalid;
 use crate::engine::library::{natural_sort_strings, scan_folder};
-use crate::engine::source::{SourceReader, list_images};
+use crate::engine::pdf::SharedPdfium;
+use crate::engine::source::{SourceReader, list_images, page_key};
 use image::{ImageFormat, RgbaImage};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -196,33 +199,139 @@ pub struct RemoteRef {
 pub enum CoverSource {
     /// 手元の冊の最初のページ
     Local(PathBuf),
-    /// 表紙の画像の URL。一度取ったら `cache` に置き、次からはそれを使う
-    Url { url: String, cache: PathBuf },
+    /// 表紙の画像の URL。一度取ったら `cache` に置き、次からはそれを使う。
+    /// 取れなければ、手元にある本（`local`。ダウンロードした本）から作る
+    Url {
+        url: String,
+        cache: PathBuf,
+        local: Option<PathBuf>,
+    },
 }
 
 /// 表紙の画像の大きさの上限
 const COVER_DOWNLOAD_LIMIT: u64 = 10 * 1024 * 1024;
 
-/// URL の表紙の画像。手元にあればそれを、無ければ取ってきて置いておく
-fn url_cover_bytes(url: &str, cache: &Path) -> Option<Vec<u8>> {
+/// 表紙として使う画像の短い辺の最小（ピクセル）。これより小さいものは「画像なし」の印とみなす
+const MIN_COVER_SIDE: u32 = 16;
+
+/// 表紙の画像をサイトから取る間隔（サイトに負担をかけないよう、1枚ずつ間を空ける）
+const COVER_FETCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// 取れなかった表紙を、取りに行かずにおく時間（秒）
+const COVER_RETRY_AFTER: u64 = 24 * 60 * 60;
+
+/// 手元に置いた URL の表紙の画像。名前の計算を変える前（Rust 標準のハッシュ）の名前で置いたものがあれば、
+/// 名前を付け替えて使う（何百冊もの表紙を、サイトから取り直さないように）
+fn cached_url_cover(url: &str, cache: &Path) -> Option<Vec<u8>> {
     if let Ok(bytes) = std::fs::read(cache) {
         return Some(bytes);
     }
+    let legacy = cache.with_file_name(legacy_cache_name(url));
+    std::fs::rename(&legacy, cache).ok()?;
+    std::fs::read(cache).ok()
+}
+
+/// 取れなかった表紙の記録（表紙の名前 → 取れなかった日時）。表紙を置くフォルダに置く
+fn failures_path(cache: &Path) -> PathBuf {
+    cache.with_file_name("failed.json")
+}
+
+fn load_failures(cache: &Path) -> HashMap<String, u64> {
+    std::fs::read_to_string(failures_path(cache))
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_default()
+}
+
+fn save_failures(cache: &Path, failures: &HashMap<String, u64>) {
+    if let Ok(json) = serde_json::to_string(failures) {
+        let _ = crate::engine::settings_store::write_atomic(&failures_path(cache), json.as_bytes());
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// 最近（`COVER_RETRY_AFTER` 以内に）取れなかった表紙か
+fn recently_failed(cache: &Path, url: &str, now: u64) -> bool {
+    load_failures(cache)
+        .get(&cover_cache_name(url))
+        .is_some_and(|&at| now.saturating_sub(at) < COVER_RETRY_AFTER)
+}
+
+/// 取れなかったことを覚える（古い記録は捨てる）。取れたら記録から外す
+fn note_fetch(cache: &Path, url: &str, ok: bool, now: u64) {
+    let mut failures = load_failures(cache);
+    let before = failures.len();
+    failures.retain(|_, at| now.saturating_sub(*at) < COVER_RETRY_AFTER);
+    let key = cover_cache_name(url);
+    let changed = if ok {
+        failures.remove(&key).is_some()
+    } else {
+        failures.insert(key, now);
+        true
+    };
+    if changed || failures.len() != before {
+        save_failures(cache, &failures);
+    }
+}
+
+/// 表紙の画像をサイトから取って、手元に置く。サイトに負担をかけないよう、一度に1枚ずつ、
+/// 前に取ってから `COVER_FETCH_INTERVAL` 空けて取る。最近取れなかった表紙は取りに行かない。
+/// 待っているあいだに `cancel` が立ったら（一覧を離れたら）取りに行かない
+fn fetch_url_cover(url: &str, cache: &Path, cancel: &AtomicBool) -> Option<Vec<u8>> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return None;
     }
-    let mut response = ureq::get(url).call().ok()?;
-    let bytes = response
-        .body_mut()
-        .with_config()
-        .limit(COVER_DOWNLOAD_LIMIT)
-        .read_to_vec()
-        .ok()?;
+    static LAST_FETCH: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST_FETCH
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 待っているあいだに、ほかのスレッドが同じ表紙を取ったかもしれない
+    if let Ok(bytes) = std::fs::read(cache) {
+        return Some(bytes);
+    }
+    if cancel.load(Ordering::Relaxed) || recently_failed(cache, url, unix_now()) {
+        return None;
+    }
+    while last.is_some_and(|at| at.elapsed() < COVER_FETCH_INTERVAL) {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+    *last = Some(std::time::Instant::now());
+    // 答えないサーバーで、表紙を作るスレッドが止まり続けないように
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(15)))
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .build()
+        .into();
+    let bytes = agent.get(url).call().ok().and_then(|mut response| {
+        response
+            .body_mut()
+            .with_config()
+            .limit(COVER_DOWNLOAD_LIMIT)
+            .read_to_vec()
+            .ok()
+    });
     if let Some(parent) = cache.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    note_fetch(cache, url, bytes.is_some(), unix_now());
+    let bytes = bytes?;
     let _ = crate::engine::settings_store::write_atomic(cache, &bytes);
     Some(bytes)
+}
+
+/// 名前の計算を変える前の、表紙のためておきの名前（Rust 標準のハッシュ。前に置いたものを探すためだけに使う）
+fn legacy_cache_name(url: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// 文字列から作る、16 桁の短い名前（表紙や一覧のファイル名、ダウンロードした本の印、アカウントの記録に使う）。
@@ -273,32 +382,71 @@ pub fn folder_shelf(folder: &Path) -> Vec<CoverEntry> {
 
 /// 冊の表紙のバイト列。表紙は並び順で最初のページ。画像の無いフォルダは、中の最初の冊の表紙。
 /// PDF は描けないので None
-fn cover_bytes(path: &Path, depth: usize) -> Option<Vec<u8>> {
-    let is_pdf = path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
-    if is_pdf {
-        return None;
+/// 表紙の作り方
+#[derive(Clone, Default)]
+pub struct CoverOptions {
+    /// 壊れた Adobe のマーカーを直してから読むか
+    pub fix_adobe: bool,
+    /// PDF の表紙を描く pdfium。無ければ PDF の表紙は作らない
+    pub pdfium: Option<SharedPdfium>,
+    /// 利用者が選んだ表紙（冊の正規化したパス → `page_key` の形のページ）
+    pub chosen: Arc<HashMap<PathBuf, String>>,
+}
+
+fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+}
+
+/// 選んだ表紙のページを読む。冊をサブフォルダごと読んだときに選んだページも探す
+fn chosen_page_bytes(path: &Path, page: &str) -> Option<Vec<u8>> {
+    [false, true].into_iter().find_map(|include_subfolders| {
+        let listing = list_images(path, include_subfolders)?;
+        let name = listing
+            .images
+            .iter()
+            .find(|name| page_key(listing.mode, &listing.root, name) == page)?;
+        SourceReader::open(listing.mode, &listing.root).read(name)
+    })
+}
+
+/// 冊の表紙。選んだ表紙があればそのページ、無ければ最初のページ。PDF は描く。
+/// 冊の入ったフォルダは、`depth` 段まで下の冊の表紙を探す
+fn cover_image(path: &Path, depth: usize, options: &CoverOptions) -> Option<RgbaImage> {
+    let chosen = options.chosen.get(&normalize(path));
+    if is_pdf(path) {
+        let index = chosen
+            .and_then(|page| page.strip_prefix("pdf_page_")?.parse().ok())
+            .unwrap_or(0);
+        let side = THUMBNAIL_MAX_SIDE as f32;
+        let image = options
+            .pdfium?
+            .open(path)?
+            .render(index, side, Some(side))?;
+        return Some(image.to_rgba8());
+    }
+    if let Some(bytes) = chosen.and_then(|page| chosen_page_bytes(path, page)) {
+        return decode_thumbnail(&bytes, THUMBNAIL_MAX_SIDE, options.fix_adobe);
     }
     if let Some(listing) = list_images(path, false)
         && !listing.images.is_empty()
     {
         let mut images = listing.images;
         natural_sort_strings(&mut images);
-        return SourceReader::open(listing.mode, &listing.root).read(&images[0]);
+        let bytes = SourceReader::open(listing.mode, &listing.root).read(&images[0])?;
+        return decode_thumbnail(&bytes, THUMBNAIL_MAX_SIDE, options.fix_adobe);
     }
     if !path.is_dir() || depth == 0 {
         return None;
     }
     cover_entries(path)
         .iter()
-        .find_map(|entry| cover_bytes(&entry.path, depth - 1))
+        .find_map(|entry| cover_image(&entry.path, depth - 1, options))
 }
 
 /// 冊の表紙のサムネイル
-pub fn cover_thumbnail(path: &Path, fix_adobe: bool) -> Option<RgbaImage> {
-    let bytes = cover_bytes(path, COVER_SEARCH_DEPTH)?;
-    decode_thumbnail(&bytes, THUMBNAIL_MAX_SIDE, fix_adobe)
+pub fn cover_thumbnail(path: &Path, options: &CoverOptions) -> Option<RgbaImage> {
+    cover_image(path, COVER_SEARCH_DEPTH, options)
 }
 
 /// `indices` の順に、`make_worker` で作った処理でサムネイルを作って送る。処理はスレッドごとに作る
@@ -336,9 +484,17 @@ where
                 let Some(&index) = indices.get(next.fetch_add(1, Ordering::Relaxed)) else {
                     return;
                 };
-                let Some(image) = work(index) else {
-                    continue;
-                };
+                // 1冊で失敗して（パニックして）も、その冊を飛ばして続ける
+                // （スレッドが黙って終わり、残りの表紙が作られなくならないように）
+                let image =
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(index))) {
+                        Ok(Some(image)) => image,
+                        Ok(None) => continue,
+                        Err(_) => {
+                            eprintln!("サムネイルを作れませんでした（{index} 番目）");
+                            continue;
+                        }
+                    };
                 if tx.send((index, image)).is_err() {
                     return;
                 }
@@ -348,20 +504,51 @@ where
     rx
 }
 
+/// URL の表紙がある本の表紙。サイトにはなるべく取りに行かないよう、次の順に探す:
+/// 選んだ表紙（ダウンロードした本）、手元に置いた表紙の画像、ダウンロードした本の最初のページ、サイト
+fn url_cover(
+    url: &str,
+    cache: &Path,
+    local: Option<&Path>,
+    options: &CoverOptions,
+    cancel: &AtomicBool,
+) -> Option<RgbaImage> {
+    let local = local.filter(|path| path.is_file());
+    // 小さすぎる画像は表紙として使わない（Amazon などは、画像が無いと 1×1 の透明な GIF を返す）
+    let decode = |bytes: Vec<u8>| {
+        decode_thumbnail(&bytes, THUMBNAIL_MAX_SIDE, options.fix_adobe)
+            .filter(|image| image.width().min(image.height()) >= MIN_COVER_SIDE)
+    };
+    if let Some(local) = local
+        && options.chosen.contains_key(&normalize(local))
+        && let Some(image) = cover_thumbnail(local, options)
+    {
+        return Some(image);
+    }
+    if let Some(image) = cached_url_cover(url, cache).and_then(decode) {
+        return Some(image);
+    }
+    if let Some(image) = local.and_then(|local| cover_thumbnail(local, options)) {
+        return Some(image);
+    }
+    fetch_url_cover(url, cache, cancel).and_then(decode)
+}
+
 /// 冊の表紙のサムネイルを、別スレッドで作って送る。(冊の番号, 画像) を送る
 pub fn spawn_cover_loader(
     books: Vec<CoverSource>,
-    fix_adobe: bool,
+    options: CoverOptions,
     cancel: Arc<AtomicBool>,
 ) -> Receiver<(usize, RgbaImage)> {
     let indices = (0..books.len()).collect();
     let books = Arc::new(books);
+    let stop = cancel.clone();
     spawn_workers(indices, cancel, move || {
-        let books = books.clone();
+        let (books, options, stop) = (books.clone(), options.clone(), stop.clone());
         move |index| match books.get(index)? {
-            CoverSource::Local(path) => cover_thumbnail(path, fix_adobe),
-            CoverSource::Url { url, cache } => {
-                decode_thumbnail(&url_cover_bytes(url, cache)?, THUMBNAIL_MAX_SIDE, fix_adobe)
+            CoverSource::Local(path) => cover_thumbnail(path, &options),
+            CoverSource::Url { url, cache, local } => {
+                url_cover(url, cache, local.as_deref(), &options, &stop)
             }
         }
     })
@@ -478,6 +665,167 @@ mod tests {
         zip.finish().unwrap();
     }
 
+    /// 300×400 と 400×300 の2ページの PDF
+    fn two_page_pdf() -> Vec<u8> {
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] >>".to_owned(),
+        ];
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.push_str(&format!("{} 0 obj\n{object}\nendobj\n", i + 1));
+        }
+        let xref = pdf.len();
+        pdf.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in offsets {
+            pdf.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        pdf.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        pdf.into_bytes()
+    }
+
+    /// PDF の表紙は1ページ目（選んだ表紙があればそのページ）を描く。pdfium が無い環境では確かめない
+    #[test]
+    fn pdf_covers_are_rendered_from_the_chosen_or_first_page() {
+        let Some(pdfium) = crate::engine::pdf::pdfium() else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("manga-pdf-cover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let book = root.join("book.pdf");
+        std::fs::write(&book, two_page_pdf()).unwrap();
+        let options = |chosen: Option<&str>| CoverOptions {
+            pdfium: Some(pdfium),
+            chosen: Arc::new(
+                chosen
+                    .map(|page| (normalize(&book), page.to_owned()))
+                    .into_iter()
+                    .collect(),
+            ),
+            ..CoverOptions::default()
+        };
+        let size = |options: &CoverOptions| cover_thumbnail(&book, options).map(|t| t.dimensions());
+        assert_eq!(size(&options(None)), Some((240, 320)));
+        assert_eq!(size(&options(Some("pdf_page_1"))), Some((320, 240)));
+        // pdfium が無ければ作らない
+        assert_eq!(size(&CoverOptions::default()), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 取れなかった表紙は1日覚えておき、そのあいだは取りに行かない
+    #[test]
+    fn failed_cover_fetches_are_not_retried_for_a_day() {
+        let dir = std::env::temp_dir().join(format!("manga-cover-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("cover.jpg");
+        let url = "https://example.invalid/a.jpg";
+        assert!(!recently_failed(&cache, url, 1000));
+        note_fetch(&cache, url, false, 1000);
+        assert!(recently_failed(&cache, url, 1000 + COVER_RETRY_AFTER - 1));
+        assert!(!recently_failed(&cache, url, 1000 + COVER_RETRY_AFTER));
+        // 取れたら記録から外す
+        note_fetch(&cache, url, true, 2000);
+        assert!(!recently_failed(&cache, url, 2000));
+        // 最近取れなかった表紙は、サイトに取りに行かない（ここでは通信しない）
+        note_fetch(&cache, url, false, unix_now());
+        let started = std::time::Instant::now();
+        assert_eq!(fetch_url_cover(url, &cache, &AtomicBool::new(false)), None);
+        assert!(started.elapsed() < COVER_FETCH_INTERVAL);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// URL の表紙がある本は、選んだ表紙、手元の表紙の画像、ダウンロードした本の順に探す（ここでは通信しない）
+    #[test]
+    fn url_covers_prefer_chosen_pages_then_cached_images_then_downloads() {
+        let dir = std::env::temp_dir().join(format!("manga-url-cover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let book = dir.join("book.zip");
+        write_zip(&book, &[("01.png", png(10, 20)), ("02.png", png(20, 10))]);
+        let cache = dir.join("cover.png");
+        let url = "unreachable:cover.png";
+        let cover = |options: &CoverOptions| {
+            url_cover(url, &cache, Some(&book), options, &AtomicBool::new(false))
+                .map(|image| image.dimensions())
+        };
+        let plain = CoverOptions::default();
+        // 手元に表紙の画像が無ければ、ダウンロードした本の最初のページ
+        assert_eq!(cover(&plain), Some((10, 20)));
+        // 表紙の画像があれば、それ
+        std::fs::write(&cache, png(30, 30)).unwrap();
+        assert_eq!(cover(&plain), Some((30, 30)));
+        // 「画像なし」の印（1×1 の画像）は表紙にせず、ダウンロードした本から作る
+        std::fs::write(&cache, png(1, 1)).unwrap();
+        assert_eq!(cover(&plain), Some((10, 20)));
+        assert_eq!(
+            url_cover(url, &cache, None, &plain, &AtomicBool::new(false)),
+            None
+        );
+        // 表紙を選んであれば、それがいちばん先
+        let chosen = CoverOptions {
+            chosen: Arc::new([(normalize(&book), "02.png".to_owned())].into()),
+            ..CoverOptions::default()
+        };
+        assert_eq!(cover(&chosen), Some((20, 10)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 選んだ表紙があれば、そのページを表紙にする（書庫・フォルダ・サブフォルダの中のページ）
+    #[test]
+    fn chosen_pages_become_the_cover() {
+        let root = std::env::temp_dir().join(format!("manga-chosen-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("folder/sub")).unwrap();
+        let book = root.join("book.zip");
+        write_zip(&book, &[("01.png", png(10, 20)), ("02.png", png(30, 10))]);
+        std::fs::write(root.join("folder/01.png"), png(10, 20)).unwrap();
+        std::fs::write(root.join("folder/sub/02.png"), png(40, 10)).unwrap();
+        let folder = root.join("folder");
+        let options = |choices: &[(&Path, &str)]| CoverOptions {
+            chosen: Arc::new(
+                choices
+                    .iter()
+                    .map(|(path, page)| (normalize(path), page.to_string()))
+                    .collect(),
+            ),
+            ..CoverOptions::default()
+        };
+        let size = |path: &Path, options: &CoverOptions| {
+            cover_thumbnail(path, options).map(|t| t.dimensions())
+        };
+        assert_eq!(size(&book, &options(&[])), Some((10, 20)));
+        assert_eq!(size(&book, &options(&[(&book, "02.png")])), Some((30, 10)));
+        // フォルダは冊のフォルダからの相対パス。サブフォルダごと読んだときに選んだページも探す
+        let sub_page = page_key(
+            SourceMode::Folder,
+            &folder,
+            &folder.join("sub").join("02.png").to_string_lossy(),
+        );
+        assert_eq!(sub_page, Path::new("sub").join("02.png").to_string_lossy());
+        assert_eq!(
+            size(&folder, &options(&[(&folder, &sub_page)])),
+            Some((40, 10))
+        );
+        // 選んだページが無くなっていれば、最初のページ
+        assert_eq!(
+            size(&book, &options(&[(&book, "gone.png")])),
+            Some((10, 20))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn cover_entries_put_folders_first_and_covers_are_first_pages() {
         let root = std::env::temp_dir().join(format!("manga-cover-test-{}", std::process::id()));
@@ -518,7 +866,9 @@ mod tests {
                 ("02 B.zip".to_string(), false),
             ]
         );
-        let size = |path: &str| cover_thumbnail(&root.join(path), false).map(|t| t.dimensions());
+        let size = |path: &str| {
+            cover_thumbnail(&root.join(path), &CoverOptions::default()).map(|t| t.dimensions())
+        };
         assert_eq!(size("01 A.zip"), Some((10, 20)));
         assert_eq!(size("03 C"), Some((40, 10)));
         // 画像の無いフォルダは、中の最初の冊の表紙
@@ -544,12 +894,23 @@ mod tests {
             .collect();
         // URL の表紙は、手元に置いたものがあればそれを使う（ここでは通信しない）
         let cache = root.join("cover-cache.png");
-        std::fs::write(&cache, png(30, 10)).unwrap();
+        std::fs::write(&cache, png(30, 20)).unwrap();
         books.push(CoverSource::Url {
             url: "https://example.invalid/cover.png".to_owned(),
             cache,
+            local: None,
         });
-        let rx = spawn_cover_loader(books, false, Arc::new(AtomicBool::new(false)));
+        // URL で取れなければ、手元の本から作る（http でない URL は取りに行かないので、通信しない）
+        books.push(CoverSource::Url {
+            url: "unreachable:cover.png".to_owned(),
+            cache: root.join("missing-cache.png"),
+            local: Some(root.join("02 B.zip")),
+        });
+        let rx = spawn_cover_loader(
+            books,
+            CoverOptions::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let mut received: Vec<_> = rx
             .iter()
             .map(|(index, image)| (index, image.dimensions()))
@@ -562,7 +923,8 @@ mod tests {
                 (1, (10, 50)),
                 (2, (10, 20)),
                 (3, (10, 30)),
-                (4, (30, 10))
+                (4, (30, 20)),
+                (5, (10, 30))
             ]
         );
         std::fs::remove_dir_all(&root).unwrap();

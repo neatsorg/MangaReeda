@@ -14,7 +14,6 @@ use crate::engine::source::{
 use crate::localize::tr;
 use eframe::egui;
 use image::{DynamicImage, ImageFormat};
-use pdfium_render::prelude::{Pdfium, Pixels};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -71,36 +70,6 @@ impl MangaReader {
     pub(super) fn clear_pdf_document_cache(&mut self) {
         self.pdf_document = None;
         self.pdf_document_path = None;
-    }
-
-    pub(super) fn pdfium_instance(&mut self) -> Option<&'static Pdfium> {
-        if let Some(pdfium) = self.pdfium {
-            return Some(pdfium);
-        }
-
-        // Pdfium::default() panics when no library is found. Look next to the
-        // executable, then system-wide, and report a missing library instead.
-        // 作業フォルダは探さない（展開した本のフォルダなどから起動したときに、
-        // そこに置かれた別のライブラリを読み込んでしまわないように）
-        let beside_exe = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf))
-            .and_then(|dir| {
-                Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir)).ok()
-            });
-        // Windows では名前だけで探すと作業フォルダも探してしまうので、実行ファイルの隣だけを使う
-        // （pdfium は Windows のシステムに入っているライブラリではない）
-        #[cfg(windows)]
-        let bindings = beside_exe;
-        #[cfg(not(windows))]
-        let bindings = beside_exe.or_else(|| Pdfium::bind_to_system_library().ok());
-        let Some(bindings) = bindings else {
-            eprintln!("pdfium library not found; PDF files cannot be opened.");
-            return None;
-        };
-        let pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
-        self.pdfium = Some(pdfium);
-        Some(pdfium)
     }
 
     /// フォルダを選んで冊として開くダイアログ。結果はファイルを開くダイアログと同じ経路で受け取る
@@ -326,23 +295,8 @@ impl MangaReader {
             _ => return None,
         };
 
-        let page = match doc.pages().get(index as u16) {
-            Ok(page) => page,
-            Err(_) => return None,
-        };
-        let width_inch = page.width().value;
-        let height_inch = page.height().value;
-
-        let screen_size = ctx.content_rect();
-        let target_h = screen_size.height();
-        let h_ratio = target_h / height_inch;
-        let target_w = width_inch * h_ratio;
-
-        // Render at 300 DPI or based on screen height for clarity
-        let bitmap = page
-            .render(target_w as Pixels, target_h as Pixels, None)
-            .ok()?;
-        Some(bitmap.as_image()) // pdfium-render integrates with the 'image' crate
+        // 画面の高さに合わせて描く
+        doc.render(index, ctx.content_rect().height(), None)
     }
 
     pub(super) fn load_texture(
@@ -474,14 +428,14 @@ impl MangaReader {
             .map_or("".to_string(), |ext| ext.to_string_lossy().to_lowercase());
         let mut new_pdf = None;
         let listing = if extension == "pdf" {
-            let Some(pdfium) = self.pdfium_instance() else {
+            let Some(pdfium) = crate::engine::pdf::pdfium() else {
                 self.show_fading_error(tr("error.pdfium_missing"));
                 return;
             };
             let mut images = Vec::new();
-            if let Ok(doc) = pdfium.load_pdf_from_file(&path, None) {
+            if let Some(doc) = pdfium.open(&path) {
                 // We use a virtual naming scheme for PDF pages in our image_files list
-                images = (0..usize::from(doc.pages().len()))
+                images = (0..doc.page_count())
                     .map(|i| format!("pdf_page_{i}"))
                     .collect();
                 new_pdf = Some(doc);

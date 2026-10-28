@@ -38,6 +38,7 @@ pub(super) enum MenuCommand {
     MangaMeeyaControls,
     Settings,
     GoToPage,
+    ChooseCover,
     ImageInfo,
     About,
 }
@@ -538,6 +539,11 @@ impl MangaReader {
                 MenuCommand::Action(MangaAction::ToggleFavorite),
                 favorite,
             )),
+            book(item(
+                tr("menu.booklist.choose_cover"),
+                'C',
+                MenuCommand::ChooseCover,
+            )),
         ];
 
         let subfolder = config.subfolder_mode;
@@ -682,6 +688,7 @@ impl MangaReader {
             MenuCommand::Action(action) => self.execute_action(action, ctx),
             MenuCommand::OpenFolder => self.open_folder_dialog(),
             MenuCommand::CloseBook => self.close_book(),
+            MenuCommand::ChooseCover => self.choose_current_page_as_cover(),
             MenuCommand::OpenRecent(path) => {
                 if path.exists() {
                     self.open_source(path, ctx);

@@ -26,8 +26,23 @@ fn settings_path_in(base: &Path) -> PathBuf {
     path
 }
 
-#[cfg(not(windows))]
+/// テストでは、利用者の本物の設定・履歴・キャッシュ・ダウンロード先に触れないよう、
+/// プロセスごとの一時フォルダを使う
+#[cfg(test)]
+fn test_base() -> PathBuf {
+    env::temp_dir().join(format!("mangareeda-test-{}", std::process::id()))
+}
+
+/// 設定ファイルの場所
 pub fn settings_path() -> PathBuf {
+    #[cfg(test)]
+    return settings_path_in(&test_base());
+    #[cfg(not(test))]
+    platform_settings_path()
+}
+
+#[cfg(all(not(windows), not(test)))]
+fn platform_settings_path() -> PathBuf {
     let base = env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -36,8 +51,8 @@ pub fn settings_path() -> PathBuf {
     settings_path_in(&base)
 }
 
-#[cfg(windows)]
-pub fn settings_path() -> PathBuf {
+#[cfg(all(windows, not(test)))]
+fn platform_settings_path() -> PathBuf {
     if is_packaged_app() {
         let base = env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
@@ -51,7 +66,7 @@ pub fn settings_path() -> PathBuf {
     exe_path
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn is_packaged_app() -> bool {
     let mut length = 0;
     let result = unsafe { GetCurrentPackageFullName(&mut length, None) };
@@ -93,6 +108,7 @@ pub fn plugins_dir() -> PathBuf {
     settings_path().with_file_name("plugins")
 }
 
+#[cfg(not(test))]
 fn home() -> Option<PathBuf> {
     env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
@@ -101,19 +117,27 @@ fn home() -> Option<PathBuf> {
 
 /// 作り直せるもの（プラグインの一覧、表紙の画像）を置くフォルダ
 pub fn cache_dir() -> PathBuf {
-    let base = if cfg!(windows) {
-        env::var_os("LOCALAPPDATA").map(PathBuf::from)
-    } else {
-        env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| home().map(|home| home.join(".cache")))
-    };
-    base.unwrap_or_else(env::temp_dir).join(APP_DIR)
+    #[cfg(test)]
+    return test_base().join("cache");
+    #[cfg(not(test))]
+    {
+        let base = if cfg!(windows) {
+            env::var_os("LOCALAPPDATA").map(PathBuf::from)
+        } else {
+            env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .or_else(|| home().map(|home| home.join(".cache")))
+        };
+        base.unwrap_or_else(env::temp_dir).join(APP_DIR)
+    }
 }
 
 /// プラグインからダウンロードした本を置くフォルダの既定。ホームの MangaReeda
 pub fn default_library_dir() -> PathBuf {
+    #[cfg(test)]
+    return test_base().join("library");
+    #[cfg(not(test))]
     home().unwrap_or_else(|| PathBuf::from(".")).join(APP_DIR)
 }
 
