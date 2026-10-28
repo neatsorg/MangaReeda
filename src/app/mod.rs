@@ -1,6 +1,7 @@
 // このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
 
 mod animation;
+mod book_search;
 mod commands;
 mod input;
 mod loader;
@@ -89,6 +90,8 @@ pub struct MangaReader {
     focus_shelf_search: bool,
     /// IME で、確定前の入力（Preedit）が、前の確定のあとにあったか
     ime_had_preedit: bool,
+    /// 本の中の検索（開いていれば）
+    book_search: Option<book_search::BookSearch>,
     active_animations: [Option<AnimatedPage>; 2],
     active_animation_keys: [Option<String>; 2],
     animated_image_byte_cache: sized_cache::SizedCache<Vec<u8>>,
@@ -206,6 +209,7 @@ impl MangaReader {
             shelf_texture_stash: Default::default(),
             focus_shelf_search: false,
             ime_had_preedit: false,
+            book_search: None,
             active_animations: std::array::from_fn(|_| None),
             active_animation_keys: std::array::from_fn(|_| None),
             animated_image_byte_cache: sized_cache::SizedCache::new(ANIMATION_CACHE_BYTES),
@@ -331,6 +335,8 @@ impl eframe::App for MangaReader {
             }
         }
 
+        // 検索の窓が開いているあいだの Esc は、窓を閉じるだけにする（終了などのキー操作に渡さない）
+        self.close_book_search_on_escape(ctx);
         let mut action_to_run = self.collect_input_action(ctx);
 
         // Load file if passed as program parameter
@@ -396,6 +402,16 @@ impl eframe::App for MangaReader {
             self.render_thumbnails(ctx);
         } else {
             self.render_page_view(ctx, &mut action_to_run);
+        }
+        // 読んでいるときの Ctrl+F で、本の中の検索を開く
+        if self.thumbnails.is_none()
+            && !ctx.wants_keyboard_input()
+            && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F))
+        {
+            self.open_book_search();
+        }
+        if self.thumbnails.is_none() {
+            self.render_book_search(ctx);
         }
         self.render_subfolder_question(ctx);
         self.render_menu_dialog(ctx);
@@ -1198,6 +1214,87 @@ mod tests {
         reader.tidy_closed_shelf();
         assert!(reader.shelf_texture_stash.is_empty());
         assert!(reader.shelf_filter.is_empty());
+    }
+
+    /// 本の中の検索は、文字の層の無い本では探せないと知らせ、別の本に移ったら閉じる
+    #[test]
+    fn book_search_tells_when_there_is_no_text_and_closes_on_another_book() {
+        let first = TestPages::new(&[[10, 20], [10, 20]]);
+        let second = TestPages::new(&[[10, 20]]);
+        let ctx = egui::Context::default();
+        let mut reader = first.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        let frame = |reader: &mut MangaReader| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                reader.render_book_search(ctx)
+            });
+        };
+        reader.open_book_search();
+        frame(&mut reader);
+        let search = reader.book_search.as_mut().unwrap();
+        search.query = "語".to_owned();
+        frame(&mut reader);
+        assert!(reader.book_search.as_ref().unwrap().hits.is_empty());
+        // 別の本に移ったら閉じる
+        reader.open_source(second.0.clone(), &ctx);
+        frame(&mut reader);
+        assert!(reader.book_search.is_none());
+    }
+
+    /// 検索の窓が開いているあいだの Esc は、窓を閉じるだけで、終了などのキー操作には渡さない
+    #[test]
+    fn escape_closes_the_book_search_without_reaching_shortcuts() {
+        let pages = TestPages::new(&[[10, 20]]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        let escape = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        reader.open_book_search();
+        let mut action = MangaAction::None;
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![escape.clone()],
+                ..Default::default()
+            },
+            |ctx| {
+                reader.close_book_search_on_escape(ctx);
+                action = reader.collect_input_action(ctx);
+            },
+        );
+        assert!(reader.book_search.is_none());
+        assert_eq!(action, MangaAction::None);
+        // 窓が無ければ、Esc はいつもどおりのキー操作になる（既定では終了）
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![escape],
+                ..Default::default()
+            },
+            |ctx| {
+                reader.close_book_search_on_escape(ctx);
+                action = reader.collect_input_action(ctx);
+            },
+        );
+        assert_eq!(action, MangaAction::QuitApp);
     }
 
     #[test]

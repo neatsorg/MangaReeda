@@ -75,6 +75,19 @@ impl PdfDoc {
             .map_or(0, |document| usize::from(document.pages().len()))
     }
 
+    /// `index` のページの文字（透明テキストを含む）。文字が無ければ空
+    pub fn page_text(&self, index: usize) -> Option<String> {
+        let _lock = lock();
+        let page = self
+            .0
+            .as_ref()?
+            .pages()
+            .get(u16::try_from(index).ok()?)
+            .ok()?;
+        let text = page.text().ok()?.all();
+        Some(text)
+    }
+
     /// `index` のページを、高さ `height` ピクセルで描く。`max_width` があれば、幅がそれを超えないよう縮める
     pub fn render(
         &self,

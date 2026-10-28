@@ -38,6 +38,7 @@ pub(super) enum MenuCommand {
     MangaMeeyaControls,
     Settings,
     GoToPage,
+    SearchInBook,
     ChooseCover,
     ImageInfo,
     About,
@@ -480,6 +481,7 @@ impl MangaReader {
                 self.zip_path.is_some(),
             ),
             book(item(tr("menu.move.goto"), 'G', MenuCommand::GoToPage)),
+            book(item(tr("menu.move.search"), 'S', MenuCommand::SearchInBook)),
             MenuEntry::Separator,
             submenu(
                 tr("menu.move.repeat"),
@@ -689,6 +691,7 @@ impl MangaReader {
             MenuCommand::OpenFolder => self.open_folder_dialog(),
             MenuCommand::CloseBook => self.close_book(),
             MenuCommand::ChooseCover => self.choose_current_page_as_cover(),
+            MenuCommand::SearchInBook => self.open_book_search(),
             MenuCommand::OpenRecent(path) => {
                 if path.exists() {
                     self.open_source(path, ctx);
