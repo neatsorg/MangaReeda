@@ -1003,6 +1003,163 @@ mod tests {
         fs::remove_dir_all(mixed).unwrap();
     }
 
+    /// 開けなかったときは、今の冊をそのまま読み続けられる
+    #[test]
+    fn failed_opens_keep_the_current_book() {
+        let ctx = egui::Context::default();
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        let mode = reader.source_mode;
+        let files = reader.image_files.clone();
+        // 画像の無いフォルダ（PDF は pdfium が1つのプロセスに1つしか持てないので、
+        // ほかのテストと並べて試せない）
+        let empty = TestPages::new(&[]);
+        reader.load_source(empty.0.clone(), false, &ctx);
+        assert_eq!(reader.zip_path, Some(pages.0.clone()));
+        assert_eq!(reader.source_mode, mode);
+        assert_eq!(reader.image_files, files);
+        reader.go_to_page(2, &ctx);
+        assert_eq!(reader.current_index, 2);
+        assert!(reader.textures[0].is_some());
+    }
+
+    /// 名前が同じ別の本は、別の場所に置き、取り違えない
+    #[test]
+    fn remote_books_with_the_same_name_get_their_own_places() {
+        use crate::engine::plugin::RemoteBook;
+        let dir = TestPages::new(&[]);
+        let library = history::normalize(&dir.0).join("library");
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                library_dir: library.to_string_lossy().into_owned(),
+                ..AppSettings::default()
+            },
+            None,
+        );
+        let book = |id: &str| RemoteBook {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            file_name: "same.pdf".to_owned(),
+            cover_url: None,
+            folder: false,
+        };
+        let key = ("p".to_owned(), String::new());
+        let mut shelf = super::plugins::PluginShelf::default();
+        shelf.books = vec![book("a"), book("b")];
+        reader.plugins.shelves.insert(key.clone(), shelf);
+        let paths: Vec<_> = reader
+            .plugin_entries(&key)
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        assert_eq!(paths[0], library.join("p").join("same.pdf"));
+        assert_ne!(paths[0], paths[1]);
+
+        // 前に別の本（a）を置いた場所には、b を置かない
+        let owner_a = reader.plugins.owner("p", "a");
+        reader.record_owner("p", &paths[0], &owner_a);
+        let mut shelf = super::plugins::PluginShelf::default();
+        shelf.books = vec![book("b")];
+        reader.plugins.shelves.insert(key.clone(), shelf);
+        let path_b = reader.plugin_entries(&key)[0].path.clone();
+        assert_ne!(path_b, paths[0]);
+        // 記録はファイルに残り、読み直しても同じ
+        reader.plugins.owners.clear();
+        reader.load_owners("p");
+        assert_eq!(reader.plugin_entries(&key)[0].path, path_b);
+        fs::remove_dir_all(library).unwrap();
+    }
+
+    /// 別のアカウントの本や、ダウンロード中・待っている別の本の場所は使わない
+    #[test]
+    fn remote_books_of_other_accounts_and_downloads_keep_their_own_places() {
+        use crate::engine::plugin::{PluginManifest, RemoteBook};
+        let library = std::env::temp_dir().join(format!("manga-owners2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&library);
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                library_dir: library.to_string_lossy().into_owned(),
+                ..AppSettings::default()
+            },
+            None,
+        );
+        // 起動できないプラグイン（ダウンロードは失敗するが、知らせを受け取るまでは場所を押さえている）
+        reader.plugins = super::plugins::PluginHost::with(
+            vec![PluginManifest {
+                id: "p".to_owned(),
+                name: "P".to_owned(),
+                command: vec![library.join("missing").to_string_lossy().into_owned()],
+                credentials: Vec::new(),
+                auth: false,
+                dir: library.clone(),
+            }],
+            crate::engine::credentials::Credentials::memory_only(),
+            library.join("cache"),
+        );
+        let book = |id: &str, file_name: &str| RemoteBook {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            file_name: file_name.to_owned(),
+            cover_url: None,
+            folder: false,
+        };
+        let set_shelf = |reader: &mut MangaReader, key: &(String, String), books| {
+            let mut shelf = super::plugins::PluginShelf::default();
+            shelf.books = books;
+            reader.plugins.shelves.insert(key.clone(), shelf);
+        };
+        let top = ("p".to_owned(), String::new());
+
+        // アカウント A で a をダウンロードしてある
+        reader.plugins.set_account(&top, Some("A".to_owned()));
+        set_shelf(&mut reader, &top, vec![book("a", "same.pdf")]);
+        let path_a = reader.plugin_entries(&top)[0].path.clone();
+        assert_eq!(path_a, library.join("p").join("same.pdf"));
+        fs::create_dir_all(path_a.parent().unwrap()).unwrap();
+        fs::write(&path_a, "A").unwrap();
+        let owner_a = reader.plugins.owner("p", "a");
+        reader.record_owner("p", &path_a, &owner_a);
+
+        // アカウント B の、id が同じ本は、A の本を開かない
+        reader.plugins.set_account(&top, Some("B".to_owned()));
+        set_shelf(&mut reader, &top, vec![book("a", "same.pdf")]);
+        let entry_b = reader.plugin_entries(&top)[0].clone();
+        assert_ne!(entry_b.path, path_a);
+        assert!(!reader.remote_path(&entry_b).is_file());
+        // A に戻れば、A の本を開ける
+        reader.plugins.set_account(&top, Some("A".to_owned()));
+        set_shelf(&mut reader, &top, vec![book("a", "same.pdf")]);
+        assert_eq!(reader.plugin_entries(&top)[0].path, path_a);
+
+        // 別々のフォルダの、名前が同じ別の本。どちらも、どこも使っていないときに並べた
+        let (x, y) = (
+            ("p".to_owned(), "x".to_owned()),
+            ("p".to_owned(), "y".to_owned()),
+        );
+        set_shelf(&mut reader, &x, vec![book("x", "dup.pdf")]);
+        set_shelf(&mut reader, &y, vec![book("y", "dup.pdf")]);
+        let entry_x = reader.plugin_entries(&x)[0].clone();
+        let entry_y = reader.plugin_entries(&y)[0].clone();
+        assert_eq!(entry_x.path, entry_y.path);
+        // x のダウンロードを頼むと、その場所は x のもの。y は別の場所に置き、x の状態を y のものと思わない
+        reader.request_download(&entry_x);
+        assert!(reader.download_status(&entry_x).is_some());
+        assert_eq!(reader.download_status(&entry_y), None);
+        assert_ne!(reader.remote_path(&entry_y), entry_x.path);
+        reader.request_download(&entry_y);
+        assert!(reader.download_status(&entry_y).is_some());
+        assert_ne!(reader.plugin_entries(&y)[0].path, entry_x.path);
+        fs::remove_dir_all(library).unwrap();
+    }
+
     /// シェルスクリプトで作ったプラグインで、一覧・ダウンロード・開くまでを通す
     #[cfg(unix)]
     #[test]
@@ -1033,7 +1190,11 @@ mod tests {
                 r#"#!/bin/sh
 read request
 case "$1" in
-list) echo '{{"books": [{{"id": "a", "title": "Book A", "file_name": "a.zip"}}, {{"id": "b", "title": "Book B", "file_name": "b.zip"}}]}}';;
+list)
+  echo '{{"store": {{"token": "t1"}}}}'
+  if [ "$2" = "gone" ]; then echo "not found" >&2; exit 1; fi
+  if [ "$2" = "sub" ]; then echo '{{"books": [{{"id": "c", "title": "Book C", "file_name": "sub/c.zip"}}], "parent": ""}}'; exit 0; fi
+  echo '{{"books": [{{"id": "a", "title": "Book A", "file_name": "a.zip"}}, {{"id": "b", "title": "Book B", "file_name": "b.zip"}}, {{"id": "sub", "title": "Sub", "file_name": "sub", "folder": true}}]}}';;
 download) cp "{}" "$3"; echo '{{"progress": 1, "total": 1}}';;
 esac
 "#,
@@ -1060,6 +1221,7 @@ esac
                 name: "Test".to_owned(),
                 command: vec!["./run.sh".to_owned()],
                 credentials: Vec::new(),
+                auth: false,
                 dir: root.clone(),
             }],
             crate::engine::credentials::Credentials::memory_only(),
@@ -1081,13 +1243,62 @@ esac
         reader.switch_shelf_tab(ShelfTab::Plugin(0));
         assert_eq!(
             reader.shelf_source(),
-            Some(ShelfSource::Plugin("test".to_owned()))
+            Some(ShelfSource::Plugin("test".to_owned(), String::new()))
         );
         wait(&mut reader, &|r| {
             r.thumbnails
                 .as_ref()
-                .is_some_and(|v| v.cover_paths().len() == 2)
+                .is_some_and(|v| v.cover_paths().len() == 3)
         });
+        // プラグインが返した値はログイン情報として保存する
+        assert_eq!(
+            reader.plugins.credential("test", "token").as_deref(),
+            Some("t1")
+        );
+
+        // フォルダを選ぶと中に入り、上のフォルダへで戻ると来たフォルダが選ばれている
+        reader.choose_thumbnail(2, &ctx);
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Plugin("test".to_owned(), "sub".to_owned()))
+        );
+        wait(&mut reader, &|r| {
+            r.thumbnails
+                .as_ref()
+                .is_some_and(|v| v.cover_paths().len() == 1)
+        });
+        assert_eq!(
+            reader.thumbnails.as_ref().unwrap().cover_paths()[0],
+            root.join("library").join("test").join("sub").join("c.zip")
+        );
+        // 次にタブを開くときは、このフォルダから
+        assert_eq!(reader.plugin_start_folder("test"), "sub");
+        reader.go_to_upper_folder();
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Plugin("test".to_owned(), String::new()))
+        );
+        assert_eq!(reader.thumbnails.as_ref().unwrap().selected(), 2);
+
+        // 覚えていたフォルダが読めなければ（消えたフォルダなど）、一番上に戻れ、次は一番上から始める
+        reader
+            .config
+            .plugin_folders
+            .insert("test".to_owned(), "gone".to_owned());
+        reader.thumbnails = None;
+        reader.toggle_book_list(ShelfSource::Plugin("test".to_owned(), "gone".to_owned()));
+        wait(&mut reader, &|r| {
+            r.plugins
+                .shelves
+                .get(&("test".to_owned(), "gone".to_owned()))
+                .is_some_and(|shelf| shelf.error.is_some())
+        });
+        assert_eq!(reader.plugin_start_folder("test"), "");
+        reader.go_to_upper_folder();
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Plugin("test".to_owned(), String::new()))
+        );
         let book_b = root.join("library").join("test").join("b.zip");
         assert_eq!(reader.thumbnails.as_ref().unwrap().cover_paths()[1], book_b);
         // 一覧は手元にためる
@@ -1107,7 +1318,7 @@ esac
 
         // ダウンロードしてある本は、選ぶとそのまま開く
         reader.switch_shelf_tab(ShelfTab::Plugin(0));
-        reader.toggle_book_list(ShelfSource::Plugin("test".to_owned()));
+        reader.toggle_book_list(ShelfSource::Plugin("test".to_owned(), String::new()));
         reader.choose_thumbnail(1, &ctx);
         assert!(reader.thumbnails.is_none());
         assert_eq!(reader.zip_path, Some(book_b));

@@ -371,5 +371,17 @@
   "plugin.no_books": "本がありません",
   "plugin.refresh": "↻ 更新",
   "plugin.refreshing": "更新中…",
-  "plugin.hint": "Tab: 切り替え   Alt+←: 戻る   F5: 更新"
+  "plugin.hint": "Tab: 切り替え   Alt+←: 戻る   F5: 更新",
+  "plugin.field.app_key": "App key",
+  "plugin.field.auth_code": "認可コード（ブラウザに出たもの）",
+  "plugin.auth_start": "ブラウザで許可する",
+  "plugin.connected": "接続済み",
+  "plugin.not_connected": "未接続",
+  "plugin.auth_opened": "ブラウザで許可し、表示された認可コードを上の欄に貼って保存してください",
+  "plugin.auth_open_failed": "ブラウザを開けませんでした。次の URL を開いてください",
+  "error.history_save_failed": "履歴を保存できませんでした",
+  "plugin.forget_failed": "キーリングから消せませんでした。起動しているあいだは使いませんが、キーリングが使えるようになったらもう一度消してください",
+  "plugin.delete_failed": "消せていません（起動中は使いません）",
+  "plugin.retry_delete": "消せなかった値をもう一度消す",
+  "plugin.auth_preparing": "許可のページを用意しています…"
 }

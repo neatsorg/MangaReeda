@@ -221,7 +221,7 @@ fn url_cover_bytes(url: &str, cache: &Path) -> Option<Vec<u8>> {
     if let Some(parent) = cache.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(cache, &bytes);
+    let _ = crate::engine::settings_store::write_atomic(cache, &bytes);
     Some(bytes)
 }
 

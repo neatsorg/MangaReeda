@@ -936,6 +936,9 @@ dependencies = [
  "idna",
  "indexmap",
  "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
  "time",
  "url",
 ]
@@ -2592,6 +2595,7 @@ dependencies = [
  "gilrs",
  "image",
  "keyring",
+ "libc",
  "pdfium-render",
  "rfd",
  "serde",
@@ -2610,6 +2614,18 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "mangareeda-dropbox"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sha2",
  "ureq",
 ]
 
@@ -4796,6 +4812,8 @@ dependencies = [
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "ureq-proto",
  "url",
  "utf8-zero",

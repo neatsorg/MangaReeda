@@ -65,17 +65,23 @@ impl From<io::Error> for Failure {
     }
 }
 
+const USAGE: &str = "使い方: mangareeda-bookscan list | download <id> <保存先>\n\
+     MangaReeda から呼ばれ、標準入力に1行の JSON でログイン情報を受け取ります（docs/plugins.md）";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // 使い方は、標準入力を待たずに出す
+    if matches!(args.first().map(String::as_str), Some("--help" | "-h")) {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
     let mut input = String::new();
     let _ = io::stdin().read_to_string(&mut input);
     let request: Request = serde_json::from_str(input.trim()).unwrap_or_default();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["list"] => list(&request),
         ["download", id, dest] => download(&request, id, Path::new(dest)),
-        _ => Err(Failure::Other(
-            "使い方: mangareeda-bookscan list | download <id> <保存先>".to_owned(),
-        )),
+        _ => Err(Failure::Other(USAGE.to_owned())),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -93,6 +99,9 @@ fn main() -> ExitCode {
 fn agent() -> Agent {
     Agent::config_builder()
         .user_agent(concat!("MangaReeda-bookscan/", env!("CARGO_PKG_VERSION")))
+        // つながらない・答えが来ないときに、いつまでも待たない（本文の受け取りは本体が見張る）
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_recv_response(Some(Duration::from_secs(60)))
         .build()
         .into()
 }
@@ -156,7 +165,12 @@ fn list(request: &Request) -> Result<(), Failure> {
             break;
         }
     }
-    let json = serde_json::json!({ "books": books });
+    // アカウントを見分ける値（本体は、これから作った短い値だけを手元に置く）
+    let account = request
+        .credentials
+        .get("email")
+        .map(|email| email.trim().to_lowercase());
+    let json = serde_json::json!({ "books": books, "account": account });
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "{json}")?;
     Ok(())

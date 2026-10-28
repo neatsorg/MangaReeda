@@ -58,6 +58,31 @@ fn is_packaged_app() -> bool {
     result != APPMODEL_ERROR_NO_PACKAGE
 }
 
+/// ファイルを、途中で止まっても壊れないように書く。同じフォルダの一時ファイルに書いて
+/// ディスクまで書き出してから、元のファイルと置き換える
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let file_name = path
+        .file_name()
+        .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned());
+    // 別のスレッドが同じファイルを同時に書いても一時ファイルが重ならないよう、通し番号を付ける
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let serial = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temporary =
+        path.with_file_name(format!(".{file_name}.{}.{serial}.tmp", std::process::id()));
+    let result = (|| {
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 /// 履歴ファイルの場所。設定ファイルと同じフォルダに置く
 pub fn history_path() -> PathBuf {
     settings_path().with_file_name("history.json")
@@ -108,8 +133,10 @@ pub fn load() -> AppSettings {
 }
 
 pub fn save(settings: &AppSettings) {
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = fs::write(settings_path(), json);
+    if let Ok(json) = serde_json::to_string_pretty(settings)
+        && let Err(e) = write_atomic(&settings_path(), json.as_bytes())
+    {
+        eprintln!("設定を保存できませんでした: {e}");
     }
 }
 
@@ -123,6 +150,23 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir(&base).unwrap();
         base
+    }
+
+    /// 前のファイルがあっても置き換えられ（Windows でも）、一時ファイルを残さない
+    #[test]
+    fn atomic_writes_replace_the_old_file() {
+        let dir = std::env::temp_dir().join(format!("manga-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        write_atomic(&path, b"old").unwrap();
+        // 読んでいるあいだでも置き換えられる
+        let reading = std::fs::File::open(&path).unwrap();
+        write_atomic(&path, b"new").unwrap();
+        drop(reading);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

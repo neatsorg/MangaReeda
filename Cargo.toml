@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [workspace]
-members = ["plugins/bookscan"]
+members = ["plugins/bookscan", "plugins/dropbox"]
 
 [profile.dev]
 debug = true
@@ -35,5 +35,8 @@ gilrs = "0.11.0"
 ureq = "3.1.0"
 keyring = { version = "3.6.2", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.180"
+
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_Packaging_Appx"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_Packaging_Appx", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

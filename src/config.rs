@@ -814,6 +814,9 @@ pub struct AppSettings {
     /// プラグインからダウンロードした本を置くフォルダ。空なら既定（ホームの MangaReeda）
     #[serde(default)]
     pub library_dir: String,
+    /// プラグインごとに、最後に見ていたフォルダ（次に開いたときにそこから）
+    #[serde(default)]
+    pub plugin_folders: std::collections::HashMap<String, String>,
     pub enable_auto_image_byte_fix: bool,
     pub last_page_action: LastPageAction,
     #[serde(default)]
@@ -941,6 +944,7 @@ impl Default for AppSettings {
             left_to_right: false,
             split_landscape_pages: false,
             library_dir: String::new(),
+            plugin_folders: std::collections::HashMap::new(),
             image_sizing_mode: ImageSizingMode::FitHeight,
             spread_center_offset: 0.0,
             cover_blank_page: false,

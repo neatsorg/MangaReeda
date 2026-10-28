@@ -78,22 +78,22 @@ impl MangaReader {
             return Some(pdfium);
         }
 
-        // Pdfium::default() panics when no library is found. Look in the working
-        // directory (as it does), next to the executable, then system-wide, and
-        // report a missing library instead.
-        let mut dirs = vec![PathBuf::from("./")];
-        if let Some(exe_dir) = std::env::current_exe()
+        // Pdfium::default() panics when no library is found. Look next to the
+        // executable, then system-wide, and report a missing library instead.
+        // 作業フォルダは探さない（展開した本のフォルダなどから起動したときに、
+        // そこに置かれた別のライブラリを読み込んでしまわないように）
+        let beside_exe = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf))
-        {
-            dirs.push(exe_dir);
-        }
-        let bindings = dirs
-            .iter()
-            .find_map(|dir| {
-                Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(dir)).ok()
-            })
-            .or_else(|| Pdfium::bind_to_system_library().ok());
+            .and_then(|dir| {
+                Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir)).ok()
+            });
+        // Windows では名前だけで探すと作業フォルダも探してしまうので、実行ファイルの隣だけを使う
+        // （pdfium は Windows のシステムに入っているライブラリではない）
+        #[cfg(windows)]
+        let bindings = beside_exe;
+        #[cfg(not(windows))]
+        let bindings = beside_exe.or_else(|| Pdfium::bind_to_system_library().ok());
         let Some(bindings) = bindings else {
             eprintln!("pdfium library not found; PDF files cannot be opened.");
             return None;
@@ -101,28 +101,6 @@ impl MangaReader {
         let pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
         self.pdfium = Some(pdfium);
         Some(pdfium)
-    }
-
-    pub(super) fn ensure_pdf_document_loaded(&mut self, path: &Path) -> Option<usize> {
-        if self.pdf_document_path.as_deref() == Some(path) {
-            return self
-                .pdf_document
-                .as_ref()
-                .map(|doc| usize::from(doc.pages().len()));
-        }
-
-        self.clear_pdf_document_cache();
-
-        let doc = self
-            .pdfium_instance()?
-            .load_pdf_from_file(path, None)
-            .ok()?;
-        let page_count = usize::from(doc.pages().len());
-
-        self.pdf_document = Some(doc);
-        self.pdf_document_path = Some(path.to_path_buf());
-
-        Some(page_count)
     }
 
     /// フォルダを選んで冊として開くダイアログ。結果はファイルを開くダイアログと同じ経路で受け取る
@@ -462,9 +440,12 @@ impl MangaReader {
         self.open_book_with(question.path, include, question.open_at, ctx);
     }
 
-    pub(super) fn save_history(&self) {
-        if let Some(history_path) = &self.history_path {
-            self.history.save(history_path);
+    pub(super) fn save_history(&mut self) {
+        if let Some(history_path) = &self.history_path
+            && let Err(e) = self.history.save(history_path)
+        {
+            eprintln!("履歴を保存できませんでした: {e}");
+            self.show_fading_error(tr("error.history_save_failed"));
         }
     }
 
@@ -486,21 +467,24 @@ impl MangaReader {
         include_subfolders: bool,
         ctx: &egui::Context,
     ) {
-        self.stop_auto_scroll();
-        self.clear_pdf_document_cache();
+        // 新しい冊は、読めると決まるまで今の冊の状態（PDF の文書や読み方）に触れずに用意する。
+        // 開けなかったときは、今の冊をそのまま読み続けられるように
         let extension = path
             .extension()
             .map_or("".to_string(), |ext| ext.to_string_lossy().to_lowercase());
+        let mut new_pdf = None;
         let listing = if extension == "pdf" {
-            let mut images = Vec::new();
-            if let Some(page_count) = self.ensure_pdf_document_loaded(&path) {
-                for i in 0..page_count {
-                    // We use a virtual naming scheme for PDF pages in our image_files list
-                    images.push(format!("pdf_page_{}", i));
-                }
-            } else if self.pdfium.is_none() {
+            let Some(pdfium) = self.pdfium_instance() else {
                 self.show_fading_error(tr("error.pdfium_missing"));
                 return;
+            };
+            let mut images = Vec::new();
+            if let Ok(doc) = pdfium.load_pdf_from_file(&path, None) {
+                // We use a virtual naming scheme for PDF pages in our image_files list
+                images = (0..usize::from(doc.pages().len()))
+                    .map(|i| format!("pdf_page_{i}"))
+                    .collect();
+                new_pdf = Some(doc);
             }
             Listing {
                 mode: SourceMode::Pdf,
@@ -514,7 +498,7 @@ impl MangaReader {
                 None => return,
             }
         };
-        self.source_mode = listing.mode;
+        let source_mode = listing.mode;
         let target_path = listing.root;
         let start_at_filename = listing.start_at;
         let mut images = listing.images;
@@ -526,6 +510,15 @@ impl MangaReader {
             self.show_fading_error(&msg);
         } else {
             self.remember_current_book();
+            self.stop_auto_scroll();
+            self.source_mode = source_mode;
+            match new_pdf {
+                Some(doc) => {
+                    self.pdf_document = Some(doc);
+                    self.pdf_document_path = Some(target_path.clone());
+                }
+                None => self.clear_pdf_document_cache(),
+            }
             self.manual_page_view = false;
             self.split_second_half_of = None;
             self.forget_thumbnails();

@@ -51,8 +51,8 @@ pub(super) enum ShelfSource {
     Folder(PathBuf),
     History,
     Favorites,
-    /// プラグインの一覧（プラグインの id）
-    Plugin(String),
+    /// プラグインの一覧（プラグインの id, フォルダ。"" は一番上）
+    Plugin(String, String),
 }
 
 /// タブの並び。プラグインは見つけた順の番号
@@ -289,6 +289,14 @@ impl MangaReader {
     /// 上のフォルダへ。今の冊が入っているフォルダの表紙サムネイルを出す。
     /// 表紙サムネイルを開いていれば、並べているフォルダ（履歴などでは選んでいる冊）の上のフォルダに移る
     pub(super) fn go_to_upper_folder(&mut self) {
+        if let Some(ShelfSource::Plugin(id, folder)) = self.shelf_source() {
+            let key = (id.clone(), folder.clone());
+            if let Some(parent) = self.plugin_parent(&key) {
+                self.show_shelf(ShelfSource::Plugin(id, parent), None);
+                self.select_remote(&folder);
+            }
+            return;
+        }
         let from = match self
             .thumbnails
             .as_ref()
@@ -312,6 +320,23 @@ impl MangaReader {
         self.open_cover_thumbnails(parent.to_path_buf(), Some(from));
     }
 
+    /// プラグインの一覧で、id が `id` の本（フォルダ）を選ぶ
+    fn select_remote(&mut self, id: &str) {
+        let Some(view) = self.thumbnails.as_mut() else {
+            return;
+        };
+        let Some(shelf) = view.covers.as_ref() else {
+            return;
+        };
+        if let Some(index) = shelf
+            .entries
+            .iter()
+            .position(|entry| entry.remote.as_ref().is_some_and(|r| r.id == id))
+        {
+            view.selected = index;
+        }
+    }
+
     /// `folder` の中の冊を表紙で並べる。`select` があればそれを選んでおく
     fn open_cover_thumbnails(&mut self, folder: PathBuf, select: Option<PathBuf>) {
         if cover_entries(&folder).is_empty() {
@@ -325,7 +350,9 @@ impl MangaReader {
     fn shelf_entries(&self, source: &ShelfSource) -> Vec<CoverEntry> {
         let paths: Vec<&PathBuf> = match source {
             ShelfSource::Folder(folder) => return folder_shelf(folder),
-            ShelfSource::Plugin(id) => return self.plugin_entries(id),
+            ShelfSource::Plugin(id, folder) => {
+                return self.plugin_entries(&(id.clone(), folder.clone()));
+            }
             ShelfSource::History => self.history.entries.iter().map(|e| &e.path).collect(),
             ShelfSource::Favorites => self.history.favorites.iter().map(|e| &e.path).collect(),
         };
@@ -366,7 +393,7 @@ impl MangaReader {
             ShelfSource::Folder(_) => ShelfTab::Folder,
             ShelfSource::History => ShelfTab::History,
             ShelfSource::Favorites => ShelfTab::Favorites,
-            ShelfSource::Plugin(id) => ShelfTab::Plugin(
+            ShelfSource::Plugin(id, _) => ShelfTab::Plugin(
                 self.plugins
                     .manifests
                     .iter()
@@ -377,6 +404,11 @@ impl MangaReader {
     }
 
     /// 一覧で選んでいる冊の場所
+    pub(super) fn selected_shelf_entry(&self) -> Option<CoverEntry> {
+        let view = self.thumbnails.as_ref()?;
+        view.covers.as_ref()?.entries.get(view.selected).cloned()
+    }
+
     pub(super) fn selected_shelf_path(&self) -> Option<PathBuf> {
         let view = self.thumbnails.as_ref()?;
         Some(
@@ -421,8 +453,8 @@ impl MangaReader {
             }
             Some(_) => {}
         }
-        if let ShelfSource::Plugin(id) = &source {
-            self.ensure_plugin_list(id);
+        if let ShelfSource::Plugin(id, folder) = &source {
+            self.ensure_plugin_list(&(id.clone(), folder.clone()));
         }
         let entries = self.shelf_entries(&source);
         if let ShelfSource::Folder(folder) = &source {
@@ -506,7 +538,9 @@ impl MangaReader {
         });
         let source = match tab {
             ShelfTab::Plugin(index) => match self.plugins.manifests.get(index) {
-                Some(manifest) => ShelfSource::Plugin(manifest.id.clone()),
+                Some(manifest) => {
+                    ShelfSource::Plugin(manifest.id.clone(), self.plugin_start_folder(&manifest.id))
+                }
                 None => return,
             },
             ShelfTab::History => ShelfSource::History,
@@ -549,7 +583,7 @@ impl MangaReader {
         match source {
             ShelfSource::History => self.history.forget(&path),
             ShelfSource::Favorites => self.history.remove_favorite(&path),
-            ShelfSource::Folder(_) | ShelfSource::Plugin(_) => return,
+            ShelfSource::Folder(_) | ShelfSource::Plugin(..) => return,
         }
         self.save_history();
         self.show_shelf(source, None);
@@ -612,13 +646,15 @@ impl MangaReader {
                 };
                 // プラグインの本は、書名とダウンロードの状態
                 if let Some(remote) = &entry.remote {
-                    let status = match self.download_status(&entry.path) {
+                    let status = match self.download_status(entry) {
                         Some(DownloadStatus::Running(Some(ratio))) => {
                             format!("{}%", (ratio * 100.0) as u32)
                         }
                         Some(DownloadStatus::Running(None)) => tr("plugin.downloading").to_owned(),
                         Some(DownloadStatus::Queued) => tr("plugin.queued").to_owned(),
-                        None if entry.path.is_file() => tr("plugin.downloaded").to_owned(),
+                        None if self.remote_path(entry).is_file() => {
+                            tr("plugin.downloaded").to_owned()
+                        }
                         None => tr("plugin.not_downloaded").to_owned(),
                     };
                     return format!(
@@ -632,7 +668,7 @@ impl MangaReader {
                 // 履歴とお気に入りは冊がばらばらの場所にあるので、冊のパスと日時を出す
                 let (place, when) = match &shelf.source {
                     ShelfSource::Folder(folder) => (folder.to_string_lossy(), None),
-                    ShelfSource::Plugin(id) => (std::borrow::Cow::Borrowed(id.as_str()), None),
+                    ShelfSource::Plugin(id, _) => (std::borrow::Cow::Borrowed(id.as_str()), None),
                     ShelfSource::History => (
                         entry.path.to_string_lossy(),
                         self.history
@@ -764,19 +800,30 @@ impl MangaReader {
             self.show_page_from_thumbnail(index, ctx);
             return;
         };
-        let Some(entry) = shelf.entries.get(index).cloned() else {
+        let Some(mut entry) = shelf.entries.get(index).cloned() else {
             return;
         };
-        // プラグインの本は、ダウンロードしてあれば開き、無ければダウンロードする（終わったら開く）
-        if entry.remote.is_some() && !entry.path.is_file() {
-            view.selected = index;
-            self.request_download(&entry);
+        // 一覧を開いたまま移るときに、戻るで選んだものに戻れるように
+        view.selected = index;
+        if let Some(remote) = &entry.remote
+            && entry.is_folder
+        {
+            let source = ShelfSource::Plugin(remote.plugin.clone(), remote.id.clone());
+            self.show_shelf(source, None);
             return;
+        }
+        // プラグインの本は、ダウンロードしてあれば開き、無ければダウンロードする（終わったら開く）。
+        // 置く場所は、並べたあとに別の本が使い始めていないか確かめ直す
+        if entry.remote.is_some() {
+            let path = self.remote_path(&entry);
+            if !path.is_file() {
+                self.request_download(&entry);
+                return;
+            }
+            entry.path = path;
         }
         if entry.loose_pages.is_none() && entry.is_folder && !cover_entries(&entry.path).is_empty()
         {
-            // 一覧を開いたまま移る（戻るで、選んだフォルダに戻れるように）
-            view.selected = index;
             self.open_cover_thumbnails(entry.path, None);
             return;
         }
@@ -815,13 +862,17 @@ impl MangaReader {
         let active_tab = source.as_ref().map(|source| self.tab_of(source));
         // プラグインの一覧の状態（空のときの知らせと、更新中か）
         let plugin_state = match &source {
-            Some(ShelfSource::Plugin(id)) => self.plugins.shelves.get(id).map(|shelf| {
-                (
-                    shelf.is_loading(),
-                    shelf.error.clone(),
-                    self.plugins.download_error.clone(),
-                )
-            }),
+            Some(ShelfSource::Plugin(id, folder)) => self
+                .plugins
+                .shelves
+                .get(&(id.clone(), folder.clone()))
+                .map(|shelf| {
+                    (
+                        shelf.is_loading(),
+                        shelf.error.clone(),
+                        self.plugins.download_error.clone(),
+                    )
+                }),
             _ => None,
         };
         let statuses: Vec<(Option<DownloadStatus>, bool)> = self
@@ -833,7 +884,10 @@ impl MangaReader {
                     .entries
                     .iter()
                     .map(|entry| match entry.remote {
-                        Some(_) => (self.download_status(&entry.path), entry.path.is_file()),
+                        Some(_) => (
+                            self.download_status(entry),
+                            self.remote_path(entry).is_file(),
+                        ),
                         None => (None, true),
                     })
                     .collect()
@@ -887,12 +941,21 @@ impl MangaReader {
                         let step = if backward { tabs.len() - 1 } else { 1 };
                         tab_to_show = Some(tabs[(position + step) % tabs.len()].0);
                     }
-                    let in_plugin = matches!(source, ShelfSource::Plugin(_));
+                    let in_plugin = matches!(source, ShelfSource::Plugin(..));
+                    // 上のフォルダへ移れるか（プラグインは上のフォルダがあるときだけ）
+                    let can_go_up = match source {
+                        ShelfSource::Folder(_) => true,
+                        ShelfSource::Plugin(id, folder) => {
+                            self.plugin_parent(&(id.clone(), folder.clone())).is_some()
+                        }
+                        _ => false,
+                    };
                     refresh |= f5 && in_plugin;
                     let strip = TabStrip {
                         tabs: &tabs,
                         active,
                         can_go_back: !self.shelf_back.is_empty(),
+                        can_go_up,
                         refreshing: plugin_state.as_ref().map(|state| state.0),
                         error: plugin_state.as_ref().and_then(|state| state.2.clone()),
                     };
@@ -910,13 +973,13 @@ impl MangaReader {
                     }
                     let in_folder = matches!(source, ShelfSource::Folder(_));
                     remove_selected = delete && !in_folder && !in_plugin;
-                    go_up |= backspace && in_folder;
+                    go_up |= backspace && can_go_up;
                     if count == 0 {
                         let message = match source {
                             ShelfSource::Folder(_) => tr("shelf.no_books").to_owned(),
                             ShelfSource::History => tr("shelf.no_history").to_owned(),
                             ShelfSource::Favorites => tr("shelf.no_favorites").to_owned(),
-                            ShelfSource::Plugin(_) => match &plugin_state {
+                            ShelfSource::Plugin(..) => match &plugin_state {
                                 Some((true, _, _)) => tr("plugin.loading").to_owned(),
                                 Some((_, Some(PluginError::Auth(message)), _)) => {
                                     format!("{message}\n{}", tr("plugin.set_credentials"))
@@ -1036,7 +1099,13 @@ impl MangaReader {
                         let (icon, name) = match (&entry.remote, entry.loose_pages) {
                             // まだダウンロードしていない本は雲のしるし
                             (Some(remote), _) => (
-                                if downloaded { "📖" } else { "☁" },
+                                if entry.is_folder {
+                                    "📁"
+                                } else if downloaded {
+                                    "📖"
+                                } else {
+                                    "☁"
+                                },
                                 remote.title.as_str().into(),
                             ),
                             (None, Some(count)) => (
@@ -1162,8 +1231,8 @@ impl MangaReader {
             self.go_to_upper_folder();
         } else if go_back {
             self.go_back_in_shelf();
-        } else if refresh && let Some(ShelfSource::Plugin(id)) = self.shelf_source() {
-            self.refresh_plugin_list(&id);
+        } else if refresh && let Some(ShelfSource::Plugin(id, folder)) = self.shelf_source() {
+            self.refresh_plugin_list(&(id, folder));
         }
     }
 }
@@ -1210,6 +1279,8 @@ struct TabStrip<'a> {
     tabs: &'a [(ShelfTab, String)],
     active: ShelfTab,
     can_go_back: bool,
+    /// 上のフォルダへのボタンを出すか
+    can_go_up: bool,
     /// プラグインのタブなら、一覧を更新中か
     refreshing: Option<bool>,
     /// ダウンロードの失敗
@@ -1269,7 +1340,8 @@ fn draw_shelf_tabs(
         x = tab_rect.right() + 4.0;
     }
     let button_at = egui::pos2(x + 12.0, rect.top() + 4.0);
-    if strip.active == ShelfTab::Folder {
+    let mut button_at = button_at;
+    if strip.can_go_up {
         let button = tab_button(
             ui,
             &painter,
@@ -1281,6 +1353,7 @@ fn draw_shelf_tabs(
         if click.is_some_and(|pos| button.contains(pos)) {
             clicked = Some(TabClick::Upper);
         }
+        button_at.x = button.right() + 8.0;
     }
     if let Some(refreshing) = strip.refreshing {
         let label = if refreshing {

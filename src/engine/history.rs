@@ -148,18 +148,30 @@ impl History {
         self.subfolder_choices.truncate(HISTORY_LIMIT);
     }
 
-    /// 読めなかったときは空の履歴にする（壊れたファイルで起動できなくならないように）
+    /// 読めなかったときは空の履歴にする（壊れたファイルで起動できなくならないように）。
+    /// 壊れたファイルは、次の保存で上書きしないよう別の名前（.broken）に移しておく
     pub fn load(path: &Path) -> Self {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|data| serde_json::from_str(&data).ok())
-            .unwrap_or_default()
+        let Ok(data) = fs::read_to_string(path) else {
+            return Self::default();
+        };
+        match serde_json::from_str(&data) {
+            Ok(history) => history,
+            Err(e) => {
+                let broken = path.with_extension("json.broken");
+                eprintln!(
+                    "履歴を読めませんでした（{e}）。元のファイルは {} に残します",
+                    broken.display()
+                );
+                let _ = fs::rename(path, broken);
+                Self::default()
+            }
+        }
     }
 
-    pub fn save(&self, path: &Path) {
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(path, json);
-        }
+    /// 途中で止まっても前の履歴が壊れないように保存する
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        crate::engine::settings_store::write_atomic(path, json.as_bytes())
     }
 }
 
@@ -273,11 +285,28 @@ mod tests {
         let path = std::env::temp_dir().join(format!("manga-history-test-{}", std::process::id()));
         fs::write(&path, "not json").unwrap();
         assert_eq!(History::load(&path), History::default());
+        // 壊れたファイルは残しておく
+        let broken = path.with_extension("json.broken");
+        assert_eq!(fs::read_to_string(&broken).unwrap(), "not json");
+        assert!(!path.exists());
 
         let mut history = History::default();
         history.record(Path::new("/book"), &pages(&["a.png"]), 0);
-        history.save(&path);
+        history.save(&path).unwrap();
         assert_eq!(History::load(&path), history);
+        // 一時ファイルは残らない
+        let leftovers = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("manga-history-test")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
         fs::remove_file(&path).unwrap();
+        fs::remove_file(&broken).unwrap();
     }
 }
