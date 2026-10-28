@@ -4,7 +4,7 @@
 use super::MangaReader;
 use crate::config::SourceMode;
 use crate::engine::book_text::{
-    Hit, LoadedText, OcrSource, SearchIndex, TextProgress, spawn_book_ocr, spawn_book_text,
+    Hit, LoadedText, PageSource, SearchIndex, TextProgress, spawn_book_ocr, spawn_book_text,
 };
 use crate::engine::plugin::{PluginError, PluginManifest};
 use crate::engine::settings_store;
@@ -171,9 +171,15 @@ impl MangaReader {
         let cancel = Arc::new(AtomicBool::new(false));
         // PDF は透明テキストを、ほかの本は前に OCR してためた文字を読む
         let pdfium = crate::engine::pdf::pdfium().filter(|_| self.source_mode == SourceMode::Pdf);
+        let pages = PageSource {
+            mode: self.source_mode,
+            root: book.clone(),
+            names: self.image_files.clone(),
+        };
         let loading = spawn_book_text(
             pdfium,
             book.clone(),
+            pages,
             settings_store::cache_dir(),
             progress.clone(),
             cancel.clone(),
@@ -214,7 +220,7 @@ impl MangaReader {
             return;
         };
         let credentials = self.plugins.credentials_for(&engine);
-        let source = OcrSource {
+        let source = PageSource {
             mode: self.source_mode,
             root: book.clone(),
             names: self.image_files.clone(),

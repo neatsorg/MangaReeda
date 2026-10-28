@@ -519,9 +519,6 @@ impl Running {
                 "プラグインとつながりませんでした".to_owned(),
             ));
         };
-        let _ = writeln!(stdin, "{request}");
-        drop(stdin);
-
         let (line_tx, lines) = channel();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -579,6 +576,12 @@ impl Running {
                 }
                 return;
             }
+        });
+        // 標準入力には、見張りと出力の読み取りを始めてから、別のスレッドで書く
+        // （プラグインが読まずに止まっても、書くのを待たずに、時間の上限や「やめる」で止められるように）
+        let request = request.to_owned();
+        thread::spawn(move || {
+            let _ = writeln!(stdin, "{request}");
         });
         Ok(Self {
             watch,
@@ -752,7 +755,7 @@ pub struct OcrImage {
 #[derive(Deserialize)]
 struct OcrLine {
     page: usize,
-    #[serde(default)]
+    /// 省けない（文字の無いページは空にする）。無い行は、読めた知らせとして扱わない
     text: String,
 }
 
@@ -1187,6 +1190,32 @@ mod tests {
         let (listing, _) = list(&finished, &HashMap::new(), None);
         assert_eq!(listing, Ok(Listing::default()));
         assert!(started.elapsed() < DRAIN_LIMIT, "{:?}", started.elapsed());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 標準入力を読まずに止まるプラグインに大きな要求を渡しても、「やめる」ですぐ止まる
+    #[cfg(unix)]
+    #[test]
+    fn plugins_that_do_not_read_their_input_can_be_stopped() {
+        let dir = temp("no-read");
+        let plugin = script_plugin(&dir, "exec sleep 30\n");
+        // パイプに収まらない大きさの要求
+        let images: Vec<OcrImage> = (0..20_000)
+            .map(|page| OcrImage {
+                page,
+                path: dir.join(format!("{}{page}.png", "x".repeat(40))),
+            })
+            .collect();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stopper = cancel.clone();
+        let started = Instant::now();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            stopper.store(true, Ordering::Relaxed);
+        });
+        let result = ocr_images(&plugin, &HashMap::new(), &images, cancel, |_, _| {});
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

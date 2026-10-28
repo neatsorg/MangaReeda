@@ -7,7 +7,7 @@ use crate::engine::plugin::{OcrImage, PluginError, PluginManifest, ocr_images};
 use crate::engine::source::SourceReader;
 use crate::engine::thumbnail::cover_cache_name;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -48,6 +48,9 @@ struct CacheFile {
     /// どう読んだか（"pdf" は透明テキスト、"ocr:<プラグインの id>" は OCR）
     #[serde(default)]
     source: String,
+    /// 読んだときのページの並び（`PageSource::key`）。今の並びと違えば使わない
+    #[serde(default)]
+    pages_key: String,
     pages: Vec<String>,
 }
 
@@ -70,11 +73,12 @@ fn cache_path(book: &Path, cache_dir: &Path) -> PathBuf {
     ))
 }
 
-/// ためておいた文字。本が変わっていれば None。使ったものとして、ファイルの時刻を新しくする
-fn load_cache(book: &Path, cache_dir: &Path) -> Option<BookText> {
+/// ためておいた文字。本が変わっていれば（ページの並びが `pages_key` と違えば）None。
+/// 使ったものとして、ファイルの時刻を新しくする
+fn load_cache(book: &Path, cache_dir: &Path, pages_key: &str) -> Option<BookText> {
     let path = cache_path(book, cache_dir);
     let cache: CacheFile = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
-    if version(book)? != (cache.size, cache.modified) {
+    if version(book)? != (cache.size, cache.modified) || cache.pages_key != pages_key {
         return None;
     }
     if let Ok(file) = std::fs::File::options().write(true).open(&path) {
@@ -87,7 +91,7 @@ fn load_cache(book: &Path, cache_dir: &Path) -> Option<BookText> {
 }
 
 /// 取り出した文字をためておき、上限を超えたら古いものから消す
-fn save_cache(book: &Path, cache_dir: &Path, text: &BookText, source: &str) {
+fn save_cache(book: &Path, cache_dir: &Path, text: &BookText, source: &str, pages_key: &str) {
     let Some((size, modified)) = version(book) else {
         return;
     };
@@ -96,6 +100,7 @@ fn save_cache(book: &Path, cache_dir: &Path, text: &BookText, source: &str) {
         size,
         modified,
         source: source.to_owned(),
+        pages_key: pages_key.to_owned(),
         pages: text.pages.clone(),
     };
     if let Some(parent) = path.parent()
@@ -135,7 +140,8 @@ fn pdf_text(
     progress: &TextProgress,
     cancel: &AtomicBool,
 ) -> Option<BookText> {
-    if let Some(text) = load_cache(book, cache_dir) {
+    // PDF のページの並びは、ファイルの版で決まる
+    if let Some(text) = load_cache(book, cache_dir, "") {
         return Some(text);
     }
     let document = pdfium.open(book)?;
@@ -158,7 +164,7 @@ fn pdf_text(
         progress.done.store(index + 1, Ordering::Relaxed);
     }
     if text.failed == 0 {
-        save_cache(book, cache_dir, &text, "pdf");
+        save_cache(book, cache_dir, &text, "pdf", "");
     }
     Some(text)
 }
@@ -183,10 +189,12 @@ impl LoadedText {
 }
 
 /// 本の文字を別のスレッドで取り出し、検索のための形にする。`cancel` を立てると止まる。
-/// PDF なら透明テキストを（`pdfium` を渡す）、ほかの本は前に OCR してためたものだけを使う
+/// PDF なら透明テキストを（`pdfium` を渡す）、ほかの本は前に OCR してためたもの
+/// （ページの並びが `pages` と同じもの）だけを使う
 pub fn spawn_book_text(
     pdfium: Option<SharedPdfium>,
     book: PathBuf,
+    pages: PageSource,
     cache_dir: PathBuf,
     progress: Arc<TextProgress>,
     cancel: Arc<AtomicBool>,
@@ -195,20 +203,42 @@ pub fn spawn_book_text(
     std::thread::spawn(move || {
         let text = match pdfium {
             Some(pdfium) => pdf_text(pdfium, &book, &cache_dir, &progress, &cancel),
-            None => Some(load_cache(&book, &cache_dir).unwrap_or_default()),
+            None => Some(load_cache(&book, &cache_dir, &pages.key()).unwrap_or_default()),
         };
         let _ = tx.send(text.as_ref().map(LoadedText::new));
     });
     rx
 }
 
-/// OCR で読む本のページ
-pub struct OcrSource {
+/// 本のページの並び（OCR で読むページと、ためておいた文字が今の本に合うかを見分けるのに使う）
+pub struct PageSource {
     pub mode: SourceMode,
     /// 書庫・フォルダ・PDF
     pub root: PathBuf,
     /// ページの名前（`source::list_images` の並び。PDF は "pdf_page_<番号>"）
     pub names: Vec<String>,
+}
+
+impl PageSource {
+    /// ページの並びを見分ける値。フォルダは、画像の上書きでフォルダの版が変わらないので、
+    /// 各画像の大きさと更新日時も入れる（サブフォルダごと読んだときとそうでないときも、並びで見分ける）。
+    /// PDF は、ファイルの版で決まるので空
+    pub fn key(&self) -> String {
+        if self.mode == SourceMode::Pdf {
+            return String::new();
+        }
+        let mut text = String::new();
+        for name in &self.names {
+            text.push_str(name);
+            if self.mode == SourceMode::Folder
+                && let Some((size, modified)) = version(Path::new(name))
+            {
+                text.push_str(&format!("\t{size}\t{modified}"));
+            }
+            text.push('\n');
+        }
+        cover_cache_name(&text)
+    }
 }
 
 /// 一度に OCR のプラグインに渡すページの数
@@ -220,7 +250,7 @@ const OCR_PDF_HEIGHT: f32 = 2000.0;
 
 /// OCR に渡すページの画像を、PNG にそろえて `path` に書く
 fn write_ocr_image(
-    source: &OcrSource,
+    source: &PageSource,
     reader: &mut Option<SourceReader>,
     pdf: Option<&PdfDoc>,
     page: usize,
@@ -257,7 +287,7 @@ fn ocr_text(
     manifest: &PluginManifest,
     credentials: &HashMap<String, String>,
     book: &Path,
-    source: &OcrSource,
+    source: &PageSource,
     pdfium: Option<SharedPdfium>,
     cache_dir: &Path,
     progress: &TextProgress,
@@ -281,6 +311,7 @@ fn ocr_text(
     ));
     let mut reader = None;
     let mut done = 0;
+    let mut unexpected = false;
     let mut result = Ok(());
     let order: Vec<usize> = (0..total).collect();
     for batch in order.chunks(OCR_BATCH) {
@@ -296,19 +327,20 @@ fn ocr_text(
                 Some(OcrImage { page, path })
             })
             .collect();
+        // 今回渡したページで、まだ受け取っていないものだけを受け取る。それ以外が届いたら、結果を使わない
+        let sent: HashSet<usize> = images.iter().map(|image| image.page).collect();
         let answer = ocr_images(
             manifest,
             credentials,
             &images,
             cancel.clone(),
-            |page, text| {
-                if let Some(slot) = pages.get_mut(page)
-                    && slot.is_none()
-                {
+            |page, text| match pages.get_mut(page) {
+                Some(slot) if sent.contains(&page) && slot.is_none() => {
                     *slot = Some(text);
                     done += 1;
                     progress.done.store(done, Ordering::Relaxed);
                 }
+                _ => unexpected = true,
             },
         );
         let _ = std::fs::remove_dir_all(&work);
@@ -321,12 +353,23 @@ fn ocr_text(
         return Err(PluginError::Other(String::new()));
     }
     result?;
+    if unexpected {
+        return Err(PluginError::Other(
+            "OCR のプラグインが、渡していないページの文字を返しました".to_owned(),
+        ));
+    }
     let text = BookText {
         failed: pages.iter().filter(|page| page.is_none()).count(),
         pages: pages.into_iter().map(Option::unwrap_or_default).collect(),
     };
     if text.failed == 0 {
-        save_cache(book, cache_dir, &text, &format!("ocr:{}", manifest.id));
+        save_cache(
+            book,
+            cache_dir,
+            &text,
+            &format!("ocr:{}", manifest.id),
+            &source.key(),
+        );
     }
     Ok(text)
 }
@@ -337,7 +380,7 @@ pub fn spawn_book_ocr(
     manifest: PluginManifest,
     credentials: HashMap<String, String>,
     book: PathBuf,
-    source: OcrSource,
+    source: PageSource,
     pdfium: Option<SharedPdfium>,
     cache_dir: PathBuf,
     progress: Arc<TextProgress>,
@@ -558,12 +601,12 @@ mod tests {
         let book = dir.join("a.pdf");
         std::fs::write(&book, "1").unwrap();
         let text = book_text(vec!["文字".to_owned()]);
-        save_cache(&book, &dir, &text, "pdf");
-        assert_eq!(load_cache(&book, &dir), Some(text));
+        save_cache(&book, &dir, &text, "pdf", "");
+        assert_eq!(load_cache(&book, &dir, ""), Some(text));
         // 本が変わったら、ためておいたものは使わず、同じファイルを書き直す
         std::fs::write(&book, "22").unwrap();
-        assert_eq!(load_cache(&book, &dir), None);
-        save_cache(&book, &dir, &book_text(vec!["新".to_owned()]), "pdf");
+        assert_eq!(load_cache(&book, &dir, ""), None);
+        save_cache(&book, &dir, &book_text(vec!["新".to_owned()]), "pdf", "");
         assert_eq!(std::fs::read_dir(dir.join("text")).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -660,6 +703,11 @@ mod tests {
         let rx = spawn_book_text(
             Some(pdfium),
             book.clone(),
+            PageSource {
+                mode: SourceMode::Pdf,
+                root: book.clone(),
+                names: Vec::new(),
+            },
             dir.join("cache"),
             progress.clone(),
             Arc::new(AtomicBool::new(false)),
@@ -713,7 +761,7 @@ mod tests {
             image::RgbaImage::new(20, 30).save(book.join(name)).unwrap();
         }
         let listing = crate::engine::source::list_images(&book, false).unwrap();
-        let source = || OcrSource {
+        let source = || PageSource {
             mode: listing.mode,
             root: listing.root.clone(),
             names: listing.images.clone(),
@@ -734,7 +782,7 @@ mod tests {
         assert_eq!(progress.done.load(Ordering::Relaxed), 3);
         assert_eq!(loaded.index.search("ページ2の文字", 10)[0].page, 2);
         // 読んだ文字はためておき、次に開いたときに使う（作業用の画像は残さない）
-        let cached = load_cache(&book, &dir.join("cache")).unwrap();
+        let cached = load_cache(&book, &dir.join("cache"), &source().key()).unwrap();
         assert_eq!(cached.pages[0], "ページ0 の 文字");
         assert!(
             std::fs::read_dir(dir.join("cache").join("ocr-work"))
@@ -754,6 +802,100 @@ mod tests {
         );
         let error = rx.recv().unwrap().err().unwrap();
         assert!(error.message().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 渡していないページの番号や、文字の無い行を返すプラグインの結果は、ためない
+    #[cfg(unix)]
+    #[test]
+    fn unexpected_ocr_answers_are_not_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("manga-book-ocr-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let book = dir.join("book");
+        std::fs::create_dir_all(&book).unwrap();
+        // 17 ページ（2つのまとまりに分かれる）
+        for page in 0..17 {
+            image::RgbaImage::new(4, 4)
+                .save(book.join(format!("{page:02}.png")))
+                .unwrap();
+        }
+        let listing = crate::engine::source::list_images(&book, false).unwrap();
+        let source = || PageSource {
+            mode: listing.mode,
+            root: listing.root.clone(),
+            names: listing.images.clone(),
+        };
+        let plugin = |body: &str| {
+            let script = dir.join("ocr.sh");
+            std::fs::write(&script, format!("#!/bin/sh\nread request\n{body}")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            PluginManifest {
+                id: "bad".to_owned(),
+                name: "Bad".to_owned(),
+                command: vec!["./ocr.sh".to_owned()],
+                credentials: Vec::new(),
+                auth: false,
+                kind: crate::engine::plugin::PluginKind::Ocr,
+                dir: dir.clone(),
+            }
+        };
+        let run = |manifest: PluginManifest| {
+            spawn_book_ocr(
+                manifest,
+                HashMap::new(),
+                book.clone(),
+                source(),
+                None,
+                dir.join("cache"),
+                Arc::new(TextProgress::default()),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .recv()
+            .unwrap()
+        };
+        // どのまとまりにも 0 ページ目を返す（2つ目のまとまりでは、渡していないページ）
+        let always_first = plugin("echo '{\"page\": 0, \"text\": \"x\"}'\n");
+        assert!(run(always_first).is_err());
+        assert!(load_cache(&book, &dir.join("cache"), &source().key()).is_none());
+        // text の無い行は読めた知らせにならず、読めなかったページとして数える
+        let no_text = plugin(
+            "for page in $(echo \"$request\" | grep -o '\"page\":[0-9]*' | cut -d: -f2); do\n\
+             echo \"{\\\"page\\\": $page}\"\ndone\n",
+        );
+        assert_eq!(run(no_text).ok().unwrap().failed, 17);
+        assert!(load_cache(&book, &dir.join("cache"), &source().key()).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// フォルダの本は、画像を上書きしたときや、ページの並びが違うときに、ためておいた文字を使わない
+    #[test]
+    fn folder_caches_follow_the_pages() {
+        let dir = std::env::temp_dir().join(format!("manga-book-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let book = dir.join("book");
+        std::fs::create_dir_all(book.join("sub")).unwrap();
+        for name in ["01.png", "sub/02.png"] {
+            image::RgbaImage::new(4, 4).save(book.join(name)).unwrap();
+        }
+        let source = |include_subfolders| {
+            let listing = crate::engine::source::list_images(&book, include_subfolders).unwrap();
+            PageSource {
+                mode: listing.mode,
+                root: listing.root,
+                names: listing.images,
+            }
+        };
+        let text = book_text(vec!["一".to_owned(), "二".to_owned()]);
+        save_cache(&book, &dir, &text, "ocr:x", &source(true).key());
+        assert_eq!(load_cache(&book, &dir, &source(true).key()), Some(text));
+        // サブフォルダを読まないときは、並びが違う
+        assert_eq!(load_cache(&book, &dir, &source(false).key()), None);
+        // 画像を上書きしたら（フォルダの版は変わらなくても）使わない
+        image::RgbaImage::new(8, 8)
+            .save(book.join("01.png"))
+            .unwrap();
+        assert_eq!(load_cache(&book, &dir, &source(true).key()), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
