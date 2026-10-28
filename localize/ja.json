@@ -207,7 +207,7 @@
   "toolbar.reload_current_image.tooltip": "画像を再読込します。",
   "toolbar.odd": "奇",
   "toolbar.even": "偶",
-  "start.open_zip": "どこかをクリックして Zip ファイルを開く",
+  "start.open_zip": "「ファイル → 開く」(Alt+F, O) か、ファイルをドラッグ＆ドロップして開きます",
   "action.none": "未割り当て",
   "action.slide_image_down": "画像を下へスライド",
   "action.slide_image_up": "画像を上へスライド",

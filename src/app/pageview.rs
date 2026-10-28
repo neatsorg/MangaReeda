@@ -49,10 +49,6 @@ impl MangaReader {
                 self.sync_cover_blank(ctx);
                 self.apply_pending_pan_start();
 
-                // Create a 'Response' for the entire background area first,
-                // but we check it at the END of the code.
-                let bg_response = ui.interact(rect, ui.id().with("bg"), egui::Sense::hover());
-
                 if self.zip_path.is_some() {
                     // Show single image on center or if in shifted cover mode
                     let is_zoomed = (self.zoom_factor - 1.0).abs() > 0.01;
@@ -268,60 +264,17 @@ impl MangaReader {
                                 *action_to_run = mouse_action;
                             }
                         }
-
-                        // ONLY TRIGGER IF BACKGROUND WAS CLICKED
-                        // bg_response.clicked() is true if the background was clicked.
-                        // However, we only want to trigger if a specific image wasn't the target.
-                        if bg_response.clicked()
-                            && !ctx.is_using_pointer()
-                            && !ctx.input(|i| i.pointer.any_down())
-                        {
-                            // Extra safety: check if we are actually hovering an image
-                            if !left_visible_rect
-                                .contains(ctx.pointer_interact_pos().unwrap_or_default())
-                                && !right_visible_rect
-                                    .contains(ctx.pointer_interact_pos().unwrap_or_default())
-                            {
-                                self.open_file_dialog();
-                            }
-                        }
                     }
                 } else {
                     // the start screen
+                    // 開始画面。開くのはメニューかドラッグ＆ドロップで行う
                     ui.centered_and_justified(|ui| {
-                        let start_btn = egui::Button::new(
+                        ui.label(
                             egui::RichText::new(tr("start.open_zip"))
                                 .size(20.0)
                                 .color(egui::Color32::from_gray(200)),
-                        )
-                        .fill(egui::Color32::from_gray(40));
-                        if ui.add_sized(ctx.content_rect().size(), start_btn).clicked() {
-                            self.open_file_dialog();
-                        }
+                        );
                     });
-                }
-
-                // --- THE BACKGROUND CLICK CHECK (When Zip is Open) ---
-                if self.zip_path.is_some() && bg_response.clicked() {
-                    // Check if the click was actually handled by an image
-                    if !ctx.is_using_pointer() {
-                        // Check coordinates to ensure we aren't inside the "reading zones"
-                        let left_half = egui::Rect::from_min_max(
-                            rect.min,
-                            egui::pos2(rect.center().x, rect.max.y),
-                        );
-                        let right_half = egui::Rect::from_min_max(
-                            egui::pos2(rect.center().x, rect.min.y),
-                            rect.max,
-                        );
-
-                        let pointer_pos =
-                            ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
-
-                        if !left_half.contains(pointer_pos) && !right_half.contains(pointer_pos) {
-                            self.open_file_dialog();
-                        }
-                    }
                 }
 
                 self.render_error_overlay(ctx, ui);
@@ -524,16 +477,13 @@ impl MangaReader {
                         }
                     }
                 } else {
+                    // 開始画面。開くのはメニューかドラッグ＆ドロップで行う
                     ui.centered_and_justified(|ui| {
-                        let start_btn = egui::Button::new(
+                        ui.label(
                             egui::RichText::new(tr("start.open_zip"))
                                 .size(20.0)
                                 .color(egui::Color32::from_gray(200)),
-                        )
-                        .fill(egui::Color32::from_gray(40));
-                        if ui.add_sized(ctx.content_rect().size(), start_btn).clicked() {
-                            self.open_file_dialog();
-                        }
+                        );
                     });
                 }
 

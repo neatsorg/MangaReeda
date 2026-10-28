@@ -207,7 +207,7 @@
   "toolbar.reload_current_image.tooltip": "Clear image cache and buffers, then reload the current page.",
   "toolbar.odd": "Odd",
   "toolbar.even": "Even",
-  "start.open_zip": "Click anywhere to open a Zip file",
+  "start.open_zip": "Open a book from File > Open (Alt+F, O), or drag and drop a file here",
   "action.none": "Unassigned",
   "action.slide_image_down": "Slide Image Down",
   "action.slide_image_up": "Slide Image Up",
