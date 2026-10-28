@@ -8,14 +8,32 @@ use eframe::egui;
 use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
-use image::{AnimationDecoder, DynamicImage, ImageFormat};
-use std::io::Cursor;
+use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat};
+use std::io::{BufRead, Cursor, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
+
+/// 展開に使うメモリの上限（image の既定と同じ 512MB）を付けたデコーダー。自分で作ったデコーダーには
+/// 上限が付かず、GIF の論理画面が巨大だと最初のフレームで何 GB も確保してしまうので、必ずこれらを通す
+fn webp_decoder<R: BufRead + Seek>(reader: R) -> image::ImageResult<WebPDecoder<R>> {
+    let mut decoder = WebPDecoder::new(reader)?;
+    decoder.set_limits(image::Limits::default())?;
+    Ok(decoder)
+}
+
+fn gif_decoder<R: BufRead + Seek>(reader: R) -> image::ImageResult<GifDecoder<R>> {
+    let mut decoder = GifDecoder::new(reader)?;
+    decoder.set_limits(image::Limits::default())?;
+    Ok(decoder)
+}
+
+fn png_decoder<R: BufRead + Seek>(reader: R) -> image::ImageResult<PngDecoder<R>> {
+    PngDecoder::with_limits(reader, image::Limits::default())
+}
 
 /// 1つのアニメーションで持っておくフレームの合計の大きさ（バイト）の上限
 const MAX_ANIMATION_BYTES: usize = 1024 * 1024 * 1024;
@@ -24,6 +42,12 @@ const MAX_ANIMATION_BYTES: usize = 1024 * 1024 * 1024;
 pub(super) struct AnimatedFrame {
     pub(super) image: egui::ColorImage,
     pub(super) delay: Duration,
+}
+
+impl super::sized_cache::CacheSize for AnimatedFrame {
+    fn cache_bytes(&self) -> usize {
+        self.image.pixels.len() * 4
+    }
 }
 
 pub(super) enum AnimationDecodeEvent {
@@ -124,7 +148,7 @@ impl MangaReader {
     ) -> Option<AnimationScanStatus> {
         match format {
             AnimatedImageFormat::WebP => {
-                let decoder = WebPDecoder::new(Cursor::new(bytes)).ok()?;
+                let decoder = webp_decoder(Cursor::new(bytes)).ok()?;
                 if decoder.has_animation() {
                     Some(AnimationScanStatus::Animated(AnimatedImageFormat::WebP))
                 } else {
@@ -132,7 +156,7 @@ impl MangaReader {
                 }
             }
             AnimatedImageFormat::Gif => {
-                let mut frames = GifDecoder::new(Cursor::new(bytes)).ok()?.into_frames();
+                let mut frames = gif_decoder(Cursor::new(bytes)).ok()?.into_frames();
                 let _ = frames.next()?.ok()?;
                 match frames.next() {
                     Some(Ok(_)) => Some(AnimationScanStatus::Animated(AnimatedImageFormat::Gif)),
@@ -141,7 +165,7 @@ impl MangaReader {
                 }
             }
             AnimatedImageFormat::Png => {
-                let decoder = PngDecoder::new(Cursor::new(bytes)).ok()?;
+                let decoder = png_decoder(Cursor::new(bytes)).ok()?;
                 if decoder.is_apng().ok()? {
                     Some(AnimationScanStatus::Animated(AnimatedImageFormat::Png))
                 } else {
@@ -298,7 +322,7 @@ impl MangaReader {
     ) -> Option<(DynamicImage, Option<AnimatedFrame>, Option<Vec<u8>>)> {
         match format {
             AnimatedImageFormat::WebP => {
-                let decoder = WebPDecoder::new(Cursor::new(buffer.clone())).ok()?;
+                let decoder = webp_decoder(Cursor::new(buffer.clone())).ok()?;
                 if decoder.has_animation() {
                     let mut frames = decoder.into_frames();
                     let first_frame = frames.next()?.ok()?;
@@ -321,9 +345,7 @@ impl MangaReader {
                 }
             }
             AnimatedImageFormat::Gif => {
-                let mut frames = GifDecoder::new(Cursor::new(buffer.clone()))
-                    .ok()?
-                    .into_frames();
+                let mut frames = gif_decoder(Cursor::new(buffer.clone())).ok()?.into_frames();
                 let first_frame = frames.next()?.ok()?;
                 let animated_frame = AnimatedFrame {
                     delay: Self::frame_delay(&first_frame),
@@ -339,7 +361,7 @@ impl MangaReader {
                 ))
             }
             AnimatedImageFormat::Png => {
-                let decoder = PngDecoder::new(Cursor::new(buffer.clone())).ok()?;
+                let decoder = png_decoder(Cursor::new(buffer.clone())).ok()?;
                 if decoder.is_apng().ok()? {
                     let mut frames = decoder.apng().ok()?.into_frames();
                     let first_frame = frames.next()?.ok()?;
@@ -364,12 +386,16 @@ impl MangaReader {
         }
     }
 
+    /// `first_frame` は、別に読んだ1枚目（上限に、その分も数える）
     pub(super) fn spawn_animated_image_worker(
         format: AnimatedImageFormat,
         bytes: Vec<u8>,
         spec: ImageProcessingSpec,
+        first_frame: &AnimatedFrame,
     ) -> Receiver<AnimationDecodeEvent> {
-        Self::spawn_animated_image_worker_within(format, bytes, spec, MAX_ANIMATION_BYTES)
+        use super::sized_cache::CacheSize;
+        let limit = MAX_ANIMATION_BYTES.saturating_sub(first_frame.cache_bytes());
+        Self::spawn_animated_image_worker_within(format, bytes, spec, limit)
     }
 
     /// 2枚目からのフレームを読んで送る。送ったフレームの合計が `limit` バイトを超えるところで読むのをやめ、
@@ -400,7 +426,7 @@ impl MangaReader {
 
             match format {
                 AnimatedImageFormat::WebP => {
-                    let Ok(decoder) = WebPDecoder::new(Cursor::new(bytes)) else {
+                    let Ok(decoder) = webp_decoder(Cursor::new(bytes)) else {
                         let _ = tx.send(AnimationDecodeEvent::Failed);
                         return;
                     };
@@ -422,7 +448,7 @@ impl MangaReader {
                     }
                 }
                 AnimatedImageFormat::Gif => {
-                    let Ok(decoder) = GifDecoder::new(Cursor::new(bytes)) else {
+                    let Ok(decoder) = gif_decoder(Cursor::new(bytes)) else {
                         let _ = tx.send(AnimationDecodeEvent::Failed);
                         return;
                     };
@@ -439,7 +465,7 @@ impl MangaReader {
                     }
                 }
                 AnimatedImageFormat::Png => {
-                    let Ok(decoder) = PngDecoder::new(Cursor::new(bytes)) else {
+                    let Ok(decoder) = png_decoder(Cursor::new(bytes)) else {
                         let _ = tx.send(AnimationDecodeEvent::Failed);
                         return;
                     };
@@ -602,6 +628,7 @@ impl MangaReader {
                     format,
                     bytes,
                     self.current_image_processing_spec(ctx),
+                    &first_frame,
                 )),
             };
             if let Some(texture) = self.textures[slot].as_mut() {
@@ -726,5 +753,29 @@ mod tests {
             limited.last(),
             Some(AnimationDecodeEvent::Finished)
         ));
+    }
+
+    /// 論理画面だけが巨大な GIF は、展開する前に断る（何 GB も確保しない）
+    #[test]
+    fn gifs_with_a_huge_screen_are_refused_before_decoding() {
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            let frames = (0..2u8).map(|i| {
+                image::Frame::new(image::RgbaImage::from_pixel(
+                    1,
+                    1,
+                    image::Rgba([i, 0, 0, 255]),
+                ))
+            });
+            encoder.encode_frames(frames).unwrap();
+        }
+        // ヘッダー（6バイト）の直後が、論理画面の幅と高さ（リトルエンディアン）
+        gif[6..10].copy_from_slice(&[0x20, 0x4e, 0x20, 0x4e]); // 20000×20000（RGBA で約 1.6GB）
+        let started = Instant::now();
+        assert!(
+            MangaReader::detect_animation_scan_status(AnimatedImageFormat::Gif, &gif).is_none()
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

@@ -10,6 +10,7 @@ mod overlay;
 mod pageview;
 mod plugins;
 mod settings_panel;
+mod sized_cache;
 mod thumbnails;
 mod toolbar;
 mod view;
@@ -36,6 +37,10 @@ const MOUSE_DRAG_THRESHOLD: f32 = 6.0;
 const AUTO_SCROLL_MIN_DELAY_MS: u64 = 200;
 const AUTO_SCROLL_MAX_DELAY_MS: u64 = 30_000;
 const ANIMATION_SCAN_AHEAD_PAGES: usize = 5;
+/// 読んだページのテクスチャをためておく大きさの合計の上限（バイト）。超えたら長く見ていないページから捨てる
+const TEXTURE_CACHE_BYTES: usize = 1024 * 1024 * 1024;
+/// アニメーションの元データと最初のフレームを、それぞれためておく大きさの合計の上限（バイト）
+const ANIMATION_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const ZOOM_MIN: f32 = 0.1;
 const ZOOM_MAX: f32 = 3.0;
 const ZOOM_STEP: f32 = 1.1;
@@ -72,12 +77,12 @@ pub struct MangaReader {
     is_shifted: bool,
     config: AppSettings,
     binding_action: Option<BindingTarget>,
-    texture_cache: std::collections::HashMap<String, egui::TextureHandle>,
+    texture_cache: sized_cache::SizedCache<egui::TextureHandle>,
     image_dimensions: std::collections::HashMap<String, [u32; 2]>,
     active_animations: [Option<AnimatedPage>; 2],
     active_animation_keys: [Option<String>; 2],
-    animated_image_byte_cache: std::collections::HashMap<String, Vec<u8>>,
-    animated_image_first_frame_cache: std::collections::HashMap<String, AnimatedFrame>,
+    animated_image_byte_cache: sized_cache::SizedCache<Vec<u8>>,
+    animated_image_first_frame_cache: sized_cache::SizedCache<AnimatedFrame>,
     animation_scan_anchor: Option<usize>,
     animation_scan_generation: u64,
     animation_scan_epoch: Arc<AtomicU64>,
@@ -185,12 +190,12 @@ impl MangaReader {
             is_shifted: false,
             config, // Store the loaded config here
             binding_action: None,
-            texture_cache: Default::default(),
+            texture_cache: sized_cache::SizedCache::new(TEXTURE_CACHE_BYTES),
             image_dimensions: Default::default(),
             active_animations: std::array::from_fn(|_| None),
             active_animation_keys: std::array::from_fn(|_| None),
-            animated_image_byte_cache: Default::default(),
-            animated_image_first_frame_cache: Default::default(),
+            animated_image_byte_cache: sized_cache::SizedCache::new(ANIMATION_CACHE_BYTES),
+            animated_image_first_frame_cache: sized_cache::SizedCache::new(ANIMATION_CACHE_BYTES),
             animation_scan_anchor: None,
             animation_scan_generation: 0,
             animation_scan_epoch: Arc::new(AtomicU64::new(0)),

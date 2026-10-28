@@ -223,6 +223,9 @@ fn save_book(
     }
 }
 
+/// 保存先にすでにファイルがあったときの知らせ
+const DEST_EXISTS: &str = "保存先に同じ名前のファイルがあるので、置き換えずにやめました";
+
 /// 一時ファイルを `dest` に置く。`dest` がすでにあれば置き換えずに失敗する
 /// （ダウンロード中に同じ名前のファイルが置かれたときや、別に起動したアプリが同じ場所に置いたときに、それを消さないように）
 fn place(partial: &Path, dest: &Path) -> Result<(), Failure> {
@@ -232,12 +235,41 @@ fn place(partial: &Path, dest: &Path) -> Result<(), Failure> {
             let _ = std::fs::remove_file(partial);
             Ok(())
         }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(Failure::Other(
-            "保存先に同じ名前のファイルがあるので、置き換えずにやめました".to_owned(),
-        )),
-        // ハードリンクを作れないファイルシステム（FAT など）では、無いのを確かめてから名前を変える
-        Err(_) if !dest.exists() => Ok(std::fs::rename(partial, dest)?),
-        Err(e) => Err(e.into()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            Err(Failure::Other(DEST_EXISTS.to_owned()))
+        }
+        Err(_) => copy_into_new(partial, dest),
+    }
+}
+
+/// 保存先を「新しく作れたときだけ」開いて、一時ファイルの中身を写す。ハードリンクを作れないファイルシステム
+/// （FAT など）で使う（名前を変える方法では、無いのを確かめたあとにできたファイルを置き換えてしまうので）
+fn copy_into_new(partial: &Path, dest: &Path) -> Result<(), Failure> {
+    let mut target = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(Failure::Other(DEST_EXISTS.to_owned()));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let copied = std::fs::File::open(partial)
+        .and_then(|mut source| io::copy(&mut source, &mut target))
+        .and_then(|_| target.sync_all());
+    drop(target);
+    match copied {
+        Ok(()) => {
+            let _ = std::fs::remove_file(partial);
+            Ok(())
+        }
+        Err(e) => {
+            // 自分で作った保存先なので、書きかけは消す
+            let _ = std::fs::remove_file(dest);
+            Err(e.into())
+        }
     }
 }
 
@@ -392,6 +424,28 @@ fn decode_hex(hex: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ハードリンクを作れないときの写し方も、保存先にファイルがあれば置き換えない
+    #[test]
+    fn copying_into_place_never_replaces_a_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "{}-copy-{}",
+            env!("CARGO_PKG_NAME"),
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (partial, dest) = (dir.join("p.part"), dir.join("book.pdf"));
+        std::fs::write(&partial, "new").unwrap();
+        std::fs::write(&dest, "old").unwrap();
+        assert!(copy_into_new(&partial, &dest).is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+        std::fs::remove_file(&dest).unwrap();
+        assert!(copy_into_new(&partial, &dest).is_ok());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!partial.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// 一時ファイルは新しい名前で作り、同じ名前のファイルがあっても切り詰めない。失敗したら消す
     #[test]
