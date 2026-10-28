@@ -422,7 +422,7 @@ impl MangaReader {
         self.open_book_with(path, include_subfolders, open_at, ctx);
     }
 
-    fn open_book_with(
+    pub(super) fn open_book_with(
         &mut self,
         path: PathBuf,
         include_subfolders: bool,
@@ -462,7 +462,7 @@ impl MangaReader {
         self.open_book_with(question.path, include, question.open_at, ctx);
     }
 
-    fn save_history(&self) {
+    pub(super) fn save_history(&self) {
         if let Some(history_path) = &self.history_path {
             self.history.save(history_path);
         }

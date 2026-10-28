@@ -3,6 +3,7 @@
 //! Enter で決定、Esc で閉じる。egui のメニューにはこの操作が無いので、描画も自前で行う
 
 use super::MangaReader;
+use super::thumbnails::ShelfSource;
 use crate::config::{
     ImageSizingMode, LastPageAction, MangaAction, PageViewOptions, ResizeMethod, SubfolderMode,
     UiLanguage,
@@ -346,11 +347,11 @@ impl MangaReader {
                 'G',
                 MenuCommand::Action(MangaAction::ThumbnailsLarge),
             )),
-            book(item(
+            item(
                 tr("menu.view.covers"),
                 'C',
                 MenuCommand::Action(MangaAction::CoverThumbnails),
-            )),
+            ),
             MenuEntry::Separator,
             check(
                 tr("menu.view.fullscreen"),
@@ -505,6 +506,40 @@ impl MangaReader {
             ),
         ];
 
+        // 履歴とお気に入りは、表紙サムネイルの画面で並べる
+        let shelf = self.shelf_source();
+        let favorite = self
+            .zip_path
+            .as_ref()
+            .is_some_and(|book| self.history.is_favorite(book));
+        let booklist_menu = vec![
+            check(
+                tr("menu.booklist.folder"),
+                'D',
+                MenuCommand::Action(MangaAction::CoverThumbnails),
+                matches!(shelf, Some(ShelfSource::Folder(_))),
+            ),
+            check(
+                tr("menu.booklist.history"),
+                'H',
+                MenuCommand::Action(MangaAction::ShowHistory),
+                shelf == Some(ShelfSource::History),
+            ),
+            check(
+                tr("menu.booklist.favorites"),
+                'F',
+                MenuCommand::Action(MangaAction::ShowFavorites),
+                shelf == Some(ShelfSource::Favorites),
+            ),
+            MenuEntry::Separator,
+            book(check(
+                tr("menu.booklist.add_favorite"),
+                'A',
+                MenuCommand::Action(MangaAction::ToggleFavorite),
+                favorite,
+            )),
+        ];
+
         let subfolder = config.subfolder_mode;
         let tools_menu = vec![
             book(check(
@@ -589,6 +624,11 @@ impl MangaReader {
                 label: tr("menu.move").to_owned(),
                 mnemonic: 'J',
                 entries: move_menu,
+            },
+            Menu {
+                label: tr("menu.booklist").to_owned(),
+                mnemonic: 'B',
+                entries: booklist_menu,
             },
             Menu {
                 label: tr("menu.tools").to_owned(),

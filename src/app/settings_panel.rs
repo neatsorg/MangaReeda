@@ -321,6 +321,21 @@ pub(super) fn render_control_mapping_settings(
                         "Upper Folder",
                         &mut keys.upper_folder,
                     ),
+                    (
+                        tr("settings.key.show_history"),
+                        "Show History",
+                        &mut keys.show_history,
+                    ),
+                    (
+                        tr("settings.key.show_favorites"),
+                        "Show Favorites",
+                        &mut keys.show_favorites,
+                    ),
+                    (
+                        tr("settings.key.toggle_favorite"),
+                        "Toggle Favorite",
+                        &mut keys.toggle_favorite,
+                    ),
                 ] {
                     ui.label(label);
                     render_binding_button(

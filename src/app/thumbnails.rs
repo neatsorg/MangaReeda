@@ -1,22 +1,25 @@
 //! サムネイル一覧の画面。ミーヤと同じく、開いたときは先頭から見せ、
 //! 今のページに白枠、選んでいるページに青枠を付ける。クリックか Enter で決定し、
 //! 見開きならそのページから始まる組で表示する。Esc で一覧を閉じて元のページに戻る。
-//! 表紙サムネイルも同じ画面で、フォルダの中の冊を表紙で並べる
+//! 表紙サムネイルも同じ画面で、フォルダの中の冊・履歴・お気に入りを表紙で並べる。
+//! 上のタブ（Tab キー）で並べるものを切り替える
 
 use super::MangaReader;
+use super::loader::OpenAt;
 use crate::config::SourceMode;
-use crate::engine::source::list_images;
 use crate::engine::thumbnail::{
-    CoverEntry, Direction, Grid, THUMBNAIL_MAX_SIDE, ThumbnailMode, cover_entries, move_selection,
-    spawn_cover_loader, spawn_loader,
+    CoverEntry, Direction, Grid, THUMBNAIL_MAX_SIDE, ThumbnailMode, cover_entries, folder_shelf,
+    move_selection, spawn_cover_loader, spawn_loader,
 };
 use crate::localize::tr;
 use eframe::egui;
 use image::RgbaImage;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 1フレームでテクスチャにするサムネイルの数（多いと一覧を開いた直後に引っかかる）
 const TEXTURES_PER_FRAME: usize = 32;
@@ -26,6 +29,10 @@ const SELECTED_COLOR: egui::Color32 = egui::Color32::from_rgb(70, 130, 255);
 const FRAME_WIDTH: f32 = 2.0;
 /// 表紙サムネイルで、マスの下に冊の名前を出す高さ
 const COVER_LABEL_HEIGHT: f32 = 26.0;
+/// 表紙サムネイルの上に出す、並べるものを切り替えるタブの高さ
+const TAB_HEIGHT: f32 = 30.0;
+/// 戻るで覚えておく数
+const SHELF_BACK_LIMIT: usize = 50;
 
 /// 作ったサムネイル。一覧を閉じても、同じ冊のあいだは持っておく
 #[derive(Default)]
@@ -34,11 +41,70 @@ pub(super) struct ThumbnailCache {
     pub(super) textures: Vec<Option<egui::TextureHandle>>,
 }
 
-/// 表紙サムネイルで並べているフォルダの冊
+/// 表紙サムネイルで並べるもの
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ShelfSource {
+    /// フォルダの中の冊
+    Folder(PathBuf),
+    History,
+    Favorites,
+}
+
+/// タブの並び
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ShelfTab {
+    Folder,
+    History,
+    Favorites,
+}
+
+const SHELF_TABS: [ShelfTab; 3] = [ShelfTab::Folder, ShelfTab::History, ShelfTab::Favorites];
+
+impl ShelfSource {
+    fn tab(&self) -> ShelfTab {
+        match self {
+            Self::Folder(_) => ShelfTab::Folder,
+            Self::History => ShelfTab::History,
+            Self::Favorites => ShelfTab::Favorites,
+        }
+    }
+}
+
+impl ShelfTab {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Folder => tr("shelf.folder"),
+            Self::History => tr("shelf.history"),
+            Self::Favorites => tr("shelf.favorites"),
+        }
+    }
+}
+
+/// 表紙サムネイルで並べている冊
 struct CoverShelf {
-    folder: PathBuf,
+    source: ShelfSource,
     entries: Vec<CoverEntry>,
     textures: Vec<Option<egui::TextureHandle>>,
+    /// 読み込み中の表紙の、送られてくる番号から entries の番号への対応
+    loading: Vec<usize>,
+}
+
+/// 何秒前かを「3日前」のように短く言う
+fn time_ago(then: u64, now: u64) -> String {
+    let seconds = now.saturating_sub(then);
+    let (key, n) = match seconds {
+        0..60 => return tr("time.just_now").to_owned(),
+        60..3600 => ("time.minutes_ago", seconds / 60),
+        3600..86400 => ("time.hours_ago", seconds / 3600),
+        _ => ("time.days_ago", seconds / 86400),
+    };
+    tr(key).replace("{n}", &n.to_string())
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// 開いている一覧
@@ -74,11 +140,21 @@ impl ThumbnailView {
     pub(super) fn selected(&self) -> usize {
         self.selected
     }
+
+    #[cfg(test)]
+    pub(super) fn select(&mut self, index: usize) {
+        self.selected = index;
+    }
 }
 
-/// 冊として開けるフォルダか（画像が直下にある）。画像の無いフォルダは中の冊の一覧に移る
-fn folder_has_pages(folder: &std::path::Path) -> bool {
-    list_images(folder, false).is_some_and(|listing| !listing.images.is_empty())
+/// 冊を並べるフォルダ。冊のフォルダの中に冊があれば（画像の無いフォルダ）そのフォルダ、
+/// 無ければ冊が入っているフォルダ
+fn shelf_folder_of(book: &Path) -> Option<PathBuf> {
+    if book.is_dir() && !cover_entries(book).is_empty() {
+        Some(book.to_path_buf())
+    } else {
+        book.parent().map(Path::to_path_buf)
+    }
 }
 
 impl Drop for ThumbnailView {
@@ -156,37 +232,91 @@ impl MangaReader {
     /// フォルダを開いていればそのフォルダの中の冊を並べる。フォルダの中に冊が無ければ（画像だけのフォルダ）、
     /// それが入っているフォルダの冊を並べる。開いていれば閉じる
     pub(super) fn toggle_cover_thumbnails(&mut self) {
-        if self
-            .thumbnails
-            .as_ref()
-            .is_some_and(|view| view.covers.is_some())
-        {
+        match self.shelf_source() {
+            Some(ShelfSource::Folder(_)) => self.thumbnails = None,
+            // 履歴やお気に入りを並べていれば、フォルダのタブに移る
+            Some(_) => self.switch_shelf_tab(ShelfTab::Folder),
+            None => match self.zip_path.clone() {
+                Some(book) => {
+                    if let Some(folder) = shelf_folder_of(&book) {
+                        self.open_cover_thumbnails(folder, Some(book));
+                    }
+                }
+                // 冊を開いていなければ、フォルダのタブと同じ順で探したフォルダ
+                None => {
+                    if let Some(folder) = self.fallback_shelf_folder(None) {
+                        self.show_shelf(ShelfSource::Folder(folder), None);
+                    }
+                }
+            },
+        }
+    }
+
+    /// フォルダの表紙サムネイルで並べるフォルダ。今の冊、`selected` の冊、前に並べたフォルダ、
+    /// 最後に読んだ冊、ホームの順に探す
+    fn fallback_shelf_folder(&self, selected: Option<PathBuf>) -> Option<PathBuf> {
+        self.zip_path
+            .clone()
+            .or(selected)
+            .and_then(|book| shelf_folder_of(&book))
+            .or_else(|| self.last_shelf_folder.clone())
+            .or_else(|| {
+                let entry = self.history.entries.iter().find(|e| e.path.exists())?;
+                shelf_folder_of(&entry.path)
+            })
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .or_else(|| std::env::var_os("USERPROFILE"))
+                    .map(PathBuf::from)
+            })
+    }
+
+    /// 履歴やお気に入りを表紙で並べる。同じものを並べていれば閉じる
+    pub(super) fn toggle_book_list(&mut self, source: ShelfSource) {
+        if self.shelf_source().as_ref() == Some(&source) {
             self.thumbnails = None;
             return;
         }
+        self.show_shelf(source, None);
+    }
+
+    /// 今の冊をお気に入りに登録する。登録済みなら外す
+    pub(super) fn toggle_current_favorite(&mut self) {
         let Some(book) = self.zip_path.clone() else {
             return;
         };
-        let folder = if book.is_dir() && !cover_entries(&book).is_empty() {
-            book.clone()
+        let added = self.history.toggle_favorite(&book);
+        self.save_history();
+        self.show_fading_error(tr(if added {
+            "shelf.favorite_added"
         } else {
-            match book.parent() {
-                Some(parent) => parent.to_path_buf(),
-                None => return,
-            }
-        };
-        self.open_cover_thumbnails(folder, Some(book));
+            "shelf.favorite_removed"
+        }));
+    }
+
+    /// 並べているもの。表紙サムネイルを開いていなければ None
+    pub(super) fn shelf_source(&self) -> Option<ShelfSource> {
+        self.thumbnails
+            .as_ref()
+            .and_then(|view| view.covers.as_ref())
+            .map(|shelf| shelf.source.clone())
     }
 
     /// 上のフォルダへ。今の冊が入っているフォルダの表紙サムネイルを出す。
-    /// 表紙サムネイルを開いていれば、並べているフォルダの上のフォルダに移る
+    /// 表紙サムネイルを開いていれば、並べているフォルダ（履歴などでは選んでいる冊）の上のフォルダに移る
     pub(super) fn go_to_upper_folder(&mut self) {
         let from = match self
             .thumbnails
             .as_ref()
-            .and_then(|view| view.covers.as_ref())
+            .and_then(|view| Some((view.selected, view.covers.as_ref()?)))
         {
-            Some(shelf) => shelf.folder.clone(),
+            Some((selected, shelf)) => match &shelf.source {
+                ShelfSource::Folder(folder) => folder.clone(),
+                _ => match shelf.entries.get(selected) {
+                    Some(entry) => entry.path.clone(),
+                    None => return,
+                },
+            },
             None => match self.zip_path.clone() {
                 Some(book) => book,
                 None => return,
@@ -200,10 +330,53 @@ impl MangaReader {
 
     /// `folder` の中の冊を表紙で並べる。`select` があればそれを選んでおく
     fn open_cover_thumbnails(&mut self, folder: PathBuf, select: Option<PathBuf>) {
-        let entries = cover_entries(&folder);
-        if entries.is_empty() {
+        if cover_entries(&folder).is_empty() {
             self.show_fading_error(tr("error.no_books_in_folder"));
             return;
+        }
+        self.show_shelf(ShelfSource::Folder(folder), select);
+    }
+
+    /// 並べる冊。履歴とお気に入りは、今は無い冊（消したものや外したドライブ）を除く
+    fn shelf_entries(&self, source: &ShelfSource) -> Vec<CoverEntry> {
+        let paths: Vec<&PathBuf> = match source {
+            ShelfSource::Folder(folder) => return folder_shelf(folder),
+            ShelfSource::History => self.history.entries.iter().map(|e| &e.path).collect(),
+            ShelfSource::Favorites => self.history.favorites.iter().map(|e| &e.path).collect(),
+        };
+        paths
+            .into_iter()
+            .filter(|path| path.exists())
+            .map(|path| CoverEntry {
+                path: path.clone(),
+                is_folder: path.is_dir(),
+                loose_pages: None,
+            })
+            .collect()
+    }
+
+    /// `source` を表紙で並べる。`select` があればそれを、無ければ今の冊を選んでおく。
+    /// 前に並べていた表紙は、同じ冊なら作り直さずに使う
+    fn show_shelf(&mut self, source: ShelfSource, select: Option<PathBuf>) {
+        let previous = self.thumbnails.as_ref().and_then(|view| {
+            let shelf = view.covers.as_ref()?;
+            let selected = shelf.entries.get(view.selected).map(|e| e.path.clone());
+            Some((shelf.source.clone(), selected))
+        });
+        match previous {
+            // 一覧を新しく開いたときは、前の道のりを忘れる
+            None => self.shelf_back.clear(),
+            Some((previous, selected)) if previous != source && !self.going_back => {
+                self.shelf_back.push((previous, selected));
+                if self.shelf_back.len() > SHELF_BACK_LIMIT {
+                    self.shelf_back.remove(0);
+                }
+            }
+            Some(_) => {}
+        }
+        let entries = self.shelf_entries(&source);
+        if let ShelfSource::Folder(folder) = &source {
+            self.last_shelf_folder = Some(folder.clone());
         }
         let position = |path: &PathBuf| entries.iter().position(|entry| &entry.path == path);
         let selected = select
@@ -211,26 +384,115 @@ impl MangaReader {
             .and_then(position)
             .or_else(|| self.zip_path.as_ref().and_then(position))
             .unwrap_or(0);
+        let mut made: HashMap<PathBuf, egui::TextureHandle> = self
+            .thumbnails
+            .take()
+            .and_then(|mut view| view.covers.take())
+            .map(|shelf| {
+                shelf
+                    .entries
+                    .into_iter()
+                    .zip(shelf.textures)
+                    .filter_map(|(entry, texture)| Some((entry.path, texture?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let textures: Vec<Option<egui::TextureHandle>> = entries
+            .iter()
+            .map(|entry| made.remove(&entry.path))
+            .collect();
+        let loading: Vec<usize> = (0..entries.len())
+            .filter(|&index| textures[index].is_none())
+            .collect();
         let cancel = Arc::new(AtomicBool::new(false));
-        let rx = spawn_cover_loader(
-            entries.iter().map(|entry| entry.path.clone()).collect(),
-            self.config.enable_auto_image_byte_fix,
-            cancel.clone(),
-        );
-        let count = entries.len();
+        let rx = (!loading.is_empty()).then(|| {
+            spawn_cover_loader(
+                loading
+                    .iter()
+                    .map(|&index| entries[index].path.clone())
+                    .collect(),
+                self.config.enable_auto_image_byte_fix,
+                cancel.clone(),
+            )
+        });
         self.thumbnails = Some(ThumbnailView {
             mode: ThumbnailMode::Covers,
             selected,
             scroll: 0.0,
-            rx: Some(rx),
+            rx,
             cancel,
             pdf_next: 0,
             covers: Some(CoverShelf {
-                folder,
+                source,
                 entries,
-                textures: vec![None; count],
+                textures,
+                loading,
             }),
         });
+    }
+
+    /// タブを切り替える。フォルダのタブは今の冊（無ければ選んでいる冊）が入っているフォルダ
+    pub(super) fn switch_shelf_tab(&mut self, tab: ShelfTab) {
+        let Some(source) = self.shelf_source() else {
+            return;
+        };
+        if source.tab() == tab {
+            return;
+        }
+        let selected_path = self.thumbnails.as_ref().and_then(|view| {
+            let shelf = view.covers.as_ref()?;
+            Some(shelf.entries.get(view.selected)?.path.clone())
+        });
+        let source = match tab {
+            ShelfTab::History => ShelfSource::History,
+            ShelfTab::Favorites => ShelfSource::Favorites,
+            ShelfTab::Folder => match self.fallback_shelf_folder(selected_path) {
+                Some(folder) => ShelfSource::Folder(folder),
+                None => return,
+            },
+        };
+        self.show_shelf(source, None);
+    }
+
+    /// 表紙サムネイルで、一つ前に並べていたものに戻る。そのとき選んでいた冊を選んでおく
+    pub(super) fn go_back_in_shelf(&mut self) {
+        if self.shelf_source().is_none() {
+            return;
+        }
+        let Some((source, selected)) = self.shelf_back.pop() else {
+            return;
+        };
+        self.going_back = true;
+        self.show_shelf(source, selected);
+        self.going_back = false;
+    }
+
+    /// 履歴やお気に入りから、選んでいる冊を外す（ファイルは消さない）
+    pub(super) fn remove_selected_from_shelf(&mut self) {
+        let Some(view) = self.thumbnails.as_ref() else {
+            return;
+        };
+        let Some(shelf) = view.covers.as_ref() else {
+            return;
+        };
+        let Some(entry) = shelf.entries.get(view.selected) else {
+            return;
+        };
+        let path = entry.path.clone();
+        let source = shelf.source.clone();
+        let selected = view.selected;
+        match source {
+            ShelfSource::History => self.history.forget(&path),
+            ShelfSource::Favorites => self.history.remove_favorite(&path),
+            ShelfSource::Folder(_) => return,
+        }
+        self.save_history();
+        self.show_shelf(source, None);
+        // 外したところの次の冊を選ぶ
+        if let Some(view) = self.thumbnails.as_mut() {
+            let count = view.covers.as_ref().map_or(0, |shelf| shelf.entries.len());
+            view.selected = selected.min(count.saturating_sub(1));
+        }
     }
 
     /// 一覧に並べている数
@@ -279,12 +541,41 @@ impl MangaReader {
             .as_ref()
             .and_then(|view| view.covers.as_ref())
         {
-            Some(shelf) => format!(
-                "{} / {}  {}",
-                selected + 1,
-                count,
-                shelf.folder.to_string_lossy()
-            ),
+            Some(shelf) => {
+                let Some(entry) = shelf.entries.get(selected) else {
+                    return String::new();
+                };
+                // 履歴とお気に入りは冊がばらばらの場所にあるので、冊のパスと日時を出す
+                let (place, when) = match &shelf.source {
+                    ShelfSource::Folder(folder) => (folder.to_string_lossy(), None),
+                    ShelfSource::History => (
+                        entry.path.to_string_lossy(),
+                        self.history
+                            .entries
+                            .iter()
+                            .find(|e| e.path == entry.path)
+                            .map(|e| e.last_access),
+                    ),
+                    ShelfSource::Favorites => (
+                        entry.path.to_string_lossy(),
+                        self.history
+                            .favorites
+                            .iter()
+                            .find(|e| e.path == entry.path)
+                            .map(|e| e.added),
+                    ),
+                };
+                match when {
+                    Some(then) => format!(
+                        "{} / {}  {}  ({})",
+                        selected + 1,
+                        count,
+                        place,
+                        time_ago(then, unix_now())
+                    ),
+                    None => format!("{} / {}  {}", selected + 1, count, place),
+                }
+            }
             None => {
                 let name = self.image_files[selected]
                     .rsplit(['/', '\\'])
@@ -311,9 +602,14 @@ impl MangaReader {
             for _ in 0..TEXTURES_PER_FRAME {
                 match rx.try_recv() {
                     Ok((index, image)) => {
-                        let slots = match view.covers.as_mut() {
-                            Some(shelf) => &mut shelf.textures,
-                            None => &mut self.thumbnail_cache.textures,
+                        let (slots, index) = match view.covers.as_mut() {
+                            Some(shelf) => {
+                                let Some(&index) = shelf.loading.get(index) else {
+                                    continue;
+                                };
+                                (&mut shelf.textures, index)
+                            }
+                            None => (&mut self.thumbnail_cache.textures, index),
                         };
                         if let Some(slot) = slots.get_mut(index) {
                             *slot = Some(ctx.load_texture(
@@ -373,20 +669,30 @@ impl MangaReader {
     }
 
     /// 一覧で選んだページを表示して一覧を閉じる。表紙の一覧では、選んだ冊をしおりから開く
-    /// （ミーヤと同じ）。画像の無いフォルダは、中の冊の一覧に移る
+    /// （ミーヤと同じ）。冊の入ったフォルダは、中の冊の一覧に移る
     pub(super) fn choose_thumbnail(&mut self, index: usize, ctx: &egui::Context) {
-        let Some(view) = self.thumbnails.take() else {
+        let Some(view) = self.thumbnails.as_mut() else {
             return;
         };
         let Some(shelf) = view.covers.as_ref() else {
+            self.thumbnails = None;
             self.show_page_from_thumbnail(index, ctx);
             return;
         };
         let Some(entry) = shelf.entries.get(index).cloned() else {
             return;
         };
-        if entry.is_folder && !folder_has_pages(&entry.path) {
+        if entry.loose_pages.is_none() && entry.is_folder && !cover_entries(&entry.path).is_empty()
+        {
+            // 一覧を開いたまま移る（戻るで、選んだフォルダに戻れるように）
+            view.selected = index;
             self.open_cover_thumbnails(entry.path, None);
+            return;
+        }
+        self.thumbnails = None;
+        if entry.loose_pages.is_some() {
+            // フォルダの直下の画像だけを読む（サブフォルダは一覧から選ぶ）
+            self.open_book_with(entry.path, false, OpenAt::Bookmark, ctx);
         } else {
             self.open_source(entry.path, ctx);
         }
@@ -400,25 +706,22 @@ impl MangaReader {
         let Some(mode) = self.thumbnails.as_ref().map(|view| view.mode) else {
             return;
         };
+        let source = self.shelf_source();
         let covers = mode == ThumbnailMode::Covers;
         let background = self.image_panel_background_color();
         let mut chosen = None;
         let mut close = false;
+        let mut tab_to_show = None;
+        let mut remove_selected = false;
+        let mut go_up = false;
+        let mut go_back = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(background))
             .show(ctx, |ui| {
-                let rect = ui.available_rect_before_wrap();
-                let grid = Grid::new(mode, count, [rect.width(), rect.height()]);
-                let [grid_width, grid_height] = grid.size();
-                let max_scroll = (grid_height - rect.height()).max(0.0);
-                let Some(view) = self.thumbnails.as_mut() else {
-                    return;
-                };
-                if count == 0 {
-                    return;
-                }
+                let mut rect = ui.available_rect_before_wrap();
 
-                // キー: 方向キーで選び、Enter で決定、Esc で閉じる
+                // キー: 方向キーで選び、Enter で決定、Esc で閉じる。
+                // 表紙の一覧では Tab で並べるものを切り替え、Delete で履歴やお気に入りから外す
                 let (keys, scroll_delta, pointer, pointer_moved, clicked) = ctx.input(|i| {
                     let keys = [
                         (egui::Key::ArrowLeft, Direction::Left),
@@ -435,6 +738,10 @@ impl MangaReader {
                             keys,
                             i.key_pressed(egui::Key::Enter),
                             i.key_pressed(egui::Key::Escape),
+                            i.key_pressed(egui::Key::Backspace),
+                            i.key_pressed(egui::Key::Delete),
+                            i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)
+                                || i.pointer.button_clicked(egui::PointerButton::Extra1),
                         ),
                         i.smooth_scroll_delta.y,
                         i.pointer.hover_pos(),
@@ -442,7 +749,67 @@ impl MangaReader {
                         i.pointer.primary_clicked(),
                     )
                 });
-                let (directions, enter, escape) = keys;
+                let (mut directions, enter, escape, backspace, delete, back) = keys;
+                let tab_key = self.pending_shelf_tab.take();
+                close = escape;
+
+                if let Some(source) = &source {
+                    let tab_rect =
+                        egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_HEIGHT));
+                    rect.min.y += TAB_HEIGHT;
+                    let active = source.tab();
+                    if let Some(backward) = tab_key {
+                        let position = SHELF_TABS.iter().position(|&t| t == active).unwrap_or(0);
+                        let step = if backward { SHELF_TABS.len() - 1 } else { 1 };
+                        tab_to_show = Some(SHELF_TABS[(position + step) % SHELF_TABS.len()]);
+                    }
+                    let can_go_back = !self.shelf_back.is_empty();
+                    match draw_shelf_tabs(
+                        ui,
+                        tab_rect,
+                        active,
+                        can_go_back,
+                        pointer.filter(|_| clicked),
+                    ) {
+                        Some(TabClick::Tab(tab)) => tab_to_show = Some(tab),
+                        Some(TabClick::Upper) => go_up = true,
+                        Some(TabClick::Back) => go_back = true,
+                        None => {}
+                    }
+                    if back {
+                        go_back = true;
+                        // Alt+← で選択が左に動かないように
+                        directions.clear();
+                    }
+                    let in_folder = matches!(source, ShelfSource::Folder(_));
+                    remove_selected = delete && !in_folder;
+                    go_up |= backspace && in_folder;
+                    if count == 0 {
+                        let message = match source {
+                            ShelfSource::Folder(_) => tr("shelf.no_books"),
+                            ShelfSource::History => tr("shelf.no_history"),
+                            ShelfSource::Favorites => tr("shelf.no_favorites"),
+                        };
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            message,
+                            egui::FontId::proportional(18.0),
+                            egui::Color32::from_gray(200),
+                        );
+                    }
+                }
+
+                let grid = Grid::new(mode, count, [rect.width(), rect.height()]);
+                let [grid_width, grid_height] = grid.size();
+                let max_scroll = (grid_height - rect.height()).max(0.0);
+                let Some(view) = self.thumbnails.as_mut() else {
+                    return;
+                };
+                if count == 0 {
+                    return;
+                }
+
                 let moved_by_key = !directions.is_empty();
                 for direction in directions {
                     view.selected = move_selection(view.selected, direction, grid.columns, count);
@@ -478,7 +845,6 @@ impl MangaReader {
                 if enter {
                     chosen = Some(view.selected);
                 }
-                close = escape;
                 let selected = view.selected;
                 let scroll = view.scroll;
 
@@ -530,8 +896,18 @@ impl MangaReader {
                         .and_then(|shelf| shelf.entries.get(index))
                     {
                         // ミーヤと同じく、アイコンと名前を表紙の下に出す
-                        let icon = if entry.is_folder { "📁" } else { "📖" };
-                        let name = entry.path.file_name().unwrap_or_default().to_string_lossy();
+                        let (icon, name) = match entry.loose_pages {
+                            Some(count) => (
+                                "🖼",
+                                tr("shelf.loose_pages")
+                                    .replace("{n}", &count.to_string())
+                                    .into(),
+                            ),
+                            None => (
+                                if entry.is_folder { "📁" } else { "📖" },
+                                entry.path.file_name().unwrap_or_default().to_string_lossy(),
+                            ),
+                        };
                         let label_rect = egui::Rect::from_min_max(
                             egui::pos2(cell.min.x, cell.max.y - COVER_LABEL_HEIGHT),
                             cell.max,
@@ -583,6 +959,130 @@ impl MangaReader {
             self.choose_thumbnail(index, ctx);
         } else if close {
             self.thumbnails = None;
+        } else if let Some(tab) = tab_to_show {
+            self.switch_shelf_tab(tab);
+        } else if remove_selected {
+            self.remove_selected_from_shelf();
+        } else if go_up {
+            self.go_to_upper_folder();
+        } else if go_back {
+            self.go_back_in_shelf();
         }
     }
+}
+
+/// タブの帯でクリックしたもの
+enum TabClick {
+    Tab(ShelfTab),
+    /// 上のフォルダへのボタン
+    Upper,
+    /// 戻るボタン
+    Back,
+}
+
+/// タブの帯に置く小さなボタン。`enabled` でなければ灰色にする。描いた場所を返す
+fn tab_button(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    min: egui::Pos2,
+    height: f32,
+    label: &str,
+    enabled: bool,
+) -> egui::Rect {
+    let color = egui::Color32::from_gray(if enabled { 220 } else { 110 });
+    let galley = painter.layout_no_wrap(label.to_owned(), egui::FontId::proportional(15.0), color);
+    let button = egui::Rect::from_min_size(min, egui::vec2(galley.size().x + 20.0, height));
+    let hovered = enabled
+        && ui
+            .ctx()
+            .pointer_hover_pos()
+            .is_some_and(|pos| button.contains(pos));
+    painter.rect_filled(
+        button,
+        4.0,
+        egui::Color32::from_gray(if hovered { 70 } else { 48 }),
+    );
+    painter.galley(button.center() - galley.size() * 0.5, galley, color);
+    button
+}
+
+/// 表紙サムネイルの上のタブ。フォルダのタブでは上のフォルダへのボタンを並べ、
+/// 右端に操作の案内を出す。`click` の位置にあるものを返す
+fn draw_shelf_tabs(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    active: ShelfTab,
+    can_go_back: bool,
+    click: Option<egui::Pos2>,
+) -> Option<TabClick> {
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, 0.0, egui::Color32::from_gray(24));
+    let font = egui::FontId::proportional(15.0);
+    let mut clicked = None;
+    let back = tab_button(
+        ui,
+        &painter,
+        egui::pos2(rect.left() + 8.0, rect.top() + 4.0),
+        rect.height() - 8.0,
+        tr("shelf.back"),
+        can_go_back,
+    );
+    if can_go_back && click.is_some_and(|pos| back.contains(pos)) {
+        clicked = Some(TabClick::Back);
+    }
+    let mut x = back.right() + 12.0;
+    for tab in SHELF_TABS {
+        let galley =
+            painter.layout_no_wrap(tab.label().to_owned(), font.clone(), egui::Color32::WHITE);
+        let tab_rect = egui::Rect::from_min_size(
+            egui::pos2(x, rect.top() + 3.0),
+            egui::vec2(galley.size().x + 24.0, rect.height() - 3.0),
+        );
+        let (fill, text) = if tab == active {
+            (SELECTED_COLOR, egui::Color32::WHITE)
+        } else {
+            (egui::Color32::from_gray(48), egui::Color32::from_gray(190))
+        };
+        painter.rect_filled(
+            tab_rect,
+            egui::CornerRadius {
+                nw: 4,
+                ne: 4,
+                sw: 0,
+                se: 0,
+            },
+            fill,
+        );
+        painter.galley(tab_rect.center() - galley.size() * 0.5, galley, text);
+        if click.is_some_and(|pos| tab_rect.contains(pos)) {
+            clicked = Some(TabClick::Tab(tab));
+        }
+        x = tab_rect.right() + 4.0;
+    }
+    if active == ShelfTab::Folder {
+        let button = tab_button(
+            ui,
+            &painter,
+            egui::pos2(x + 12.0, rect.top() + 4.0),
+            rect.height() - 8.0,
+            tr("shelf.upper"),
+            true,
+        );
+        if click.is_some_and(|pos| button.contains(pos)) {
+            clicked = Some(TabClick::Upper);
+        }
+    }
+    let hint = if active == ShelfTab::Folder {
+        tr("shelf.hint")
+    } else {
+        tr("shelf.hint_remove")
+    };
+    painter.text(
+        egui::pos2(rect.right() - 8.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        hint,
+        egui::FontId::proportional(13.0),
+        egui::Color32::from_gray(150),
+    );
+    clicked
 }

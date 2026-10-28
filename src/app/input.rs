@@ -1,6 +1,7 @@
 // このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
 
 use super::settings_panel::{BindingTarget, ControlProfile};
+use super::thumbnails::ShelfSource;
 use super::{GAMEPAD_INITIAL_REPEAT_DELAY, LONG_CLICK_DURATION, MOUSE_DRAG_THRESHOLD, MangaReader};
 use crate::config::{
     GamepadButton, MangaAction, MouseButton, MouseConfig, MouseGesture, PageViewOptions, Shortcut,
@@ -93,6 +94,9 @@ impl MangaReader {
                                         keys.cover_thumbnails = Some(new_shortcut)
                                     }
                                     "Upper Folder" => keys.upper_folder = Some(new_shortcut),
+                                    "Show History" => keys.show_history = Some(new_shortcut),
+                                    "Show Favorites" => keys.show_favorites = Some(new_shortcut),
+                                    "Toggle Favorite" => keys.toggle_favorite = Some(new_shortcut),
                                     _ => {}
                                 }
                                 self.binding_action = None;
@@ -223,6 +227,15 @@ impl MangaReader {
                 }
                 if is_triggered(&keys.upper_folder) {
                     action_to_run = MangaAction::UpperFolder;
+                }
+                if is_triggered(&keys.show_history) {
+                    action_to_run = MangaAction::ShowHistory;
+                }
+                if is_triggered(&keys.show_favorites) {
+                    action_to_run = MangaAction::ShowFavorites;
+                }
+                if is_triggered(&keys.toggle_favorite) {
+                    action_to_run = MangaAction::ToggleFavorite;
                 }
             });
         }
@@ -599,6 +612,9 @@ impl MangaReader {
             MangaAction::ThumbnailsLarge => self.open_thumbnails(ThumbnailMode::Large),
             MangaAction::CoverThumbnails => self.toggle_cover_thumbnails(),
             MangaAction::UpperFolder => self.go_to_upper_folder(),
+            MangaAction::ShowHistory => self.toggle_book_list(ShelfSource::History),
+            MangaAction::ShowFavorites => self.toggle_book_list(ShelfSource::Favorites),
+            MangaAction::ToggleFavorite => self.toggle_current_favorite(),
             MangaAction::SlideImageDown => {
                 if self.config.page_view_options == PageViewOptions::TopDown {
                     self.top_down_scroll_offset -=

@@ -183,10 +183,13 @@ pub enum MangaAction {
     ThumbnailsLarge,
     CoverThumbnails,
     UpperFolder,
+    ShowHistory,
+    ShowFavorites,
+    ToggleFavorite,
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 40] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -224,6 +227,9 @@ impl MangaAction {
         Self::ThumbnailsLarge,
         Self::CoverThumbnails,
         Self::UpperFolder,
+        Self::ShowHistory,
+        Self::ShowFavorites,
+        Self::ToggleFavorite,
     ];
 }
 
@@ -354,6 +360,12 @@ pub struct KeyConfig {
     pub cover_thumbnails: Option<Shortcut>,
     #[serde(default)]
     pub upper_folder: Option<Shortcut>,
+    #[serde(default)]
+    pub show_history: Option<Shortcut>,
+    #[serde(default)]
+    pub show_favorites: Option<Shortcut>,
+    #[serde(default)]
+    pub toggle_favorite: Option<Shortcut>,
 }
 
 // 既存の設定ファイルにこの項目が無いときもミーヤと同じ F8 を割り当てる
@@ -398,6 +410,9 @@ impl Default for KeyConfig {
             thumbnails_large: None,
             cover_thumbnails: None,
             upper_folder: None,
+            show_history: None,
+            show_favorites: None,
+            toggle_favorite: None,
         }
     }
 }
@@ -446,6 +461,9 @@ impl KeyConfig {
             // Shift+↑ = 上のフォルダへ、Shift+↓ = 表紙サムネイル
             cover_thumbnails: Some(Shortcut::new(egui::Key::ArrowDown, false, false, true)),
             upper_folder: Some(Shortcut::new(egui::Key::ArrowUp, false, false, true)),
+            show_history: None,
+            show_favorites: None,
+            toggle_favorite: None,
         }
     }
 
@@ -493,6 +511,9 @@ impl KeyConfig {
             thumbnails_large: None,
             cover_thumbnails: None,
             upper_folder: None,
+            show_history: None,
+            show_favorites: None,
+            toggle_favorite: None,
         }
     }
 }

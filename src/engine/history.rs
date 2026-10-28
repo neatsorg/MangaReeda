@@ -1,4 +1,4 @@
-//! 読んだ冊の履歴としおり。
+//! 読んだ冊の履歴としおり、お気に入り。
 //! 冊ごとに最後に表示していたページを覚え、次に開いたときにそこから読めるようにする。
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,15 @@ pub struct HistoryEntry {
     pub last_access: u64,
 }
 
+/// お気に入りに登録した冊
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct FavoriteEntry {
+    /// 冊（書庫・フォルダ・PDF）の絶対パス
+    pub path: PathBuf,
+    /// 登録した日時（UNIX 秒）
+    pub added: u64,
+}
+
 /// サブフォルダを含むフォルダで、利用者が選んだ読み方
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SubfolderChoice {
@@ -38,6 +47,9 @@ pub struct History {
     /// 新しいものが先頭。冊の履歴と同じ数まで覚える
     #[serde(default)]
     pub subfolder_choices: Vec<SubfolderChoice>,
+    /// 新しく登録したものが先頭。数の上限は無い
+    #[serde(default)]
+    pub favorites: Vec<FavoriteEntry>,
 }
 
 /// 同じ冊を別の書き方のパスで開いても同じ記録になるよう、正規化したパスを使う
@@ -85,6 +97,38 @@ impl History {
                 .position(|name| *name == entry.page_name)
                 .unwrap_or(entry.page_index.min(pages.len() - 1)),
         )
+    }
+
+    /// 冊を履歴から消す
+    pub fn forget(&mut self, path: &Path) {
+        let path = normalize(path);
+        self.entries.retain(|entry| entry.path != path);
+    }
+
+    pub fn is_favorite(&self, path: &Path) -> bool {
+        let path = normalize(path);
+        self.favorites.iter().any(|entry| entry.path == path)
+    }
+
+    /// お気に入りに登録する。登録済みなら外す。登録したら true
+    pub fn toggle_favorite(&mut self, path: &Path) -> bool {
+        if self.is_favorite(path) {
+            self.remove_favorite(path);
+            return false;
+        }
+        self.favorites.insert(
+            0,
+            FavoriteEntry {
+                path: normalize(path),
+                added: now(),
+            },
+        );
+        true
+    }
+
+    pub fn remove_favorite(&mut self, path: &Path) {
+        let path = normalize(path);
+        self.favorites.retain(|entry| entry.path != path);
     }
 
     /// フォルダで覚えたサブフォルダの読み方
@@ -196,6 +240,32 @@ mod tests {
         // この項目が無い古い履歴ファイルも読める
         let old: History = serde_json::from_str(r#"{"entries": []}"#).unwrap();
         assert!(old.subfolder_choices.is_empty());
+    }
+
+    #[test]
+    fn favorites_toggle_and_put_the_newest_first() {
+        let mut history = History::default();
+        let (a, b) = (Path::new("/no/such/a.zip"), Path::new("/no/such/b.zip"));
+        assert!(history.toggle_favorite(a));
+        assert!(history.toggle_favorite(b));
+        assert!(history.is_favorite(a));
+        assert_eq!(history.favorites[0].path, b);
+        // もう一度登録すると外れる
+        assert!(!history.toggle_favorite(a));
+        assert!(!history.is_favorite(a));
+        history.remove_favorite(b);
+        assert!(history.favorites.is_empty());
+
+        // 履歴から消してもお気に入りは残る
+        history.record(a, &pages(&["a.png"]), 0);
+        history.toggle_favorite(a);
+        history.forget(a);
+        assert!(history.entries.is_empty());
+        assert!(history.is_favorite(a));
+
+        // この項目が無い古い履歴ファイルも読める
+        let old: History = serde_json::from_str(r#"{"entries": []}"#).unwrap();
+        assert!(old.favorites.is_empty());
     }
 
     #[test]

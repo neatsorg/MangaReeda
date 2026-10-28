@@ -108,6 +108,9 @@ pub fn action_label(action: MangaAction) -> &'static str {
         MangaAction::ThumbnailsLarge => tr("action.thumbnails_large"),
         MangaAction::CoverThumbnails => tr("action.cover_thumbnails"),
         MangaAction::UpperFolder => tr("action.upper_folder"),
+        MangaAction::ShowHistory => tr("action.show_history"),
+        MangaAction::ShowFavorites => tr("action.show_favorites"),
+        MangaAction::ToggleFavorite => tr("action.toggle_favorite"),
     }
 }
 

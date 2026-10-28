@@ -176,6 +176,8 @@ pub fn decode_thumbnail(bytes: &[u8], max_side: u32, fix_adobe: bool) -> Option<
 pub struct CoverEntry {
     pub path: PathBuf,
     pub is_folder: bool,
+    /// Some(枚数) なら、フォルダ `path` の直下の画像だけを冊として読むマス
+    pub loose_pages: Option<usize>,
 }
 
 /// フォルダの中の冊（書庫・PDF・フォルダ）。ミーヤと同じく、フォルダを先に、それぞれ名前順に並べる。
@@ -189,8 +191,28 @@ pub fn cover_entries(folder: &Path) -> Vec<CoverEntry> {
         .map(|path| CoverEntry {
             is_folder: path.is_dir(),
             path,
+            loose_pages: None,
         })
         .collect()
+}
+
+/// 表紙サムネイルでフォルダを開いたときに並べるもの。中の冊に加えて、直下に画像もあれば
+/// その画像だけを冊として読むマスを先頭に置く（冊の入ったフォルダは一覧として開くので、
+/// 直下の画像はここから読む）
+pub fn folder_shelf(folder: &Path) -> Vec<CoverEntry> {
+    let mut entries = cover_entries(folder);
+    let loose = list_images(folder, false).map_or(0, |listing| listing.images.len());
+    if !entries.is_empty() && loose > 0 {
+        entries.insert(
+            0,
+            CoverEntry {
+                path: folder.to_path_buf(),
+                is_folder: true,
+                loose_pages: Some(loose),
+            },
+        );
+    }
+    entries
 }
 
 /// 冊の表紙のバイト列。表紙は並び順で最初のページ。画像の無いフォルダは、中の最初の冊の表紙。
@@ -434,6 +456,18 @@ mod tests {
         // 画像の無いフォルダは、中の最初の冊の表紙
         assert_eq!(size("04 shelf"), Some((10, 50)));
         assert_eq!(size("memo.txt"), None);
+
+        // 直下に画像が無ければ、画像を読むマスは置かない。あれば先頭に置く
+        assert_eq!(folder_shelf(&root), cover_entries(&root));
+        std::fs::write(root.join("cover.png"), png(10, 10)).unwrap();
+        let shelf = folder_shelf(&root);
+        assert_eq!(shelf.len(), 5);
+        assert_eq!(shelf[0].path, root);
+        assert_eq!(shelf[0].loose_pages, Some(1));
+        assert_eq!(&shelf[1..], cover_entries(&root));
+        // 画像だけのフォルダには置かない
+        assert_eq!(folder_shelf(&root.join("03 C")), []);
+        std::fs::remove_file(root.join("cover.png")).unwrap();
 
         // 別スレッドでも同じものが届く
         let books: Vec<_> = cover_entries(&root).into_iter().map(|e| e.path).collect();

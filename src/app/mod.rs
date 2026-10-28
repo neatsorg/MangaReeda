@@ -127,6 +127,14 @@ pub struct MangaReader {
     /// 開いているサムネイル一覧
     thumbnails: Option<thumbnails::ThumbnailView>,
     thumbnail_cache: thumbnails::ThumbnailCache,
+    /// 表紙サムネイルで押された Tab（Shift つきなら true）。egui のフォーカス移動に渡さず取っておく
+    pending_shelf_tab: Option<bool>,
+    /// 表紙サムネイルで最後に並べたフォルダ
+    last_shelf_folder: Option<PathBuf>,
+    /// 表紙サムネイルで前に並べていたものと、そのとき選んでいた冊。新しいものが末尾
+    shelf_back: Vec<(thumbnails::ShelfSource, Option<PathBuf>)>,
+    /// 戻るで一覧を移っているあいだ（そのときは道のりに足さない）
+    going_back: bool,
     /// 次に表示し直すとき、見開きの組を合わせ直さない（サムネイルで選んだページから見開きにする）
     keep_spread_start: bool,
     /// 開いているメニューと、メニューから開いたダイアログ
@@ -217,6 +225,10 @@ impl MangaReader {
             manual_page_view: false,
             split_second_half_of: None,
             thumbnails: None,
+            pending_shelf_tab: None,
+            last_shelf_folder: None,
+            shelf_back: Vec::new(),
+            going_back: false,
             thumbnail_cache: Default::default(),
             keep_spread_start: false,
             menu_state: Default::default(),
@@ -233,6 +245,28 @@ impl MangaReader {
     }
 }
 impl eframe::App for MangaReader {
+    /// 表紙サムネイルを開いているあいだは、Tab をタブの切り替えに使う。
+    /// egui に渡すとメニューやツールバーにフォーカスが移ってしまうので、ここで取り除く
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if self.shelf_source().is_none() {
+            return;
+        }
+        raw_input.events.retain(|event| match event {
+            egui::Event::Key {
+                key: egui::Key::Tab,
+                pressed,
+                modifiers,
+                ..
+            } => {
+                if *pressed {
+                    self.pending_shelf_tab = Some(modifiers.shift);
+                }
+                false
+            }
+            _ => true,
+        });
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         set_language(self.config.language);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("app.title").to_owned()));
@@ -301,6 +335,8 @@ impl eframe::App for MangaReader {
                     | MangaAction::ThumbnailsLarge
                     | MangaAction::CoverThumbnails
                     | MangaAction::UpperFolder
+                    | MangaAction::ShowHistory
+                    | MangaAction::ShowFavorites
             ) {
                 action_to_run = MangaAction::None;
             }
@@ -736,6 +772,225 @@ mod tests {
         reader.load_source(other.0.clone(), false, &ctx);
         assert!(reader.thumbnails.is_none());
         assert!(reader.thumbnail_cache.textures.is_empty());
+    }
+
+    #[test]
+    fn history_and_favorites_are_listed_with_covers() {
+        use super::thumbnails::{ShelfSource, ShelfTab};
+        use std::io::Write;
+        let shelf = TestPages::new(&[]);
+        let write_zip = |path: &PathBuf| {
+            let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+            zip.start_file("01.png", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            let mut bytes = Vec::new();
+            image::RgbaImage::new(10, 20)
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .unwrap();
+            zip.write_all(&bytes).unwrap();
+            zip.finish().unwrap();
+        };
+        let a = history::normalize(&shelf.0).join("A.zip");
+        let b = history::normalize(&shelf.0).join("B.zip");
+        write_zip(&a);
+        write_zip(&b);
+
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            None,
+        );
+        // 履歴に無い冊（消したもの）は並べない
+        reader
+            .history
+            .record(&shelf.0.join("gone.zip"), &["01.png".to_owned()], 0);
+        reader.open_source(a.clone(), &ctx);
+        reader.open_source(b.clone(), &ctx);
+        reader.remember_current_book();
+
+        // 新しく読んだ順。今の冊が選ばれている
+        reader.toggle_book_list(ShelfSource::History);
+        let view = reader.thumbnails.as_ref().unwrap();
+        assert_eq!(view.cover_paths(), [b.clone(), a.clone()]);
+        assert_eq!(view.selected(), 0);
+
+        // 履歴から外しても、ファイルは消さない
+        reader.thumbnails.as_mut().unwrap().select(1);
+        reader.remove_selected_from_shelf();
+        assert_eq!(
+            reader.thumbnails.as_ref().unwrap().cover_paths(),
+            std::slice::from_ref(&b)
+        );
+        assert!(a.exists());
+
+        // お気に入りは空でも開く。登録すると並ぶ
+        reader.switch_shelf_tab(ShelfTab::Favorites);
+        assert_eq!(reader.shelf_source(), Some(ShelfSource::Favorites));
+        assert!(reader.thumbnails.as_ref().unwrap().cover_paths().is_empty());
+        reader.toggle_current_favorite();
+        reader.toggle_book_list(ShelfSource::Favorites);
+        assert!(reader.thumbnails.is_none());
+        reader.toggle_book_list(ShelfSource::Favorites);
+        assert_eq!(
+            reader.thumbnails.as_ref().unwrap().cover_paths(),
+            std::slice::from_ref(&b)
+        );
+
+        // フォルダのタブは、今の冊が入っているフォルダ
+        reader.switch_shelf_tab(ShelfTab::Folder);
+        assert_eq!(
+            reader.thumbnails.as_ref().unwrap().cover_paths(),
+            [a.clone(), b.clone()]
+        );
+
+        // 選んだ冊を開く
+        reader.toggle_book_list(ShelfSource::History);
+        reader.choose_thumbnail(0, &ctx);
+        assert_eq!(reader.zip_path, Some(b.clone()));
+
+        // 冊を開いていなくて、お気に入りも空でも、フォルダのタブに移れる（最後に読んだ冊のフォルダ）
+        reader.close_book();
+        reader.last_shelf_folder = None;
+        reader.history.favorites.clear();
+        reader.toggle_book_list(ShelfSource::Favorites);
+        reader.switch_shelf_tab(ShelfTab::Folder);
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Folder(history::normalize(&shelf.0)))
+        );
+
+        // Tab は egui に渡さず、タブの切り替えに使う
+        use eframe::App as _;
+        let tab = |shift| egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                shift,
+                ..Default::default()
+            },
+        };
+        let mut input = egui::RawInput {
+            events: vec![tab(true)],
+            ..Default::default()
+        };
+        reader.raw_input_hook(&ctx, &mut input);
+        assert!(input.events.is_empty());
+        let _ = ctx.run(Default::default(), |ctx| reader.render_thumbnails(ctx));
+        assert_eq!(reader.shelf_source(), Some(ShelfSource::Favorites));
+
+        for path in [a, b] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn folders_with_books_open_as_lists_and_back_returns() {
+        use super::thumbnails::ShelfSource;
+        use std::io::Write;
+        let root = TestPages::new(&[]);
+        let root_path = history::normalize(&root.0);
+        let png = || {
+            let mut bytes = Vec::new();
+            image::RgbaImage::new(10, 20)
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .unwrap();
+            bytes
+        };
+        // 画像と冊が混ざったフォルダ
+        let mixed = root_path.join("mixed");
+        fs::create_dir(&mixed).unwrap();
+        fs::write(mixed.join("01.png"), png()).unwrap();
+        let inner = mixed.join("inner.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&inner).unwrap());
+        zip.start_file("01.png", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&png()).unwrap();
+        zip.finish().unwrap();
+
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                subfolder_mode: crate::config::SubfolderMode::Ask,
+                ..AppSettings::default()
+            },
+            None,
+        );
+        reader.open_source(inner.clone(), &ctx);
+
+        // 直下の画像を読むマスが先頭に付く
+        reader.toggle_cover_thumbnails();
+        let view = reader.thumbnails.as_ref().unwrap();
+        assert_eq!(view.cover_paths(), [mixed.clone(), inner.clone()]);
+        assert_eq!(view.selected(), 1);
+
+        // 上に上がって、混ざったフォルダを選ぶと、冊ではなく一覧として開く
+        reader.go_to_upper_folder();
+        assert_eq!(
+            reader.thumbnails.as_ref().unwrap().cover_paths(),
+            std::slice::from_ref(&mixed)
+        );
+        reader.choose_thumbnail(0, &ctx);
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Folder(mixed.clone()))
+        );
+        assert!(reader.subfolder_question.is_none());
+
+        // 戻ると、上のフォルダで選んでいたフォルダが選ばれている。もう一度で最初の一覧
+        reader.go_back_in_shelf();
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Folder(root_path.clone()))
+        );
+        assert_eq!(reader.thumbnails.as_ref().unwrap().selected(), 0);
+        reader.go_back_in_shelf();
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Folder(mixed.clone()))
+        );
+        assert_eq!(reader.thumbnails.as_ref().unwrap().selected(), 1);
+        // それより前は無い
+        reader.go_back_in_shelf();
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Folder(mixed.clone()))
+        );
+
+        // メニューの「フォルダ」: 履歴を並べていればフォルダに移り、フォルダを並べていれば閉じる
+        reader.toggle_book_list(ShelfSource::History);
+        reader.toggle_cover_thumbnails();
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Folder(mixed.clone()))
+        );
+        reader.toggle_cover_thumbnails();
+        assert!(reader.thumbnails.is_none());
+        reader.toggle_cover_thumbnails();
+
+        // 先頭のマスは、直下の画像だけを冊として開く（サブフォルダは聞かない）
+        reader.choose_thumbnail(0, &ctx);
+        assert!(reader.thumbnails.is_none());
+        assert!(reader.subfolder_question.is_none());
+        assert_eq!(reader.zip_path, Some(mixed.clone()));
+        assert_eq!(reader.image_files.len(), 1);
+
+        fs::remove_dir_all(mixed).unwrap();
     }
 
     #[test]
@@ -2015,6 +2270,9 @@ mod tests {
             keys.thumbnails_large,
             keys.cover_thumbnails,
             keys.upper_folder,
+            keys.show_history,
+            keys.show_favorites,
+            keys.toggle_favorite,
         ];
         let assigned: Vec<_> = all.into_iter().filter_map(parts).collect();
         for (index, shortcut) in assigned.iter().enumerate() {
