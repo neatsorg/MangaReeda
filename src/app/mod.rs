@@ -1177,16 +1177,36 @@ mod tests {
         reader.request_download(&entry_y);
         assert!(reader.download_status(&entry_y).is_some());
         assert_ne!(reader.plugin_entries(&y)[0].path, entry_x.path);
+
+        // 大文字・小文字を区別しないファイルシステムでは、"Case.pdf" と "case.pdf" は同じ場所。
+        // 同じ一覧の中でも、待っている本とも重ねない
+        reader.plugins.ignore_case = true;
+        let z = ("p".to_owned(), "z".to_owned());
+        set_shelf(
+            &mut reader,
+            &z,
+            vec![book("upper", "Case.pdf"), book("lower", "case.pdf")],
+        );
+        let entries = reader.plugin_entries(&z);
+        let key = |path: &PathBuf| path.to_string_lossy().to_lowercase();
+        assert_ne!(key(&entries[0].path), key(&entries[1].path));
+        reader.request_download(&entries[0]);
+        set_shelf(&mut reader, &z, vec![book("lower", "case.pdf")]);
+        let lower = reader.plugin_entries(&z)[0].clone();
+        assert_ne!(key(&lower.path), key(&entries[0].path));
         // 失敗するダウンロードが終わって（保存先のフォルダを作り終えて）から片付ける
         let ctx = egui::Context::default();
         for _ in 0..500 {
             reader.poll_plugins(&ctx);
-            if reader.download_status(&entry_y).is_none() {
+            if reader.download_status(&entry_y).is_none()
+                && reader.download_status(&entries[0]).is_none()
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(reader.download_status(&entry_y), None);
+        assert_eq!(reader.download_status(&entries[0]), None);
         fs::remove_dir_all(library).unwrap();
     }
 

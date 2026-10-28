@@ -15,7 +15,7 @@ Linux で動く、オフラインのマンガ・コミックビューアです�
 - ページのサムネイル一覧と、同じフォルダの冊を表紙で並べる表紙サムネイル
 - 冊ごとに読んでいた位置を覚えるしおりと履歴
 - 履歴とお気に入りを表紙で並べるブックリスト（表紙サムネイルの画面で Tab で切り替え）
-- プラグインで本の一覧を足せるブックリスト。BOOKSCAN の本棚と Dropbox のフォルダを読むプラグインを同梱（[docs/plugins.md](docs/plugins.md)）
+- プラグインで本の一覧を足せるブックリスト。BOOKSCAN の本棚と、Dropbox・Google Drive のフォルダを読むプラグインを同梱（[docs/plugins.md](docs/plugins.md)）
 - ルーペ、ズーム、縮小・拡大のフィルタ（最近傍〜Lanczos3）
 - 書庫を展開せずに直接読む。サブフォルダの画像も読める
 - 同じフォルダの前後の冊、隣のフォルダへの移動
@@ -43,7 +43,7 @@ cargo build --release --workspace
 ./target/release/mangareeda [開くファイルやフォルダ]
 ```
 
-`--workspace` を付けると、BOOKSCAN と Dropbox のプラグイン（`mangareeda-bookscan`、`mangareeda-dropbox`）も同じフォルダにできます。要らなければ外してください。
+`--workspace` を付けると、BOOKSCAN・Dropbox・Google Drive のプラグイン（`mangareeda-bookscan`、`mangareeda-dropbox`、`mangareeda-gdrive`）も同じフォルダにできます。要らなければ外してください。
 
 PDF を開くには `libpdfium.so` が必要です。実行ファイルと同じフォルダ、システムのライブラリの順に探します（安全のため、カレントディレクトリは探しません。Windows では、同梱の `pdfium.dll` を実行ファイルと同じフォルダからだけ読みます）。見つからない場合は、PDF を開こうとしたときにメッセージを表示します（PDF 以外には影響しません）。
 
@@ -85,7 +85,7 @@ Inspired by the classic Japanese viewer MangaMeeya. It contains no MangaMeeya co
 - Splitting wide pages into halves shown one at a time
 - Page thumbnails, and cover thumbnails of the books in the same folder
 - Per-book bookmarks and history, and a book list of history and favorites shown as covers
-- Plugins that add book lists; plugins for the BOOKSCAN bookshelf and Dropbox folders are included ([docs/plugins.md](docs/plugins.md), in Japanese)
+- Plugins that add book lists; plugins for the BOOKSCAN bookshelf and Dropbox and Google Drive folders are included ([docs/plugins.md](docs/plugins.md), in Japanese)
 - Loupe, zoom, and resampling filters (nearest to Lanczos3)
 - Reads archives directly without extracting them, optionally including images in subfolders
 - Moves to the previous / next book in the folder and to neighbouring folders
@@ -113,7 +113,7 @@ cargo build --release --workspace
 ./target/release/mangareeda [file or folder to open]
 ```
 
-`--workspace` also builds the BOOKSCAN and Dropbox plugins (`mangareeda-bookscan`, `mangareeda-dropbox`) next to the viewer. Leave it out if you do not need them.
+`--workspace` also builds the BOOKSCAN, Dropbox and Google Drive plugins (`mangareeda-bookscan`, `mangareeda-dropbox`, `mangareeda-gdrive`) next to the viewer. Leave it out if you do not need them.
 
 Opening PDFs needs `libpdfium.so`, looked up next to the executable, then system-wide (never in the working directory, for safety; on Windows, the bundled `pdfium.dll` is loaded only from the executable's folder). Without it, only PDFs are unavailable and a message says so.
 

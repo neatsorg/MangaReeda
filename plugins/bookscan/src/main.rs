@@ -12,7 +12,7 @@ use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
@@ -190,14 +190,72 @@ fn download(request: &Request, id: &str, dest: &Path) -> Result<(), Failure> {
         .headers()
         .get("content-length")
         .and_then(|value| value.to_str().ok()?.parse().ok());
-    // 途中で止まったときに壊れたファイルが残らないよう、別名で書いてから名前を変える
-    let partial = dest.with_extension("part");
-    let mut file = std::fs::File::create(&partial)?;
     let mut reader = response.into_body().into_reader();
-    let mut stdout = io::stdout().lock();
+    save_book(&mut reader, dest, total, |received| {
+        let mut stdout = io::stdout().lock();
+        writeln!(
+            stdout,
+            "{}",
+            serde_json::json!({ "progress": received, "total": total })
+        )?;
+        Ok(())
+    })
+}
+
+/// 本を `dest` に書く。途中で止まったときに壊れたファイルが残らないよう、同じフォルダの一時ファイルに書いてから
+/// 名前を変える。一時ファイルは、新しく作れた名前だけを使う（あるファイルを切り詰めたり、リンクの先に書いたりしない）。
+/// 失敗したら一時ファイルを消す。`progress` には受け取った量を知らせる
+fn save_book(
+    reader: &mut impl Read,
+    dest: &Path,
+    total: Option<u64>,
+    mut progress: impl FnMut(u64) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    let (partial, file) = create_partial(dest)?;
+    let result = receive(reader, file, total, &mut progress)
+        .and_then(|received| Ok((std::fs::rename(&partial, dest)?, received)));
+    match result {
+        Ok(((), received)) => progress(received),
+        Err(error) => {
+            let _ = std::fs::remove_file(&partial);
+            Err(error)
+        }
+    }
+}
+
+/// 保存先と同じフォルダに、ほかと重ならない一時ファイルを新しく作る
+fn create_partial(dest: &Path) -> io::Result<(PathBuf, std::fs::File)> {
+    let name = dest.file_name().map_or_else(
+        || "book".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    for serial in 0..100 {
+        let partial = dest.with_file_name(format!(".{name}.{}-{serial}.part", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+        {
+            Ok(file) => return Ok((partial, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "一時ファイルの名前を決められませんでした",
+    ))
+}
+
+/// 受け取って書く。受け取った量を返す。1MB ごとに進み具合を知らせる
+fn receive(
+    reader: &mut impl Read,
+    mut file: std::fs::File,
+    total: Option<u64>,
+    progress: &mut impl FnMut(u64) -> Result<(), Failure>,
+) -> Result<u64, Failure> {
     let mut buffer = vec![0; 256 * 1024];
-    let mut received: u64 = 0;
-    let mut reported: u64 = 0;
+    let (mut received, mut reported) = (0u64, 0u64);
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
@@ -205,29 +263,16 @@ fn download(request: &Request, id: &str, dest: &Path) -> Result<(), Failure> {
         }
         file.write_all(&buffer[..read])?;
         received += read as u64;
-        // 1MB ごとに進み具合を知らせる
         if received - reported >= 1024 * 1024 {
             reported = received;
-            writeln!(
-                stdout,
-                "{}",
-                serde_json::json!({ "progress": received, "total": total })
-            )?;
+            progress(received)?;
         }
     }
     file.sync_all()?;
-    drop(file);
     if total.is_some_and(|total| total != received) {
-        let _ = std::fs::remove_file(&partial);
         return Err(Failure::Other("ダウンロードが途中で切れました".to_owned()));
     }
-    std::fs::rename(&partial, dest)?;
-    writeln!(
-        stdout,
-        "{}",
-        serde_json::json!({ "progress": received, "total": total })
-    )?;
-    Ok(())
+    Ok(received)
 }
 
 fn selector(css: &str) -> Selector {
@@ -329,6 +374,37 @@ fn decode_hex(hex: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 一時ファイルは新しい名前で作り、同じ名前のファイルがあっても切り詰めない。失敗したら消す
+    #[test]
+    fn books_are_written_without_touching_other_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "{}-save-{}",
+            env!("CARGO_PKG_NAME"),
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("book.pdf");
+        let other = dir.join("book.part");
+        std::fs::write(&other, "keep").unwrap();
+        let mut reported = Vec::new();
+        save_book(&mut &b"data"[..], &dest, Some(4), |n| {
+            reported.push(n);
+            Ok(())
+        })
+        .ok()
+        .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"data");
+        assert_eq!(std::fs::read(&other).unwrap(), b"keep");
+        assert_eq!(reported, [4]);
+        // 途中で切れたら、本も一時ファイルも残さない
+        let cut = dir.join("cut.pdf");
+        assert!(save_book(&mut &b"da"[..], &cut, Some(4), |_| Ok(())).is_err());
+        assert!(!cut.exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     // 実際のページの作りをまねた、架空の本の HTML
     const SHELF: &str = r#"<html><body>

@@ -111,8 +111,10 @@ pub(super) struct PluginHost {
     /// 設定画面に出す、接続（ブラウザでの許可）の結果
     auth_message: HashMap<String, String>,
     /// ダウンロードした本が、どのプラグインのどの本か（プラグインごとに、置いた場所 → 本の id）。
-    /// 名前が同じ別の本を取り違えないように使う
+    /// 名前が同じ別の本を取り違えないように使う。場所は `file_key` の形で持つ
     pub(super) owners: HashMap<String, HashMap<PathBuf, Owner>>,
+    /// 場所を比べるときに、大文字・小文字を区別しないか（Windows と macOS のふつうのファイルシステム）
+    pub(super) ignore_case: bool,
     /// プラグインごとの、いま使っているアカウント（一覧の答えから作った短い値。答えに無ければ None）
     accounts: HashMap<String, Option<String>>,
     /// 許可のページの URL を作ってもらっているプラグインと、その答え
@@ -156,6 +158,7 @@ impl PluginHost {
             owners: HashMap::new(),
             accounts: HashMap::new(),
             generations: HashMap::new(),
+            ignore_case: cfg!(any(windows, target_os = "macos")),
         }
     }
 
@@ -249,19 +252,30 @@ impl PluginHost {
         }
     }
 
+    /// 同じファイルを指すかを比べるための形。大文字・小文字を区別しないファイルシステムでは、
+    /// "Book.pdf" と "book.pdf" は同じファイルなので、小文字にそろえる
+    pub(super) fn file_key(&self, path: &Path) -> PathBuf {
+        if self.ignore_case {
+            PathBuf::from(path.to_string_lossy().to_lowercase())
+        } else {
+            path.to_path_buf()
+        }
+    }
+
     /// その場所を使っている本。ダウンロード中や待っている本も含める（取りかかる前に場所を押さえる）
     fn path_owner(&self, plugin: &str, path: &Path) -> Option<Owner> {
+        let key = self.file_key(path);
         let downloading = self.active.iter().map(|active| &active.pending);
         downloading
             .chain(self.queue.iter())
-            .find(|pending| pending.plugin == plugin && pending.dest == path)
+            .find(|pending| pending.plugin == plugin && self.file_key(&pending.dest) == key)
             .map(|pending| pending.owner.clone())
-            .or_else(|| self.owners.get(plugin)?.get(path).cloned())
+            .or_else(|| self.owners.get(plugin)?.get(&key).cloned())
     }
 
     /// 本を置く場所。その本の場所か、まだ何も無い場所を使う。別の本が使っている場所や、
     /// 記録の無いファイル（記録を始める前の版でダウンロードしたものなど。どの本かわからない）の場所、
-    /// `used` の場所は使わず、印を付けた場所を順に確かめる（もとのファイルは消さない）
+    /// `used`（`file_key` の形）の場所は使わず、印を付けた場所を順に確かめる（もとのファイルは消さない）
     fn resolve_path(
         &self,
         plugin: &str,
@@ -270,7 +284,7 @@ impl PluginHost {
         used: &HashSet<PathBuf>,
     ) -> PathBuf {
         let usable = |candidate: &PathBuf| {
-            !used.contains(candidate)
+            !used.contains(&self.file_key(candidate))
                 && match self.path_owner(plugin, candidate) {
                     Some(other) => &other == owner,
                     None => !candidate.exists(),
@@ -406,7 +420,7 @@ impl MangaReader {
             .and_then(|data| serde_json::from_str::<HashMap<String, OwnerRecord>>(&data).ok())
             .unwrap_or_default()
             .into_iter()
-            .map(|(relative, record)| (base.join(relative), record.into()))
+            .map(|(relative, record)| (self.plugins.file_key(&base.join(relative)), record.into()))
             .collect();
         self.plugins.owners.insert(plugin.to_owned(), owners);
     }
@@ -414,9 +428,11 @@ impl MangaReader {
     /// ダウンロードした本を記録する
     pub(super) fn record_owner(&mut self, plugin: &str, dest: &Path, owner: &Owner) {
         self.load_owners(plugin);
-        let base = self.library_dir().join(plugin);
+        let dir = self.library_dir().join(plugin);
+        let base = self.plugins.file_key(&dir);
+        let dest = self.plugins.file_key(dest);
         let owners = self.plugins.owners.entry(plugin.to_owned()).or_default();
-        owners.insert(dest.to_path_buf(), owner.clone());
+        owners.insert(dest, owner.clone());
         let relative: HashMap<String, &Owner> = owners
             .iter()
             .filter_map(|(path, id)| {
@@ -429,7 +445,7 @@ impl MangaReader {
                 ))
             })
             .collect();
-        let _ = std::fs::create_dir_all(&base);
+        let _ = std::fs::create_dir_all(&dir);
         if let Ok(json) = serde_json::to_string_pretty(&relative)
             && let Err(e) = settings_store::write_atomic(&self.owners_path(plugin), json.as_bytes())
         {
@@ -455,7 +471,7 @@ impl MangaReader {
                     let owner = self.plugins.owner(&key.0, &book.id);
                     path = self.plugins.resolve_path(&key.0, &owner, &path, &used);
                 }
-                used.insert(path.clone());
+                used.insert(self.plugins.file_key(&path));
                 (book, path)
             })
             .map(|(book, path)| CoverEntry {
@@ -853,6 +869,9 @@ impl MangaReader {
                     ("password", None) => tr("plugin.field.password").to_owned(),
                     ("app_key", None) => tr("plugin.field.app_key").to_owned(),
                     ("auth_code", None) => tr("plugin.field.auth_code").to_owned(),
+                    ("client_id", None) => tr("plugin.field.client_id").to_owned(),
+                    ("client_secret", None) => tr("plugin.field.client_secret").to_owned(),
+                    ("auth_response", None) => tr("plugin.field.auth_response").to_owned(),
                     (key, None) => key.to_owned(),
                 };
                 let stored = self.plugins.stored(&manifest.id, &field.key);

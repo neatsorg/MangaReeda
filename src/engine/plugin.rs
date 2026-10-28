@@ -215,6 +215,21 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
             auth: true,
             dir: exe_dir.to_path_buf(),
         },
+        PluginManifest {
+            id: "gdrive".to_owned(),
+            name: "Google Drive".to_owned(),
+            command: program("mangareeda-gdrive"),
+            credentials: vec![
+                CredentialField::new("client_id", false, false),
+                CredentialField::new("client_secret", true, false),
+                CredentialField::new("auth_response", true, false),
+                CredentialField::new("code_verifier", true, true),
+                CredentialField::new("refresh_token", true, true),
+                CredentialField::new("account_id", false, true),
+            ],
+            auth: true,
+            dir: exe_dir.to_path_buf(),
+        },
     ]
 }
 
