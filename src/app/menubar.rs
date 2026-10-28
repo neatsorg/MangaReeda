@@ -46,6 +46,8 @@ pub(super) enum MenuCommand {
     About,
     /// OCR で本の文字を読み直す（確かめてから）
     ReadWithOcr,
+    /// 表紙サムネイルで、一つ前に並べていたものに戻る
+    ShelfBack,
 }
 
 /// 項目の左に付ける印
@@ -487,7 +489,12 @@ impl MangaReader {
                     'U',
                     MenuCommand::Action(MangaAction::UpperFolder),
                 ),
-                self.zip_path.is_some(),
+                self.can_go_to_upper_folder(),
+            ),
+            // タブの「戻る」ボタン（Alt+←）と同じ
+            needs_book(
+                item(tr("menu.move.shelf_back"), 'K', MenuCommand::ShelfBack),
+                self.can_go_back_in_shelf(),
             ),
             book(item(tr("menu.move.goto"), 'G', MenuCommand::GoToPage)),
             book(item(tr("menu.move.search"), 'S', MenuCommand::SearchInBook)),
@@ -756,6 +763,7 @@ impl MangaReader {
             MenuCommand::ImageInfo => self.menu_dialog = Some(MenuDialog::ImageInfo),
             MenuCommand::About => self.menu_dialog = Some(MenuDialog::About),
             MenuCommand::ReadWithOcr => self.menu_dialog = Some(MenuDialog::ConfirmOcr),
+            MenuCommand::ShelfBack => self.go_back_in_shelf(),
         }
     }
 

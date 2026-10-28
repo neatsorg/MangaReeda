@@ -370,7 +370,7 @@ impl MangaReader {
     }
 
     /// `folder` の中の冊を表紙で並べる。`select` があればそれを選んでおく
-    fn open_cover_thumbnails(&mut self, folder: PathBuf, select: Option<PathBuf>) {
+    pub(super) fn open_cover_thumbnails(&mut self, folder: PathBuf, select: Option<PathBuf>) {
         if cover_entries(&folder).is_empty() {
             self.show_fading_error(tr("error.no_books_in_folder"));
             return;
@@ -629,6 +629,26 @@ impl MangaReader {
             },
         };
         self.show_shelf(source, None);
+    }
+
+    /// 上のフォルダへ移れるか（メニューで使う）。表紙サムネイルでは、フォルダなら移れる。プラグインは上のフォルダが
+    /// あるときだけ、履歴などは選んでいる冊があるとき（その冊のフォルダへ移る）。読んでいるときは、本を開いていれば移れる
+    pub(super) fn can_go_to_upper_folder(&self) -> bool {
+        match self.shelf_source() {
+            Some(ShelfSource::Folder(_)) => true,
+            Some(ShelfSource::Plugin(id, folder)) => self.plugin_parent(&(id, folder)).is_some(),
+            Some(_) => self.thumbnails.as_ref().is_some_and(|view| {
+                view.covers
+                    .as_ref()
+                    .is_some_and(|shelf| view.selected < shelf.entries.len())
+            }),
+            None => self.zip_path.is_some(),
+        }
+    }
+
+    /// 表紙サムネイルで、一つ前に並べていたものに戻れるか（メニューで使う）
+    pub(super) fn can_go_back_in_shelf(&self) -> bool {
+        self.shelf_source().is_some() && !self.shelf_back.is_empty()
     }
 
     /// 表紙サムネイルで、一つ前に並べていたものに戻る。そのとき選んでいた冊を選んでおく

@@ -1226,6 +1226,34 @@ mod tests {
         assert!(reader.shelf_filter.is_empty());
     }
 
+    /// 本を開いていなくても、表紙サムネイルではメニューの「上のフォルダへ」「戻る」が使える
+    #[test]
+    fn shelf_moves_in_the_menu_work_without_an_open_book() {
+        let pages = TestPages::new(&[[10, 20]]);
+        // 冊（画像のフォルダ）を1つ入れたフォルダ
+        let shelf = pages.0.join("shelf");
+        fs::create_dir_all(shelf.join("book")).unwrap();
+        image::RgbaImage::new(4, 4)
+            .save(shelf.join("book").join("01.png"))
+            .unwrap();
+        let mut reader = MangaReader::with_settings(AppSettings::default(), None);
+        // 読んでいない、一覧も無いときは使えない
+        assert!(!reader.can_go_to_upper_folder());
+        assert!(!reader.can_go_back_in_shelf());
+        reader.open_cover_thumbnails(shelf.clone(), None);
+        assert!(reader.zip_path.is_none());
+        assert!(reader.can_go_to_upper_folder());
+        assert!(!reader.can_go_back_in_shelf());
+        reader.go_to_upper_folder();
+        assert!(reader.can_go_back_in_shelf());
+        reader.execute_menu_command(menubar::MenuCommand::ShelfBack, &egui::Context::default());
+        assert_eq!(
+            reader.shelf_source(),
+            Some(thumbnails::ShelfSource::Folder(shelf.clone()))
+        );
+        fs::remove_dir_all(shelf).unwrap();
+    }
+
     /// 本の中の検索は、文字の層の無い本では探せないと知らせ、別の本に移ったら閉じる
     #[test]
     fn book_search_tells_when_there_is_no_text_and_closes_on_another_book() {

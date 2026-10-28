@@ -295,6 +295,7 @@
   "menu.move.prev_book": "前の冊へ",
   "menu.move.prev_folder": "前のフォルダへ",
   "menu.move.upper": "上のフォルダへ（表紙サムネイル）",
+  "menu.move.shelf_back": "戻る（表紙サムネイル）",
   "menu.move.search": "本の中を検索（Ctrl+F）",
   "search.title": "本の中を検索",
   "search.hint": "探す語（Enter で次へ、Shift+Enter で前へ）",

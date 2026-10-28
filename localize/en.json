@@ -295,6 +295,7 @@
   "menu.move.prev_book": "Previous Book",
   "menu.move.prev_folder": "Previous Folder",
   "menu.move.upper": "Upper Folder (Cover Thumbnails)",
+  "menu.move.shelf_back": "Back (Cover Thumbnails)",
   "menu.move.search": "Search in Book (Ctrl+F)",
   "search.title": "Search in Book",
   "search.hint": "Words to find (Enter for next, Shift+Enter for previous)",
