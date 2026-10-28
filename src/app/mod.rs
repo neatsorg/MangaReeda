@@ -8,6 +8,7 @@ mod menubar;
 mod navigation;
 mod overlay;
 mod pageview;
+mod plugins;
 mod settings_panel;
 mod thumbnails;
 mod toolbar;
@@ -135,6 +136,8 @@ pub struct MangaReader {
     shelf_back: Vec<(thumbnails::ShelfSource, Option<PathBuf>)>,
     /// 戻るで一覧を移っているあいだ（そのときは道のりに足さない）
     going_back: bool,
+    /// ブックリストのプラグイン
+    plugins: plugins::PluginHost,
     /// 次に表示し直すとき、見開きの組を合わせ直さない（サムネイルで選んだページから見開きにする）
     keep_spread_start: bool,
     /// 開いているメニューと、メニューから開いたダイアログ
@@ -152,6 +155,7 @@ impl MangaReader {
         let history_path = settings_store::history_path();
         reader.history = History::load(&history_path);
         reader.history_path = Some(history_path);
+        reader.plugins = plugins::PluginHost::discover();
         reader
     }
 
@@ -229,6 +233,11 @@ impl MangaReader {
             last_shelf_folder: None,
             shelf_back: Vec::new(),
             going_back: false,
+            plugins: plugins::PluginHost::with(
+                Vec::new(),
+                crate::engine::credentials::Credentials::memory_only(),
+                std::env::temp_dir().join("mangareeda-test-cache"),
+            ),
             thumbnail_cache: Default::default(),
             keep_spread_start: false,
             menu_state: Default::default(),
@@ -299,6 +308,7 @@ impl eframe::App for MangaReader {
             }
         }
         self.reload_zoom_textures_if_settled(ctx);
+        self.poll_plugins(ctx);
 
         // メニューのキー操作は、ほかの操作より先に受け取る
         let menu_was_open = self.menu_state.is_open();
@@ -991,6 +1001,122 @@ mod tests {
         assert_eq!(reader.image_files.len(), 1);
 
         fs::remove_dir_all(mixed).unwrap();
+    }
+
+    /// シェルスクリプトで作ったプラグインで、一覧・ダウンロード・開くまでを通す
+    #[cfg(unix)]
+    #[test]
+    fn plugin_books_are_listed_downloaded_and_opened() {
+        use super::thumbnails::{ShelfSource, ShelfTab};
+        use crate::engine::plugin::PluginManifest;
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestPages::new(&[]);
+        let root = history::normalize(&dir.0);
+        // ダウンロードで渡す書庫
+        let mut zip = zip::ZipWriter::new(fs::File::create(root.join("source.zip")).unwrap());
+        zip.start_file("01.png", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        let mut bytes = Vec::new();
+        image::RgbaImage::new(10, 20)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        zip.write_all(&bytes).unwrap();
+        zip.finish().unwrap();
+        let script = root.join("run.sh");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+read request
+case "$1" in
+list) echo '{{"books": [{{"id": "a", "title": "Book A", "file_name": "a.zip"}}, {{"id": "b", "title": "Book B", "file_name": "b.zip"}}]}}';;
+download) cp "{}" "$3"; echo '{{"progress": 1, "total": 1}}';;
+esac
+"#,
+                root.join("source.zip").display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                library_dir: root.join("library").to_string_lossy().into_owned(),
+                ..AppSettings::default()
+            },
+            None,
+        );
+        reader.plugins = super::plugins::PluginHost::with(
+            vec![PluginManifest {
+                id: "test".to_owned(),
+                name: "Test".to_owned(),
+                command: vec!["./run.sh".to_owned()],
+                credentials: Vec::new(),
+                dir: root.clone(),
+            }],
+            crate::engine::credentials::Credentials::memory_only(),
+            root.join("cache"),
+        );
+        let wait = |reader: &mut MangaReader, done: &dyn Fn(&MangaReader) -> bool| {
+            for _ in 0..200 {
+                reader.poll_plugins(&ctx);
+                if done(reader) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("プラグインの答えが来ない");
+        };
+
+        // プラグインのタブに移ると、一覧を取りに行き、届いたら並ぶ
+        reader.toggle_book_list(ShelfSource::History);
+        reader.switch_shelf_tab(ShelfTab::Plugin(0));
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Plugin("test".to_owned()))
+        );
+        wait(&mut reader, &|r| {
+            r.thumbnails
+                .as_ref()
+                .is_some_and(|v| v.cover_paths().len() == 2)
+        });
+        let book_b = root.join("library").join("test").join("b.zip");
+        assert_eq!(reader.thumbnails.as_ref().unwrap().cover_paths()[1], book_b);
+        // 一覧は手元にためる
+        assert!(
+            root.join("cache")
+                .join("plugins")
+                .join("test.json")
+                .is_file()
+        );
+
+        // まだ無い本を選ぶとダウンロードし、終わったら開く
+        reader.choose_thumbnail(1, &ctx);
+        assert!(reader.thumbnails.is_some());
+        wait(&mut reader, &|r| r.zip_path.is_some());
+        assert_eq!(reader.zip_path, Some(book_b.clone()));
+        assert!(reader.thumbnails.is_none());
+
+        // ダウンロードしてある本は、選ぶとそのまま開く
+        reader.switch_shelf_tab(ShelfTab::Plugin(0));
+        reader.toggle_book_list(ShelfSource::Plugin("test".to_owned()));
+        reader.choose_thumbnail(1, &ctx);
+        assert!(reader.thumbnails.is_none());
+        assert_eq!(reader.zip_path, Some(book_b));
+
+        fs::remove_dir_all(root.join("library")).unwrap();
+        fs::remove_dir_all(root.join("cache")).unwrap();
+        for name in ["source.zip", "run.sh"] {
+            fs::remove_file(root.join(name)).unwrap();
+        }
     }
 
     #[test]

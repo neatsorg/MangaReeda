@@ -178,6 +178,59 @@ pub struct CoverEntry {
     pub is_folder: bool,
     /// Some(枚数) なら、フォルダ `path` の直下の画像だけを冊として読むマス
     pub loose_pages: Option<usize>,
+    /// プラグインの本なら、その情報。`path` はダウンロードしたときに置く場所
+    pub remote: Option<RemoteRef>,
+}
+
+/// プラグインの本
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteRef {
+    pub plugin: String,
+    pub id: String,
+    pub title: String,
+    pub cover_url: Option<String>,
+}
+
+/// 表紙を取ってくるところ
+#[derive(Clone, Debug, PartialEq)]
+pub enum CoverSource {
+    /// 手元の冊の最初のページ
+    Local(PathBuf),
+    /// 表紙の画像の URL。一度取ったら `cache` に置き、次からはそれを使う
+    Url { url: String, cache: PathBuf },
+}
+
+/// 表紙の画像の大きさの上限
+const COVER_DOWNLOAD_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// URL の表紙の画像。手元にあればそれを、無ければ取ってきて置いておく
+fn url_cover_bytes(url: &str, cache: &Path) -> Option<Vec<u8>> {
+    if let Ok(bytes) = std::fs::read(cache) {
+        return Some(bytes);
+    }
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return None;
+    }
+    let mut response = ureq::get(url).call().ok()?;
+    let bytes = response
+        .body_mut()
+        .with_config()
+        .limit(COVER_DOWNLOAD_LIMIT)
+        .read_to_vec()
+        .ok()?;
+    if let Some(parent) = cache.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(cache, &bytes);
+    Some(bytes)
+}
+
+/// 表紙を手元に置くときのファイル名（URL から作る）
+pub fn cover_cache_name(url: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// フォルダの中の冊（書庫・PDF・フォルダ）。ミーヤと同じく、フォルダを先に、それぞれ名前順に並べる。
@@ -192,6 +245,7 @@ pub fn cover_entries(folder: &Path) -> Vec<CoverEntry> {
             is_folder: path.is_dir(),
             path,
             loose_pages: None,
+            remote: None,
         })
         .collect()
 }
@@ -209,6 +263,7 @@ pub fn folder_shelf(folder: &Path) -> Vec<CoverEntry> {
                 path: folder.to_path_buf(),
                 is_folder: true,
                 loose_pages: Some(loose),
+                remote: None,
             },
         );
     }
@@ -294,7 +349,7 @@ where
 
 /// 冊の表紙のサムネイルを、別スレッドで作って送る。(冊の番号, 画像) を送る
 pub fn spawn_cover_loader(
-    books: Vec<PathBuf>,
+    books: Vec<CoverSource>,
     fix_adobe: bool,
     cancel: Arc<AtomicBool>,
 ) -> Receiver<(usize, RgbaImage)> {
@@ -302,7 +357,12 @@ pub fn spawn_cover_loader(
     let books = Arc::new(books);
     spawn_workers(indices, cancel, move || {
         let books = books.clone();
-        move |index| cover_thumbnail(books.get(index)?, fix_adobe)
+        move |index| match books.get(index)? {
+            CoverSource::Local(path) => cover_thumbnail(path, fix_adobe),
+            CoverSource::Url { url, cache } => {
+                decode_thumbnail(&url_cover_bytes(url, cache)?, THUMBNAIL_MAX_SIDE, fix_adobe)
+            }
+        }
     })
 }
 
@@ -470,7 +530,17 @@ mod tests {
         std::fs::remove_file(root.join("cover.png")).unwrap();
 
         // 別スレッドでも同じものが届く
-        let books: Vec<_> = cover_entries(&root).into_iter().map(|e| e.path).collect();
+        let mut books: Vec<_> = cover_entries(&root)
+            .into_iter()
+            .map(|e| CoverSource::Local(e.path))
+            .collect();
+        // URL の表紙は、手元に置いたものがあればそれを使う（ここでは通信しない）
+        let cache = root.join("cover-cache.png");
+        std::fs::write(&cache, png(30, 10)).unwrap();
+        books.push(CoverSource::Url {
+            url: "https://example.invalid/cover.png".to_owned(),
+            cache,
+        });
         let rx = spawn_cover_loader(books, false, Arc::new(AtomicBool::new(false)));
         let mut received: Vec<_> = rx
             .iter()
@@ -479,7 +549,13 @@ mod tests {
         received.sort();
         assert_eq!(
             received,
-            [(0, (40, 10)), (1, (10, 50)), (2, (10, 20)), (3, (10, 30))]
+            [
+                (0, (40, 10)),
+                (1, (10, 50)),
+                (2, (10, 20)),
+                (3, (10, 30)),
+                (4, (30, 10))
+            ]
         );
         std::fs::remove_dir_all(&root).unwrap();
     }

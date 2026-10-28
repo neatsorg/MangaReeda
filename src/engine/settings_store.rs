@@ -63,6 +63,35 @@ pub fn history_path() -> PathBuf {
     settings_path().with_file_name("history.json")
 }
 
+/// 利用者が足すプラグインを置くフォルダ。設定ファイルと同じフォルダの plugins
+pub fn plugins_dir() -> PathBuf {
+    settings_path().with_file_name("plugins")
+}
+
+fn home() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+/// 作り直せるもの（プラグインの一覧、表紙の画像）を置くフォルダ
+pub fn cache_dir() -> PathBuf {
+    let base = if cfg!(windows) {
+        env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| home().map(|home| home.join(".cache")))
+    };
+    base.unwrap_or_else(env::temp_dir).join(APP_DIR)
+}
+
+/// プラグインからダウンロードした本を置くフォルダの既定。ホームの MangaReeda
+pub fn default_library_dir() -> PathBuf {
+    home().unwrap_or_else(|| PathBuf::from(".")).join(APP_DIR)
+}
+
 /// Loads settings, falling back to defaults when the file is missing or invalid.
 pub fn load() -> AppSettings {
     let path = settings_path();

@@ -811,6 +811,9 @@ pub struct AppSettings {
     /// ツールバーを画面の下に置く（ミーヤと同じ）。偽なら上
     #[serde(default = "default_toolbar_at_bottom")]
     pub toolbar_at_bottom: bool,
+    /// プラグインからダウンロードした本を置くフォルダ。空なら既定（ホームの MangaReeda）
+    #[serde(default)]
+    pub library_dir: String,
     pub enable_auto_image_byte_fix: bool,
     pub last_page_action: LastPageAction,
     #[serde(default)]
@@ -937,6 +940,7 @@ impl Default for AppSettings {
             auto_page_layout_lr: false,
             left_to_right: false,
             split_landscape_pages: false,
+            library_dir: String::new(),
             image_sizing_mode: ImageSizingMode::FitHeight,
             spread_center_offset: 0.0,
             cover_blank_page: false,

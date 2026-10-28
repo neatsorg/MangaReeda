@@ -6,10 +6,12 @@
 
 use super::MangaReader;
 use super::loader::OpenAt;
+use super::plugins::DownloadStatus;
 use crate::config::SourceMode;
+use crate::engine::plugin::PluginError;
 use crate::engine::thumbnail::{
-    CoverEntry, Direction, Grid, THUMBNAIL_MAX_SIDE, ThumbnailMode, cover_entries, folder_shelf,
-    move_selection, spawn_cover_loader, spawn_loader,
+    CoverEntry, CoverSource, Direction, Grid, THUMBNAIL_MAX_SIDE, ThumbnailMode, cover_cache_name,
+    cover_entries, folder_shelf, move_selection, spawn_cover_loader, spawn_loader,
 };
 use crate::localize::tr;
 use eframe::egui;
@@ -27,8 +29,9 @@ const TEXTURES_PER_FRAME: usize = 32;
 const PDF_PAGES_PER_FRAME: usize = 2;
 const SELECTED_COLOR: egui::Color32 = egui::Color32::from_rgb(70, 130, 255);
 const FRAME_WIDTH: f32 = 2.0;
-/// 表紙サムネイルで、マスの下に冊の名前を出す高さ
-const COVER_LABEL_HEIGHT: f32 = 26.0;
+/// 表紙サムネイルで、マスの下に冊の名前を出す高さ（2行ぶん）と行数
+const COVER_LABEL_HEIGHT: f32 = 36.0;
+const COVER_LABEL_ROWS: usize = 2;
 /// 表紙サムネイルの上に出す、並べるものを切り替えるタブの高さ
 const TAB_HEIGHT: f32 = 30.0;
 /// 戻るで覚えておく数
@@ -48,36 +51,17 @@ pub(super) enum ShelfSource {
     Folder(PathBuf),
     History,
     Favorites,
+    /// プラグインの一覧（プラグインの id）
+    Plugin(String),
 }
 
-/// タブの並び
+/// タブの並び。プラグインは見つけた順の番号
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ShelfTab {
     Folder,
     History,
     Favorites,
-}
-
-const SHELF_TABS: [ShelfTab; 3] = [ShelfTab::Folder, ShelfTab::History, ShelfTab::Favorites];
-
-impl ShelfSource {
-    fn tab(&self) -> ShelfTab {
-        match self {
-            Self::Folder(_) => ShelfTab::Folder,
-            Self::History => ShelfTab::History,
-            Self::Favorites => ShelfTab::Favorites,
-        }
-    }
-}
-
-impl ShelfTab {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Folder => tr("shelf.folder"),
-            Self::History => tr("shelf.history"),
-            Self::Favorites => tr("shelf.favorites"),
-        }
-    }
+    Plugin(usize),
 }
 
 /// 表紙サムネイルで並べている冊
@@ -341,6 +325,7 @@ impl MangaReader {
     fn shelf_entries(&self, source: &ShelfSource) -> Vec<CoverEntry> {
         let paths: Vec<&PathBuf> = match source {
             ShelfSource::Folder(folder) => return folder_shelf(folder),
+            ShelfSource::Plugin(id) => return self.plugin_entries(id),
             ShelfSource::History => self.history.entries.iter().map(|e| &e.path).collect(),
             ShelfSource::Favorites => self.history.favorites.iter().map(|e| &e.path).collect(),
         };
@@ -351,8 +336,70 @@ impl MangaReader {
                 path: path.clone(),
                 is_folder: path.is_dir(),
                 loose_pages: None,
+                remote: None,
             })
             .collect()
+    }
+
+    /// タブの並び: フォルダ・履歴・お気に入りと、見つけたプラグイン
+    fn shelf_tabs(&self) -> Vec<ShelfTab> {
+        let mut tabs = vec![ShelfTab::Folder, ShelfTab::History, ShelfTab::Favorites];
+        tabs.extend((0..self.plugins.manifests.len()).map(ShelfTab::Plugin));
+        tabs
+    }
+
+    fn tab_label(&self, tab: ShelfTab) -> String {
+        match tab {
+            ShelfTab::Folder => tr("shelf.folder").to_owned(),
+            ShelfTab::History => tr("shelf.history").to_owned(),
+            ShelfTab::Favorites => tr("shelf.favorites").to_owned(),
+            ShelfTab::Plugin(index) => self
+                .plugins
+                .manifests
+                .get(index)
+                .map_or_else(String::new, |m| m.name.clone()),
+        }
+    }
+
+    fn tab_of(&self, source: &ShelfSource) -> ShelfTab {
+        match source {
+            ShelfSource::Folder(_) => ShelfTab::Folder,
+            ShelfSource::History => ShelfTab::History,
+            ShelfSource::Favorites => ShelfTab::Favorites,
+            ShelfSource::Plugin(id) => ShelfTab::Plugin(
+                self.plugins
+                    .manifests
+                    .iter()
+                    .position(|m| &m.id == id)
+                    .unwrap_or(0),
+            ),
+        }
+    }
+
+    /// 一覧で選んでいる冊の場所
+    pub(super) fn selected_shelf_path(&self) -> Option<PathBuf> {
+        let view = self.thumbnails.as_ref()?;
+        Some(
+            view.covers
+                .as_ref()?
+                .entries
+                .get(view.selected)?
+                .path
+                .clone(),
+        )
+    }
+
+    /// 並べているものを、選んでいる冊とスクロールの位置を保ったまま並べ直す
+    pub(super) fn reshow_shelf(&mut self) {
+        let Some(source) = self.shelf_source() else {
+            return;
+        };
+        let selected = self.selected_shelf_path();
+        let scroll = self.thumbnails.as_ref().map_or(0.0, |view| view.scroll);
+        self.show_shelf(source, selected);
+        if let Some(view) = self.thumbnails.as_mut() {
+            view.scroll = scroll;
+        }
     }
 
     /// `source` を表紙で並べる。`select` があればそれを、無ければ今の冊を選んでおく。
@@ -373,6 +420,9 @@ impl MangaReader {
                 }
             }
             Some(_) => {}
+        }
+        if let ShelfSource::Plugin(id) = &source {
+            self.ensure_plugin_list(id);
         }
         let entries = self.shelf_entries(&source);
         if let ShelfSource::Folder(folder) = &source {
@@ -406,10 +456,21 @@ impl MangaReader {
             .collect();
         let cancel = Arc::new(AtomicBool::new(false));
         let rx = (!loading.is_empty()).then(|| {
+            let covers = self.plugins.cover_cache_dir();
             spawn_cover_loader(
                 loading
                     .iter()
-                    .map(|&index| entries[index].path.clone())
+                    .map(|&index| {
+                        let entry = &entries[index];
+                        // プラグインの本は表紙の URL から（ダウンロードした PDF は別スレッドで描けない）
+                        match entry.remote.as_ref().and_then(|r| r.cover_url.as_ref()) {
+                            Some(url) => CoverSource::Url {
+                                url: url.clone(),
+                                cache: covers.join(cover_cache_name(url)),
+                            },
+                            None => CoverSource::Local(entry.path.clone()),
+                        }
+                    })
                     .collect(),
                 self.config.enable_auto_image_byte_fix,
                 cancel.clone(),
@@ -436,7 +497,7 @@ impl MangaReader {
         let Some(source) = self.shelf_source() else {
             return;
         };
-        if source.tab() == tab {
+        if self.tab_of(&source) == tab {
             return;
         }
         let selected_path = self.thumbnails.as_ref().and_then(|view| {
@@ -444,6 +505,10 @@ impl MangaReader {
             Some(shelf.entries.get(view.selected)?.path.clone())
         });
         let source = match tab {
+            ShelfTab::Plugin(index) => match self.plugins.manifests.get(index) {
+                Some(manifest) => ShelfSource::Plugin(manifest.id.clone()),
+                None => return,
+            },
             ShelfTab::History => ShelfSource::History,
             ShelfTab::Favorites => ShelfSource::Favorites,
             ShelfTab::Folder => match self.fallback_shelf_folder(selected_path) {
@@ -484,7 +549,7 @@ impl MangaReader {
         match source {
             ShelfSource::History => self.history.forget(&path),
             ShelfSource::Favorites => self.history.remove_favorite(&path),
-            ShelfSource::Folder(_) => return,
+            ShelfSource::Folder(_) | ShelfSource::Plugin(_) => return,
         }
         self.save_history();
         self.show_shelf(source, None);
@@ -545,9 +610,29 @@ impl MangaReader {
                 let Some(entry) = shelf.entries.get(selected) else {
                     return String::new();
                 };
+                // プラグインの本は、書名とダウンロードの状態
+                if let Some(remote) = &entry.remote {
+                    let status = match self.download_status(&entry.path) {
+                        Some(DownloadStatus::Running(Some(ratio))) => {
+                            format!("{}%", (ratio * 100.0) as u32)
+                        }
+                        Some(DownloadStatus::Running(None)) => tr("plugin.downloading").to_owned(),
+                        Some(DownloadStatus::Queued) => tr("plugin.queued").to_owned(),
+                        None if entry.path.is_file() => tr("plugin.downloaded").to_owned(),
+                        None => tr("plugin.not_downloaded").to_owned(),
+                    };
+                    return format!(
+                        "{} / {}  {}  ({})",
+                        selected + 1,
+                        count,
+                        remote.title,
+                        status
+                    );
+                }
                 // 履歴とお気に入りは冊がばらばらの場所にあるので、冊のパスと日時を出す
                 let (place, when) = match &shelf.source {
                     ShelfSource::Folder(folder) => (folder.to_string_lossy(), None),
+                    ShelfSource::Plugin(id) => (std::borrow::Cow::Borrowed(id.as_str()), None),
                     ShelfSource::History => (
                         entry.path.to_string_lossy(),
                         self.history
@@ -682,6 +767,12 @@ impl MangaReader {
         let Some(entry) = shelf.entries.get(index).cloned() else {
             return;
         };
+        // プラグインの本は、ダウンロードしてあれば開き、無ければダウンロードする（終わったら開く）
+        if entry.remote.is_some() && !entry.path.is_file() {
+            view.selected = index;
+            self.request_download(&entry);
+            return;
+        }
         if entry.loose_pages.is_none() && entry.is_folder && !cover_entries(&entry.path).is_empty()
         {
             // 一覧を開いたまま移る（戻るで、選んだフォルダに戻れるように）
@@ -715,6 +806,39 @@ impl MangaReader {
         let mut remove_selected = false;
         let mut go_up = false;
         let mut go_back = false;
+        let mut refresh = false;
+        let tabs: Vec<(ShelfTab, String)> = self
+            .shelf_tabs()
+            .into_iter()
+            .map(|tab| (tab, self.tab_label(tab)))
+            .collect();
+        let active_tab = source.as_ref().map(|source| self.tab_of(source));
+        // プラグインの一覧の状態（空のときの知らせと、更新中か）
+        let plugin_state = match &source {
+            Some(ShelfSource::Plugin(id)) => self.plugins.shelves.get(id).map(|shelf| {
+                (
+                    shelf.is_loading(),
+                    shelf.error.clone(),
+                    self.plugins.download_error.clone(),
+                )
+            }),
+            _ => None,
+        };
+        let statuses: Vec<(Option<DownloadStatus>, bool)> = self
+            .thumbnails
+            .as_ref()
+            .and_then(|view| view.covers.as_ref())
+            .map(|shelf| {
+                shelf
+                    .entries
+                    .iter()
+                    .map(|entry| match entry.remote {
+                        Some(_) => (self.download_status(&entry.path), entry.path.is_file()),
+                        None => (None, true),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(background))
             .show(ctx, |ui| {
@@ -742,6 +866,7 @@ impl MangaReader {
                             i.key_pressed(egui::Key::Delete),
                             i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)
                                 || i.pointer.button_clicked(egui::PointerButton::Extra1),
+                            i.key_pressed(egui::Key::F5),
                         ),
                         i.smooth_scroll_delta.y,
                         i.pointer.hover_pos(),
@@ -749,31 +874,33 @@ impl MangaReader {
                         i.pointer.primary_clicked(),
                     )
                 });
-                let (mut directions, enter, escape, backspace, delete, back) = keys;
+                let (mut directions, enter, escape, backspace, delete, back, f5) = keys;
                 let tab_key = self.pending_shelf_tab.take();
                 close = escape;
 
-                if let Some(source) = &source {
+                if let (Some(source), Some(active)) = (&source, active_tab) {
                     let tab_rect =
                         egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_HEIGHT));
                     rect.min.y += TAB_HEIGHT;
-                    let active = source.tab();
                     if let Some(backward) = tab_key {
-                        let position = SHELF_TABS.iter().position(|&t| t == active).unwrap_or(0);
-                        let step = if backward { SHELF_TABS.len() - 1 } else { 1 };
-                        tab_to_show = Some(SHELF_TABS[(position + step) % SHELF_TABS.len()]);
+                        let position = tabs.iter().position(|(t, _)| *t == active).unwrap_or(0);
+                        let step = if backward { tabs.len() - 1 } else { 1 };
+                        tab_to_show = Some(tabs[(position + step) % tabs.len()].0);
                     }
-                    let can_go_back = !self.shelf_back.is_empty();
-                    match draw_shelf_tabs(
-                        ui,
-                        tab_rect,
+                    let in_plugin = matches!(source, ShelfSource::Plugin(_));
+                    refresh |= f5 && in_plugin;
+                    let strip = TabStrip {
+                        tabs: &tabs,
                         active,
-                        can_go_back,
-                        pointer.filter(|_| clicked),
-                    ) {
+                        can_go_back: !self.shelf_back.is_empty(),
+                        refreshing: plugin_state.as_ref().map(|state| state.0),
+                        error: plugin_state.as_ref().and_then(|state| state.2.clone()),
+                    };
+                    match draw_shelf_tabs(ui, tab_rect, &strip, pointer.filter(|_| clicked)) {
                         Some(TabClick::Tab(tab)) => tab_to_show = Some(tab),
                         Some(TabClick::Upper) => go_up = true,
                         Some(TabClick::Back) => go_back = true,
+                        Some(TabClick::Refresh) => refresh = true,
                         None => {}
                     }
                     if back {
@@ -782,13 +909,21 @@ impl MangaReader {
                         directions.clear();
                     }
                     let in_folder = matches!(source, ShelfSource::Folder(_));
-                    remove_selected = delete && !in_folder;
+                    remove_selected = delete && !in_folder && !in_plugin;
                     go_up |= backspace && in_folder;
                     if count == 0 {
                         let message = match source {
-                            ShelfSource::Folder(_) => tr("shelf.no_books"),
-                            ShelfSource::History => tr("shelf.no_history"),
-                            ShelfSource::Favorites => tr("shelf.no_favorites"),
+                            ShelfSource::Folder(_) => tr("shelf.no_books").to_owned(),
+                            ShelfSource::History => tr("shelf.no_history").to_owned(),
+                            ShelfSource::Favorites => tr("shelf.no_favorites").to_owned(),
+                            ShelfSource::Plugin(_) => match &plugin_state {
+                                Some((true, _, _)) => tr("plugin.loading").to_owned(),
+                                Some((_, Some(PluginError::Auth(message)), _)) => {
+                                    format!("{message}\n{}", tr("plugin.set_credentials"))
+                                }
+                                Some((_, Some(error), _)) => error.message().to_owned(),
+                                _ => tr("plugin.no_books").to_owned(),
+                            },
                         };
                         ui.painter().text(
                             rect.center(),
@@ -896,27 +1031,87 @@ impl MangaReader {
                         .and_then(|shelf| shelf.entries.get(index))
                     {
                         // ミーヤと同じく、アイコンと名前を表紙の下に出す
-                        let (icon, name) = match entry.loose_pages {
-                            Some(count) => (
+                        let (status, downloaded) =
+                            statuses.get(index).copied().unwrap_or((None, true));
+                        let (icon, name) = match (&entry.remote, entry.loose_pages) {
+                            // まだダウンロードしていない本は雲のしるし
+                            (Some(remote), _) => (
+                                if downloaded { "📖" } else { "☁" },
+                                remote.title.as_str().into(),
+                            ),
+                            (None, Some(count)) => (
                                 "🖼",
                                 tr("shelf.loose_pages")
                                     .replace("{n}", &count.to_string())
                                     .into(),
                             ),
-                            None => (
+                            (None, None) => (
                                 if entry.is_folder { "📁" } else { "📖" },
                                 entry.path.file_name().unwrap_or_default().to_string_lossy(),
                             ),
                         };
+                        // ダウンロードの進み具合を表紙の下に
+                        match status {
+                            Some(DownloadStatus::Running(ratio)) => {
+                                let bar = egui::Rect::from_min_size(
+                                    egui::pos2(image_area.left(), image_area.bottom() - 8.0),
+                                    egui::vec2(image_area.width(), 8.0),
+                                );
+                                painter.rect_filled(bar, 2.0, egui::Color32::from_black_alpha(200));
+                                // 大きさがわからなければ、行き来する帯
+                                let (start, width) = match ratio {
+                                    Some(ratio) => (0.0, ratio.clamp(0.0, 1.0)),
+                                    None => {
+                                        let t = ui.input(|i| i.time) as f32;
+                                        ((t * 0.8).fract() * 0.7, 0.3)
+                                    }
+                                };
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        bar.min + egui::vec2(bar.width() * start, 0.0),
+                                        egui::vec2(bar.width() * width, bar.height()),
+                                    ),
+                                    2.0,
+                                    SELECTED_COLOR,
+                                );
+                            }
+                            Some(DownloadStatus::Queued) => {
+                                painter.text(
+                                    image_area.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    tr("plugin.queued"),
+                                    egui::FontId::proportional(14.0),
+                                    egui::Color32::WHITE,
+                                );
+                            }
+                            None => {}
+                        }
                         let label_rect = egui::Rect::from_min_max(
                             egui::pos2(cell.min.x, cell.max.y - COVER_LABEL_HEIGHT),
                             cell.max,
                         );
-                        painter.with_clip_rect(label_rect.intersect(rect)).text(
-                            label_rect.center(),
-                            egui::Align2::CENTER_CENTER,
+                        // 長い名前はマスの幅で2行まで折り返し、残りは「…」で省く
+                        // （全部は選んだときに左下に出る）
+                        let mut job = egui::text::LayoutJob::single_section(
                             format!("{icon} {name}"),
-                            egui::FontId::proportional(14.0),
+                            egui::TextFormat::simple(
+                                egui::FontId::proportional(13.0),
+                                egui::Color32::WHITE,
+                            ),
+                        );
+                        job.wrap = egui::text::TextWrapping {
+                            max_width: cell.width() - 8.0,
+                            max_rows: COVER_LABEL_ROWS,
+                            break_anywhere: true,
+                            overflow_character: Some('…'),
+                        };
+                        job.halign = egui::Align::Center;
+                        let galley = painter.layout_job(job);
+                        // 中央に揃えた行は、x = 0 を中心に並ぶ
+                        let top = label_rect.center().y - galley.size().y * 0.5;
+                        painter.with_clip_rect(label_rect.intersect(rect)).galley(
+                            egui::pos2(label_rect.center().x, top),
+                            galley,
                             egui::Color32::WHITE,
                         );
                     }
@@ -967,6 +1162,8 @@ impl MangaReader {
             self.go_to_upper_folder();
         } else if go_back {
             self.go_back_in_shelf();
+        } else if refresh && let Some(ShelfSource::Plugin(id)) = self.shelf_source() {
+            self.refresh_plugin_list(&id);
         }
     }
 }
@@ -978,6 +1175,8 @@ enum TabClick {
     Upper,
     /// 戻るボタン
     Back,
+    /// プラグインの一覧の更新ボタン
+    Refresh,
 }
 
 /// タブの帯に置く小さなボタン。`enabled` でなければ灰色にする。描いた場所を返す
@@ -1006,13 +1205,24 @@ fn tab_button(
     button
 }
 
-/// 表紙サムネイルの上のタブ。フォルダのタブでは上のフォルダへのボタンを並べ、
-/// 右端に操作の案内を出す。`click` の位置にあるものを返す
+/// タブの帯に出すもの
+struct TabStrip<'a> {
+    tabs: &'a [(ShelfTab, String)],
+    active: ShelfTab,
+    can_go_back: bool,
+    /// プラグインのタブなら、一覧を更新中か
+    refreshing: Option<bool>,
+    /// ダウンロードの失敗
+    error: Option<String>,
+}
+
+/// 表紙サムネイルの上のタブ。フォルダのタブでは上のフォルダへ、プラグインのタブでは更新の
+/// ボタンを並べ、右端に操作の案内（ダウンロードに失敗したらその知らせ）を出す。
+/// `click` の位置にあるものを返す
 fn draw_shelf_tabs(
     ui: &egui::Ui,
     rect: egui::Rect,
-    active: ShelfTab,
-    can_go_back: bool,
+    strip: &TabStrip,
     click: Option<egui::Pos2>,
 ) -> Option<TabClick> {
     let painter = ui.painter().with_clip_rect(rect);
@@ -1025,20 +1235,19 @@ fn draw_shelf_tabs(
         egui::pos2(rect.left() + 8.0, rect.top() + 4.0),
         rect.height() - 8.0,
         tr("shelf.back"),
-        can_go_back,
+        strip.can_go_back,
     );
-    if can_go_back && click.is_some_and(|pos| back.contains(pos)) {
+    if strip.can_go_back && click.is_some_and(|pos| back.contains(pos)) {
         clicked = Some(TabClick::Back);
     }
     let mut x = back.right() + 12.0;
-    for tab in SHELF_TABS {
-        let galley =
-            painter.layout_no_wrap(tab.label().to_owned(), font.clone(), egui::Color32::WHITE);
+    for (tab, label) in strip.tabs {
+        let galley = painter.layout_no_wrap(label.clone(), font.clone(), egui::Color32::WHITE);
         let tab_rect = egui::Rect::from_min_size(
             egui::pos2(x, rect.top() + 3.0),
             egui::vec2(galley.size().x + 24.0, rect.height() - 3.0),
         );
-        let (fill, text) = if tab == active {
+        let (fill, text) = if *tab == strip.active {
             (SELECTED_COLOR, egui::Color32::WHITE)
         } else {
             (egui::Color32::from_gray(48), egui::Color32::from_gray(190))
@@ -1055,15 +1264,16 @@ fn draw_shelf_tabs(
         );
         painter.galley(tab_rect.center() - galley.size() * 0.5, galley, text);
         if click.is_some_and(|pos| tab_rect.contains(pos)) {
-            clicked = Some(TabClick::Tab(tab));
+            clicked = Some(TabClick::Tab(*tab));
         }
         x = tab_rect.right() + 4.0;
     }
-    if active == ShelfTab::Folder {
+    let button_at = egui::pos2(x + 12.0, rect.top() + 4.0);
+    if strip.active == ShelfTab::Folder {
         let button = tab_button(
             ui,
             &painter,
-            egui::pos2(x + 12.0, rect.top() + 4.0),
+            button_at,
             rect.height() - 8.0,
             tr("shelf.upper"),
             true,
@@ -1072,17 +1282,36 @@ fn draw_shelf_tabs(
             clicked = Some(TabClick::Upper);
         }
     }
-    let hint = if active == ShelfTab::Folder {
-        tr("shelf.hint")
-    } else {
-        tr("shelf.hint_remove")
+    if let Some(refreshing) = strip.refreshing {
+        let label = if refreshing {
+            tr("plugin.refreshing")
+        } else {
+            tr("plugin.refresh")
+        };
+        let button = tab_button(
+            ui,
+            &painter,
+            button_at,
+            rect.height() - 8.0,
+            label,
+            !refreshing,
+        );
+        if !refreshing && click.is_some_and(|pos| button.contains(pos)) {
+            clicked = Some(TabClick::Refresh);
+        }
+    }
+    let (hint, color) = match (&strip.error, strip.active) {
+        (Some(error), _) => (error.as_str(), egui::Color32::from_rgb(255, 140, 120)),
+        (None, ShelfTab::Folder) => (tr("shelf.hint"), egui::Color32::from_gray(150)),
+        (None, ShelfTab::Plugin(_)) => (tr("plugin.hint"), egui::Color32::from_gray(150)),
+        (None, _) => (tr("shelf.hint_remove"), egui::Color32::from_gray(150)),
     };
     painter.text(
         egui::pos2(rect.right() - 8.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         hint,
         egui::FontId::proportional(13.0),
-        egui::Color32::from_gray(150),
+        color,
     );
     clicked
 }

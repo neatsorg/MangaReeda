@@ -15,6 +15,7 @@ Linux で動く、オフラインのマンガ・コミックビューアです�
 - ページのサムネイル一覧と、同じフォルダの冊を表紙で並べる表紙サムネイル
 - 冊ごとに読んでいた位置を覚えるしおりと履歴
 - 履歴とお気に入りを表紙で並べるブックリスト（表紙サムネイルの画面で Tab で切り替え）
+- プラグインで本の一覧を足せるブックリスト。BOOKSCAN の本棚を読むプラグインを同梱（[docs/plugins.md](docs/plugins.md)）
 - ルーペ、ズーム、縮小・拡大のフィルタ（最近傍〜Lanczos3）
 - 書庫を展開せずに直接読む。サブフォルダの画像も読める
 - 同じフォルダの前後の冊、隣のフォルダへの移動
@@ -38,9 +39,11 @@ Rust のツールチェーン、C/C++ コンパイラ（RAR の展開に使う�
 # Arch Linux / Manjaro の例
 sudo pacman -S --needed base-devel rust dav1d
 
-cargo build --release
+cargo build --release --workspace
 ./target/release/mangareeda [開くファイルやフォルダ]
 ```
+
+`--workspace` を付けると、BOOKSCAN のプラグイン（`mangareeda-bookscan`）も同じフォルダにできます。要らなければ外してください。
 
 PDF を開くには `libpdfium.so` が必要です。カレントディレクトリ、実行ファイルと同じフォルダ、システムのライブラリの順に探します。見つからない場合は、PDF を開こうとしたときにメッセージを表示します（PDF 以外には影響しません）。
 
@@ -53,6 +56,7 @@ Arch Linux / Manjaro では、AUR の `pdfium-binaries-bin` を入れると `/us
 このソフトは閲覧するための道具です。
 
 - マンガ、コミック、書庫などのコンテンツを提供・配布せず、入手先へのリンクも持ちません。
+- プラグインは、利用者自身が契約しているサービスに、利用者のアカウントで接続します。サービスの利用規約に従って使ってください。
 - 開くコンテンツについては、利用者が責任を持ってください。
 - 利用者が選んだコンテンツや入手先によって生じた著作権侵害その他の問題について、開発者は責任を負いません。
 
@@ -80,7 +84,8 @@ Inspired by the classic Japanese viewer MangaMeeya. It contains no MangaMeeya co
 - Automatic spreads for runs of portrait pages, and an odd-page start that puts a blank page before the first page
 - Splitting wide pages into halves shown one at a time
 - Page thumbnails, and cover thumbnails of the books in the same folder
-- Per-book bookmarks and history
+- Per-book bookmarks and history, and a book list of history and favorites shown as covers
+- Plugins that add book lists; a plugin for the BOOKSCAN bookshelf is included ([docs/plugins.md](docs/plugins.md), in Japanese)
 - Loupe, zoom, and resampling filters (nearest to Lanczos3)
 - Reads archives directly without extracting them, optionally including images in subfolders
 - Moves to the previous / next book in the folder and to neighbouring folders
@@ -104,9 +109,11 @@ Requires a Rust toolchain, a C/C++ compiler (for RAR support) and dav1d (for AVI
 # Arch Linux / Manjaro
 sudo pacman -S --needed base-devel rust dav1d
 
-cargo build --release
+cargo build --release --workspace
 ./target/release/mangareeda [file or folder to open]
 ```
+
+`--workspace` also builds the BOOKSCAN plugin (`mangareeda-bookscan`) next to the viewer. Leave it out if you do not need it.
 
 Opening PDFs needs `libpdfium.so`, looked up in the working directory, next to the executable, then system-wide. Without it, only PDFs are unavailable and a message says so.
 
@@ -116,7 +123,7 @@ Settings are stored in `~/.config/MangaReeda/settings.json` (under `XDG_CONFIG_H
 
 ## Disclaimer
 
-MangaReeda is a viewing utility only. It does not provide, host, or link to any content or download sources. Users are responsible for what they open, and the developers take no responsibility for copyright or other issues arising from it.
+MangaReeda is a viewing utility only. It does not provide, host, or link to any content or download sources. Plugins connect to services the user subscribes to, with the user's own account; follow each service's terms. Users are responsible for what they open, and the developers take no responsibility for copyright or other issues arising from it.
 
 ## License
 

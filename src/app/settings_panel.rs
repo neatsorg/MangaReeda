@@ -1156,6 +1156,7 @@ impl MangaReader {
                                     self.save_settings();
                                 }
 
+                                self.render_plugin_settings(ui);
                                 ui.add_space(50.0);
                             });
                         });
