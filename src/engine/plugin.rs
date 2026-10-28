@@ -355,6 +355,21 @@ mod group {
     }
 }
 
+/// 起動する。書き込んだばかりのプログラムは、ほかのスレッドがプロセスを起動している途中だと
+/// しばらく実行できない（Text file busy）ので、少し待ってやり直す
+fn spawn(command: &mut Command) -> std::io::Result<std::process::Child> {
+    for _ in 0..20 {
+        match command.spawn() {
+            #[cfg(unix)]
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
+    command.spawn()
+}
+
 /// 見張りのスレッドと分け合う状態
 struct Watch {
     /// 最後に動きがあったとき（ダウンロードでは行が届くたびに新しくする）
@@ -395,8 +410,7 @@ impl Running {
             .command(args)
             .ok_or_else(|| PluginError::Other("プラグインの命令がありません".to_owned()))?;
         group::configure(&mut command);
-        let mut child = command
-            .spawn()
+        let mut child = spawn(&mut command)
             .map_err(|e| PluginError::Other(format!("プラグインを起動できませんでした: {e}")))?;
         let group = group::Group::new(&child);
         let streams = (child.stdin.take(), child.stdout.take(), child.stderr.take());

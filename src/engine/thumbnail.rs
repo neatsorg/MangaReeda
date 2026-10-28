@@ -225,12 +225,13 @@ fn url_cover_bytes(url: &str, cache: &Path) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// 表紙を手元に置くときのファイル名（URL から作る）
-pub fn cover_cache_name(url: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    url.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+/// 文字列から作る、16 桁の短い名前（表紙や一覧のファイル名、ダウンロードした本の印、アカウントの記録に使う）。
+/// 手元に残る名前なので、Rust の版や作り直しで変わらないよう、決まった計算（FNV-1a、64 ビット）で作る
+pub fn cover_cache_name(text: &str) -> String {
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{hash:016x}")
 }
 
 /// フォルダの中の冊（書庫・PDF・フォルダ）。ミーヤと同じく、フォルダを先に、それぞれ名前順に並べる。
@@ -395,6 +396,13 @@ pub fn spawn_loader(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 手元に残る名前は、作り直しても変わらない（変わると、ダウンロードした本や記録が浮いてしまう）
+    #[test]
+    fn short_names_stay_the_same_across_builds() {
+        assert_eq!(cover_cache_name(""), "cbf29ce484222325");
+        assert_eq!(cover_cache_name("a"), "af63dc4c8601ec8c");
+    }
 
     #[test]
     fn fit_all_matches_mangameeya_for_sixty_pages() {

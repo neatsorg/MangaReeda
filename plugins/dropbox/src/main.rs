@@ -26,7 +26,8 @@ const TOKEN_URL: &str = "https://api.dropboxapi.com/oauth2/token";
 const API_URL: &str = "https://api.dropboxapi.com/2";
 const CONTENT_URL: &str = "https://content.dropboxapi.com/2";
 /// 読むだけに要る権限
-const SCOPES: &str = "files.metadata.read files.content.read";
+/// account_info.read は、接続したアカウントを見分けるため（users/get_current_account）
+const SCOPES: &str = "account_info.read files.metadata.read files.content.read";
 /// 本として並べる拡張子（MangaReeda が開けるもの）
 const BOOK_EXTENSIONS: [&str; 5] = ["zip", "cbz", "rar", "cbr", "pdf"];
 /// 混み合っている（429）ときに、待ってやり直す回数
@@ -188,8 +189,14 @@ struct TokenReply {
     account_id: Option<String>,
 }
 
+/// 使える access token と、取り替えの答えでわかったアカウントの id
+struct Token {
+    access: String,
+    account_id: Option<String>,
+}
+
 /// 使える access token を得る。認可コードがあれば更新用のトークンに取り替えて保存してもらう
-fn access_token(agent: &Agent, request: &Request) -> Result<String, Failure> {
+fn access_token(agent: &Agent, request: &Request) -> Result<Token, Failure> {
     let app_key = app_key(request)?;
     if let Some(code) = request.get("auth_code") {
         let verifier = request.get("code_verifier").ok_or_else(|| {
@@ -216,9 +223,12 @@ fn access_token(agent: &Agent, request: &Request) -> Result<String, Failure> {
             "refresh_token": refresh,
             "auth_code": "",
             "code_verifier": "",
-            "account_id": reply.account_id.unwrap_or_default(),
+            "account_id": reply.account_id.clone().unwrap_or_default(),
         }}))?;
-        return Ok(reply.access_token);
+        return Ok(Token {
+            access: reply.access_token,
+            account_id: reply.account_id,
+        });
     }
     let Some(refresh) = request.get("refresh_token") else {
         return Err(Failure::Auth(
@@ -237,7 +247,10 @@ fn access_token(agent: &Agent, request: &Request) -> Result<String, Failure> {
             error_summary(&body)
         )));
     }
-    Ok(response.body_mut().read_json::<TokenReply>()?.access_token)
+    Ok(Token {
+        access: response.body_mut().read_json::<TokenReply>()?.access_token,
+        account_id: None,
+    })
 }
 
 /// 失敗の応答の、短い説明
@@ -294,13 +307,23 @@ fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Duration {
     Duration::from_secs(seconds.clamp(1, 60))
 }
 
-/// 接続しているアカウントの id。覚えていなければ Dropbox に尋ねて、保存してもらう。
+/// 接続しているアカウントの id。認可コードを取り替えたばかりならその答えの値、
+/// 次に覚えている値を使う。どちらも無ければ Dropbox に尋ねて、保存してもらう。
 /// わからなくても一覧は返せるので、尋ねられなければ None
-fn account_id(agent: &Agent, token: &str, request: &Request) -> Option<String> {
+fn account_id(agent: &Agent, token: &Token, request: &Request) -> Option<String> {
+    if let Some(id) = &token.account_id {
+        return Some(id.clone());
+    }
     if let Some(id) = request.get("account_id") {
         return Some(id.to_owned());
     }
-    let reply = call_api(agent, token, "/users/get_current_account", &Value::Null).ok()?;
+    let reply = call_api(
+        agent,
+        &token.access,
+        "/users/get_current_account",
+        &Value::Null,
+    )
+    .ok()?;
     let id = reply.get("account_id")?.as_str()?.to_owned();
     print(json!({ "store": { "account_id": id } })).ok()?;
     Some(id)
@@ -309,12 +332,8 @@ fn account_id(agent: &Agent, token: &str, request: &Request) -> Option<String> {
 fn list(request: &Request, folder: &str) -> Result<(), Failure> {
     let agent = agent();
     let token = access_token(&agent, request)?;
-    // 認可コードを取り替えたばかりなら、保存してもらった値はまだ届いていないので尋ねる
-    let account = if request.get("auth_code").is_some() {
-        account_id(&agent, &token, &Request::default())
-    } else {
-        account_id(&agent, &token, request)
-    };
+    let account = account_id(&agent, &token, request);
+    let token = token.access;
     let mut entries = Vec::new();
     let mut page = call_api(
         &agent,
@@ -421,7 +440,7 @@ fn header_json(value: &Value) -> String {
 
 fn download(request: &Request, id: &str, dest: &Path) -> Result<(), Failure> {
     let agent = agent();
-    let token = access_token(&agent, request)?;
+    let token = access_token(&agent, request)?.access;
     let arg = header_json(&json!({ "path": id }));
     let mut attempt = 0;
     let response = loop {

@@ -1118,6 +1118,25 @@ mod tests {
         };
         let top = ("p".to_owned(), String::new());
 
+        // 記録の無いファイル（記録を始める前の版でダウンロードしたもの）は、どの本かわからないので開かない。
+        // 別の場所に取り直し、もとのファイルは残す
+        let legacy = library.join("p").join("old.pdf");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, "old").unwrap();
+        set_shelf(&mut reader, &top, vec![book("o", "old.pdf")]);
+        let entry = reader.plugin_entries(&top)[0].clone();
+        assert_ne!(entry.path, legacy);
+        assert!(!reader.remote_path(&entry).is_file());
+        assert!(legacy.is_file());
+        // 印を付けた場所にも記録の無いファイルがあれば、そこも使わず、さらに別の印の場所にする
+        fs::write(&entry.path, "old marked").unwrap();
+        let entry = reader.plugin_entries(&top)[0].clone();
+        assert!(!entry.path.exists());
+        assert!(!reader.remote_path(&entry).is_file());
+        fs::remove_file(&legacy).unwrap();
+        // もとの場所が空けば、そこを使う
+        assert_eq!(reader.plugin_entries(&top)[0].path, legacy);
+
         // アカウント A で a をダウンロードしてある
         reader.plugins.set_account(&top, Some("A".to_owned()));
         set_shelf(&mut reader, &top, vec![book("a", "same.pdf")]);
@@ -1157,6 +1176,16 @@ mod tests {
         reader.request_download(&entry_y);
         assert!(reader.download_status(&entry_y).is_some());
         assert_ne!(reader.plugin_entries(&y)[0].path, entry_x.path);
+        // 失敗するダウンロードが終わって（保存先のフォルダを作り終えて）から片付ける
+        let ctx = egui::Context::default();
+        for _ in 0..500 {
+            reader.poll_plugins(&ctx);
+            if reader.download_status(&entry_y).is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(reader.download_status(&entry_y), None);
         fs::remove_dir_all(library).unwrap();
     }
 

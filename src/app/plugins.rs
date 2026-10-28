@@ -79,6 +79,8 @@ struct PendingDownload {
 /// ダウンロード中の本
 struct ActiveDownload {
     pending: PendingDownload,
+    /// 始めたときの、ログイン情報の世代
+    generation: u64,
     rx: Receiver<DownloadEvent>,
     received: u64,
     total: Option<u64>,
@@ -114,7 +116,9 @@ pub(super) struct PluginHost {
     /// プラグインごとの、いま使っているアカウント（一覧の答えから作った短い値。答えに無ければ None）
     accounts: HashMap<String, Option<String>>,
     /// 許可のページの URL を作ってもらっているプラグインと、その答え
-    auth_pending: Option<(String, Receiver<PluginAnswer<String>>)>,
+    auth_pending: Option<(String, u64, Receiver<PluginAnswer<String>>)>,
+    /// プラグインごとの、ログイン情報の世代。設定画面でログイン情報を変えるたびに進める
+    generations: HashMap<String, u64>,
 }
 
 impl PluginHost {
@@ -151,6 +155,7 @@ impl PluginHost {
             auth_pending: None,
             owners: HashMap::new(),
             accounts: HashMap::new(),
+            generations: HashMap::new(),
         }
     }
 
@@ -207,6 +212,18 @@ impl PluginHost {
         }
     }
 
+    fn generation(&self, plugin: &str) -> u64 {
+        self.generations.get(plugin).copied().unwrap_or(0)
+    }
+
+    /// 処理を始めたときと同じ世代のログイン情報なら、プラグインが返した値を保存する
+    /// （切り替える前に始めた処理が、新しいログイン情報を上書きしたり消したりしないように）
+    fn apply_store_from(&mut self, plugin: &str, generation: u64, store: Store) {
+        if generation == self.generation(plugin) {
+            self.apply_store(plugin, store);
+        }
+    }
+
     /// ログイン情報を消す。消せなければ設定画面で知らせる（消せるまで、起動しているあいだは使わない）。
     /// 消したあとの保存の状態を返す
     fn delete_credential(&mut self, plugin: &str, key: &str) -> Option<Stored> {
@@ -242,12 +259,31 @@ impl PluginHost {
             .or_else(|| self.owners.get(plugin)?.get(path).cloned())
     }
 
-    /// 本を置く場所。別の本が使っていれば、印を付けた場所にする
-    fn resolve_path(&self, plugin: &str, owner: &Owner, path: &Path) -> PathBuf {
-        match self.path_owner(plugin, path) {
-            Some(other) if &other != owner => with_marker(path, owner),
-            _ => path.to_path_buf(),
-        }
+    /// 本を置く場所。その本の場所か、まだ何も無い場所を使う。別の本が使っている場所や、
+    /// 記録の無いファイル（記録を始める前の版でダウンロードしたものなど。どの本かわからない）の場所、
+    /// `used` の場所は使わず、印を付けた場所を順に確かめる（もとのファイルは消さない）
+    fn resolve_path(
+        &self,
+        plugin: &str,
+        owner: &Owner,
+        path: &Path,
+        used: &HashSet<PathBuf>,
+    ) -> PathBuf {
+        let usable = |candidate: &PathBuf| {
+            !used.contains(candidate)
+                && match self.path_owner(plugin, candidate) {
+                    Some(other) => &other == owner,
+                    None => !candidate.exists(),
+                }
+        };
+        (0..MARKER_TRIES)
+            .map(|round| match round {
+                0 => path.to_path_buf(),
+                round => with_marker(path, owner, round),
+            })
+            .find(usable)
+            // 印を変えても埋まっていれば（まず起きない）、確かめていない場所ではなく、まだ試していない印にする
+            .unwrap_or_else(|| with_marker(path, owner, MARKER_TRIES))
     }
 
     /// プラグインのためておいた一覧（`keep` のフォルダのものは残す）と、待っているダウンロードを捨てる。
@@ -263,6 +299,7 @@ impl PluginHost {
 
     /// ログイン情報が変わった（別のアカウントになったかもしれない）。次に一覧を取るまで、アカウントはわからないものとする
     fn forget_account(&mut self, plugin: &str) {
+        *self.generations.entry(plugin.to_owned()).or_default() += 1;
         self.accounts.remove(plugin);
         self.drop_account_data(plugin, None);
     }
@@ -288,12 +325,19 @@ fn account_key(account: &str) -> String {
     cover_cache_name(account)
 }
 
-/// 置く場所に、持ち主から作った短い印を付ける（"a.zip" → "a~1b2c3d4e.zip"）
-fn with_marker(path: &Path, owner: &Owner) -> PathBuf {
-    let source = match &owner.account {
+/// 印を変えて置く場所を探す回数
+const MARKER_TRIES: u32 = 16;
+
+/// 置く場所に、持ち主から作った短い印を付ける（"a.zip" → "a~1b2c3d4e.zip"）。
+/// `round` が 2 からは、その場所も埋まっていたときの別の印
+fn with_marker(path: &Path, owner: &Owner, round: u32) -> PathBuf {
+    let mut source = match &owner.account {
         Some(account) => format!("{account}\n{}", owner.id),
         None => owner.id.clone(),
     };
+    if round > 1 {
+        source.push_str(&format!("\n{round}"));
+    }
     let marker = &cover_cache_name(&source)[..8];
     let stem = path
         .file_stem()
@@ -409,11 +453,7 @@ impl MangaReader {
                 let mut path = local_path(&library, &key.0, &book.file_name);
                 if !book.folder {
                     let owner = self.plugins.owner(&key.0, &book.id);
-                    path = if used.contains(&path) {
-                        with_marker(&path, &owner)
-                    } else {
-                        self.plugins.resolve_path(&key.0, &owner, &path)
-                    };
+                    path = self.plugins.resolve_path(&key.0, &owner, &path, &used);
                 }
                 used.insert(path.clone());
                 (book, path)
@@ -516,7 +556,7 @@ impl MangaReader {
             Some(remote) if !entry.is_folder => {
                 let owner = self.plugins.owner(&remote.plugin, &remote.id);
                 self.plugins
-                    .resolve_path(&remote.plugin, &owner, &entry.path)
+                    .resolve_path(&remote.plugin, &owner, &entry.path, &HashSet::new())
             }
             _ => entry.path.clone(),
         }
@@ -581,6 +621,7 @@ impl MangaReader {
             pending.dest.clone(),
         );
         self.plugins.active = Some(ActiveDownload {
+            generation: self.plugins.generation(&pending.plugin),
             pending,
             rx,
             received: 0,
@@ -680,8 +721,8 @@ impl MangaReader {
                 }
             }
             if !store.is_empty() {
-                let plugin = active.pending.plugin.clone();
-                self.plugins.apply_store(&plugin, store);
+                let (plugin, generation) = (active.pending.plugin.clone(), active.generation);
+                self.plugins.apply_store_from(&plugin, generation, store);
             }
         }
         if let Some(result) = finished
@@ -731,7 +772,8 @@ impl MangaReader {
         std::thread::spawn(move || {
             let _ = tx.send(auth_url(&worker_manifest, &credentials));
         });
-        self.plugins.auth_pending = Some((manifest.id.clone(), rx));
+        let generation = self.plugins.generation(&manifest.id);
+        self.plugins.auth_pending = Some((manifest.id.clone(), generation, rx));
         self.plugins
             .auth_message
             .insert(manifest.id.clone(), tr("plugin.auth_preparing").to_owned());
@@ -740,7 +782,7 @@ impl MangaReader {
     /// 許可のページの URL が届いたら、プラグインが返した値（PKCE の検証用の値など）を保存し、
     /// ブラウザで開く。届くまでは true
     fn poll_plugin_auth(&mut self) -> bool {
-        let Some((plugin, rx)) = &self.plugins.auth_pending else {
+        let Some((plugin, generation, rx)) = &self.plugins.auth_pending else {
             return false;
         };
         let (result, store) = match rx.try_recv() {
@@ -751,8 +793,13 @@ impl MangaReader {
                 Store::new(),
             ),
         };
-        let plugin = plugin.clone();
+        let (plugin, generation) = (plugin.clone(), *generation);
         self.plugins.auth_pending = None;
+        if generation != self.plugins.generation(&plugin) {
+            // 待っているあいだにログイン情報が変わった。古いログイン情報で作ったページは開かない
+            self.plugins.auth_message.remove(&plugin);
+            return false;
+        }
         self.plugins.apply_store(&plugin, store);
         let message = match result {
             Ok(url) => match open_in_browser(&url) {
@@ -941,5 +988,37 @@ mod tests {
         assert_eq!(host.delete_credential("d", "auth_code"), None);
         assert!(!host.auth_message.contains_key("d"));
         assert!(store.values.borrow().is_empty());
+    }
+
+    /// ログイン情報を変える前に始めた処理が返した値は、新しいログイン情報に混ぜない
+    #[test]
+    fn values_from_work_started_before_a_credential_change_are_ignored() {
+        let mut host = PluginHost::with(
+            Vec::new(),
+            Credentials::memory_only(),
+            std::env::temp_dir().join(format!("manga-generation-{}", std::process::id())),
+        );
+        let old = host.generation("d");
+        // B のログイン情報を入れた
+        host.credentials.set("d", "auth_code", "code-b");
+        host.forget_account("d");
+        // A のときに始めたダウンロードが、トークンを取り替えて保存を頼んできた
+        let store = Store::from([
+            ("refresh_token".to_owned(), "token-a".to_owned()),
+            ("auth_code".to_owned(), String::new()),
+        ]);
+        host.apply_store_from("d", old, store.clone());
+        assert_eq!(host.credentials.get("d", "refresh_token"), None);
+        assert_eq!(
+            host.credentials.get("d", "auth_code").as_deref(),
+            Some("code-b")
+        );
+        // 新しい世代で始めた処理の値は保存する
+        let current = host.generation("d");
+        host.apply_store_from("d", current, store);
+        assert_eq!(
+            host.credentials.get("d", "refresh_token").as_deref(),
+            Some("token-a")
+        );
     }
 }
