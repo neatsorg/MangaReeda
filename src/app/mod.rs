@@ -415,10 +415,11 @@ mod tests {
 
     impl Drop for TestPages {
         fn drop(&mut self) {
-            for file in fs::read_dir(&self.0).unwrap().flatten() {
-                fs::remove_file(file.path()).unwrap();
+            let removed = fs::remove_dir_all(&self.0);
+            // テストが失敗して片付けの途中なら、ここでは止めない（二重のパニックでテスト全体が止まらないように）
+            if !std::thread::panicking() {
+                removed.unwrap();
             }
-            fs::remove_dir(&self.0).unwrap();
         }
     }
 
@@ -2464,7 +2465,8 @@ esac
         asking.answer_subfolder_question(Some(true), &ctx);
         assert_eq!(asking.zip_path, Some(pages.0.clone()));
         assert_eq!(asking.image_files.len(), 3);
-        assert!(asking.image_files[2].ends_with("vol1/000.png"));
+        // 区切りは OS によって違う（Windows は "\\"）ので、パスの部品で比べる
+        assert!(std::path::Path::new(&asking.image_files[2]).ends_with("vol1/000.png"));
 
         // 覚えた選択に従い、次からは聞かない
         asking.open_source(pages.0.clone(), &ctx);

@@ -322,11 +322,12 @@ mod tests {
                 .images
                 .iter()
                 .map(|p| {
+                    // 区切りは OS によって違う（Windows は "\\"）ので、"/" にそろえて比べる
                     Path::new(p)
                         .strip_prefix(&dir.0)
                         .unwrap()
                         .to_string_lossy()
-                        .to_string()
+                        .replace('\\', "/")
                 })
                 .collect();
             images.sort();
