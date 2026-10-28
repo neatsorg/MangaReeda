@@ -1052,6 +1052,10 @@ impl MangaReader {
                                     .changed()
                                 {
                                     self.save_settings();
+                                    // 自動ページ送りの間隔でもあるので、送っている途中なら次の時刻を決め直す
+                                    if self.auto_scroll_enabled {
+                                        self.schedule_auto_scroll(ui.ctx());
+                                    }
                                 }
                                 ui.spacing_mut().slider_width = previous_slider_width;
                                 let previous_slider_width = ui.spacing().slider_width;

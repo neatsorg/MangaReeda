@@ -1,8 +1,7 @@
 // このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
 
 use super::{
-    AUTO_SCROLL_MAX_DELAY_MS, AUTO_SCROLL_MIN_DELAY_MS, FULLSCREEN_TITLE_BAR_HEIGHT,
-    FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT, MENU_BAR_HEIGHT, MangaReader,
+    FULLSCREEN_TITLE_BAR_HEIGHT, FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT, MENU_BAR_HEIGHT, MangaReader,
 };
 use crate::engine::thumbnail::ThumbnailMode;
 use crate::localize::tr;
@@ -321,46 +320,6 @@ impl MangaReader {
                             }
 
                             ui.separator();
-                            let auto_scroll_label = if self.auto_scroll_enabled {
-                                "⏸"
-                            } else {
-                                "▶"
-                            };
-                            let auto_scroll_tooltip = if self.auto_scroll_enabled {
-                                tr("toolbar.auto_scroll_stop")
-                            } else {
-                                tr("toolbar.auto_scroll_start")
-                            };
-                            if ui
-                                .add_enabled(
-                                    !self.image_files.is_empty(),
-                                    egui::Button::new(auto_scroll_label),
-                                )
-                                .on_hover_text(auto_scroll_tooltip)
-                                .clicked()
-                            {
-                                self.toggle_auto_scroll(ctx);
-                            }
-
-                            let mut auto_scroll_delay_ms = self.auto_scroll_delay_ms();
-                            let delay_slider = egui::Slider::new(
-                                &mut auto_scroll_delay_ms,
-                                AUTO_SCROLL_MIN_DELAY_MS..=AUTO_SCROLL_MAX_DELAY_MS,
-                            )
-                            .text(tr("toolbar.auto_scroll_delay"));
-                            let delay_response = ui.add_sized(
-                                [180.0 * toolbar_scale, ui.spacing().interact_size.y],
-                                delay_slider,
-                            );
-                            if delay_response.changed() {
-                                self.config.image_delay = auto_scroll_delay_ms;
-                                self.save_settings();
-                                if self.auto_scroll_enabled {
-                                    self.schedule_auto_scroll(ctx);
-                                }
-                            }
-                            delay_response.on_hover_text(tr("toolbar.auto_scroll_delay.tooltip"));
-
                             if ui
                                 .add_enabled(!self.image_files.is_empty(), egui::Button::new("↻"))
                                 .on_hover_text(tr("toolbar.reload_current_image.tooltip"))
@@ -370,33 +329,33 @@ impl MangaReader {
                             }
 
                             ui.separator();
-                            // --- THE SLIDER ---
-                            // We use a 1-based slider for better user experience
-                            let mut page_val = self.current_index + 1;
+                            // シークバー。右端の ⚙ とページの値を置いた残りの幅いっぱいに広げる
+                            // （ページ数が多い冊でも、細かく動かせるように）
                             let max_pages = self.image_files.len().max(1);
-
-                            // ui.available_width() ensures the slider stretches to fill the gap
-                            let slider_width = ui.available_width() / 3.0; // Reserve space for right-side buttons
-
-                            ui.style_mut().spacing.slider_width = slider_width;
-
-                            let slider = ui.add(
-                                egui::Slider::new(&mut page_val, 1..=max_pages)
-                                    .show_value(true)
-                                    .text(format!("/ {}", max_pages)),
-                            );
-                            self.is_scrubbing = slider.dragged();
-                            if slider.changed() {
-                                // ほかのページ移動と同じく、分割表示の半分などの状態も戻す
-                                self.go_to_page(page_val - 1, ctx);
-                            }
-
+                            let mut page_val = (self.current_index + 1).min(max_pages);
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if ui.button("⚙").on_hover_text(tr("settings.title")).clicked()
                                     {
                                         self.config.show_settings = !self.config.show_settings;
+                                    }
+                                    ui.label(format!("/ {max_pages}"));
+                                    let typed = ui
+                                        .add(
+                                            egui::DragValue::new(&mut page_val)
+                                                .range(1..=max_pages),
+                                        )
+                                        .changed();
+                                    ui.spacing_mut().slider_width = ui.available_width();
+                                    let slider = ui.add(
+                                        egui::Slider::new(&mut page_val, 1..=max_pages)
+                                            .show_value(false),
+                                    );
+                                    self.is_scrubbing = slider.dragged();
+                                    if typed || slider.changed() {
+                                        // ほかのページ移動と同じく、分割表示の半分などの状態も戻す
+                                        self.go_to_page(page_val - 1, ctx);
                                     }
                                 },
                             );
