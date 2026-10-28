@@ -20,6 +20,8 @@ pub struct BookText {
     pub pages: Vec<String>,
     /// 文字を読めなかったページの数（そのページは探せない）
     pub failed: usize,
+    /// OCR で読んだときは、そのプラグインの id
+    pub ocr: Option<String>,
 }
 
 impl BookText {
@@ -90,6 +92,7 @@ fn load_cache(book: &Path, cache_dir: &Path, pages_key: &str) -> Option<BookText
     Some(BookText {
         pages: cache.pages,
         failed: cache.failed,
+        ocr: cache.source.strip_prefix("ocr:").map(str::to_owned),
     })
 }
 
@@ -135,18 +138,39 @@ fn prune_cache(dir: &Path, limit: usize) {
     }
 }
 
-/// PDF の文字を取り出す（ためておいたものがあればそれを使う）。止められたら None。
-/// 読めなかったページがあれば、ためておかない（次に開いたときにまた取り出す）
+/// PDF の文字を取り出す。止められたら None。`use_cache` なら、ためておいたもの（OCR で読み直したものも）を使う。
+/// 読めなかったページがあれば、ためておかない（次に開いたときにまた取り出す）。
+/// 答えの2つ目は、PDF に埋め込まれた文字があるか
 fn pdf_text(
     pdfium: SharedPdfium,
     book: &Path,
     cache_dir: &Path,
     progress: &TextProgress,
     cancel: &AtomicBool,
-) -> Option<BookText> {
+    use_cache: bool,
+) -> Option<(BookText, bool)> {
     // PDF のページの並びは、ファイルの版で決まる
-    if let Some(text) = load_cache(book, cache_dir, "") {
-        return Some(text);
+    if use_cache && let Some(text) = load_cache(book, cache_dir, "") {
+        if text.ocr.is_none() {
+            let layer = !text.is_empty();
+            return Some((text, layer));
+        }
+        // OCR で読み直したものなら、元に戻せるよう、埋め込まれた文字があるかを調べる（見つかったら止める）
+        let document = pdfium.open(book)?;
+        let mut layer = false;
+        for index in 0..document.page_count() {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            if document
+                .page_text(index)
+                .is_some_and(|page| !page.trim().is_empty())
+            {
+                layer = true;
+                break;
+            }
+        }
+        return Some((text, layer));
     }
     let document = pdfium.open(book)?;
     let count = document.page_count();
@@ -154,6 +178,7 @@ fn pdf_text(
     let mut text = BookText {
         pages: Vec::with_capacity(count),
         failed: 0,
+        ocr: None,
     };
     for index in 0..count {
         if cancel.load(Ordering::Relaxed) {
@@ -169,8 +194,12 @@ fn pdf_text(
     }
     if text.failed == 0 {
         save_cache(book, cache_dir, &text, "pdf", "");
+    } else if !use_cache {
+        // 元に戻すときに読めないページがあれば、OCR の結果も消す（次に開いたときに取り出し直す）
+        let _ = std::fs::remove_file(cache_path(book, cache_dir));
     }
-    Some(text)
+    let layer = !text.is_empty();
+    Some((text, layer))
 }
 
 /// 取り出した本の文字
@@ -180,6 +209,10 @@ pub struct LoadedText {
     pub empty: bool,
     /// 文字を読めなかったページの数
     pub failed: usize,
+    /// OCR で読んだときは、そのプラグインの id
+    pub ocr: Option<String>,
+    /// PDF に埋め込まれた文字がある（OCR の結果から戻せる）
+    pub pdf_layer: bool,
 }
 
 impl LoadedText {
@@ -188,6 +221,8 @@ impl LoadedText {
             index: SearchIndex::new(text),
             empty: text.is_empty(),
             failed: text.failed,
+            ocr: text.ocr.clone(),
+            pdf_layer: false,
         }
     }
 }
@@ -205,11 +240,40 @@ pub fn spawn_book_text(
 ) -> Receiver<Option<LoadedText>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let text = match pdfium {
-            Some(pdfium) => pdf_text(pdfium, &book, &cache_dir, &progress, &cancel),
-            None => Some(load_cache(&book, &cache_dir, &pages.key()).unwrap_or_default()),
+        let loaded = match pdfium {
+            Some(pdfium) => pdf_text(pdfium, &book, &cache_dir, &progress, &cancel, true).map(
+                |(text, layer)| LoadedText {
+                    pdf_layer: layer,
+                    ..LoadedText::new(&text)
+                },
+            ),
+            None => Some(LoadedText::new(
+                &load_cache(&book, &cache_dir, &pages.key()).unwrap_or_default(),
+            )),
         };
-        let _ = tx.send(text.as_ref().map(LoadedText::new));
+        let _ = tx.send(loaded);
+    });
+    rx
+}
+
+/// OCR の結果をやめ、PDF に埋め込まれた文字を取り出し直す（ためておきも置き換える。別のスレッド）
+pub fn spawn_pdf_layer(
+    pdfium: SharedPdfium,
+    book: PathBuf,
+    cache_dir: PathBuf,
+    progress: Arc<TextProgress>,
+    cancel: Arc<AtomicBool>,
+) -> Receiver<Option<LoadedText>> {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let loaded =
+            pdf_text(pdfium, &book, &cache_dir, &progress, &cancel, false).map(|(text, layer)| {
+                LoadedText {
+                    pdf_layer: layer,
+                    ..LoadedText::new(&text)
+                }
+            });
+        let _ = tx.send(loaded);
     });
     rx
 }
@@ -377,6 +441,7 @@ fn ocr_text(
     let text = BookText {
         failed: pages.iter().filter(|page| page.is_none()).count(),
         pages: pages.into_iter().map(Option::unwrap_or_default).collect(),
+        ocr: Some(manifest.id.clone()),
     };
     // 読めなかったページがあっても、読めたページは使えるようにためる（長い時間をかけた結果を捨てない）
     save_cache(
@@ -566,7 +631,11 @@ mod tests {
     }
 
     fn book_text(pages: Vec<String>) -> BookText {
-        BookText { pages, failed: 0 }
+        BookText {
+            pages,
+            failed: 0,
+            ocr: None,
+        }
     }
 
     #[test]
@@ -736,6 +805,44 @@ mod tests {
         assert_eq!(hits[0].page, 1);
         // 2回目は、ためておいたものを使う
         assert!(cache_path(&book, &dir.join("cache")).is_file());
+        // OCR で読み直したものは、埋め込まれた文字があることも知らせ、元に戻せる
+        let ocr = book_text(vec!["x".to_owned(), "y".to_owned()]);
+        save_cache(&book, &dir.join("cache"), &ocr, "ocr:fake", "");
+        let pages = || PageSource {
+            mode: SourceMode::Pdf,
+            root: book.clone(),
+            names: Vec::new(),
+        };
+        let cancel = || Arc::new(AtomicBool::new(false));
+        let loaded = spawn_book_text(
+            Some(pdfium),
+            book.clone(),
+            pages(),
+            dir.join("cache"),
+            Arc::new(TextProgress::default()),
+            cancel(),
+        )
+        .recv()
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (loaded.ocr.as_deref(), loaded.pdf_layer),
+            (Some("fake"), true)
+        );
+        assert!(loaded.index.search("mangareeda", 10).is_empty());
+        let restored = spawn_pdf_layer(
+            pdfium,
+            book.clone(),
+            dir.join("cache"),
+            Arc::new(TextProgress::default()),
+            cancel(),
+        )
+        .recv()
+        .unwrap()
+        .unwrap();
+        assert_eq!(restored.ocr, None);
+        assert_eq!(restored.index.search("mangareeda", 10).len(), 1);
+        assert_eq!(load_cache(&book, &dir.join("cache"), "").unwrap().ocr, None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -911,7 +1018,10 @@ mod tests {
                 names: listing.images,
             }
         };
-        let text = book_text(vec!["一".to_owned(), "二".to_owned()]);
+        let text = BookText {
+            ocr: Some("x".to_owned()),
+            ..book_text(vec!["一".to_owned(), "二".to_owned()])
+        };
         save_cache(&book, &dir, &text, "ocr:x", &source(true).key());
         assert_eq!(load_cache(&book, &dir, &source(true).key()), Some(text));
         // サブフォルダを読まないときは、並びが違う

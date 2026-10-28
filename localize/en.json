@@ -307,6 +307,8 @@
   "search.ocr_failed": "OCR failed",
   "search.no_ocr": "No OCR engine (see docs/plugins.md)",
   "search.ocr_busy": "Another book is being read with OCR. Start after it finishes",
+  "search.ocr_source": "Searching text MangaReeda read with OCR ({engine})",
+  "search.restore_pdf": "Back to the embedded text",
   "search.ocr_done": "Finished reading with OCR: {book}",
   "search.none": "Not found",
   "search.count": "{n} found",

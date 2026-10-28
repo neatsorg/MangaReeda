@@ -307,6 +307,8 @@
   "search.ocr_failed": "OCR で読めませんでした",
   "search.no_ocr": "OCR のエンジンがありません（docs/plugins.md を参照）",
   "search.ocr_busy": "ほかの本を OCR で読んでいます。読み終えてから始めてください",
+  "search.ocr_source": "MangaReeda が OCR（{engine}）で読んだ文字を探しています",
+  "search.restore_pdf": "埋め込まれた文字に戻す",
   "search.ocr_done": "OCR で読み終えました: {book}",
   "search.none": "見つかりません",
   "search.count": "{n} 件",

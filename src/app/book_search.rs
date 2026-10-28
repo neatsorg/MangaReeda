@@ -6,6 +6,7 @@ use super::MangaReader;
 use crate::config::SourceMode;
 use crate::engine::book_text::{
     Hit, LoadedText, PageSource, SearchIndex, TextProgress, spawn_book_ocr, spawn_book_text,
+    spawn_pdf_layer,
 };
 use crate::engine::plugin::{PluginError, PluginManifest};
 use crate::engine::settings_store;
@@ -36,6 +37,10 @@ pub(super) struct BookSearch {
     no_text: bool,
     /// 文字を読めなかったページの数
     failed: usize,
+    /// 探している文字を OCR で読んだときは、そのプラグインの id
+    ocr_source: Option<String>,
+    /// PDF に埋め込まれた文字がある（OCR の結果から戻せる）
+    pdf_layer: bool,
     pub(super) hits: Vec<Hit>,
     /// `hits` を探した語
     searched: String,
@@ -81,6 +86,7 @@ impl BookSearch {
         self.no_text = false;
         self.ocr_error = None;
         self.failed = loaded.failed;
+        self.ocr_source = loaded.ocr;
         self.index = Some(loaded.index);
         self.searched.clear();
     }
@@ -96,7 +102,10 @@ impl BookSearch {
                 match loaded.filter(|loaded| !loaded.empty) {
                     Some(loaded) => {
                         self.failed = loaded.failed;
+                        self.ocr_source = loaded.ocr;
+                        self.pdf_layer = loaded.pdf_layer;
                         self.index = Some(loaded.index);
+                        self.searched.clear();
                     }
                     None => self.no_text = true,
                 }
@@ -201,6 +210,8 @@ impl MangaReader {
             index: None,
             no_text: false,
             failed: 0,
+            ocr_source: None,
+            pdf_layer: false,
             loading: Some(loading),
             ocr_error: None,
             progress,
@@ -264,6 +275,24 @@ impl MangaReader {
             progress,
             cancel,
         });
+    }
+
+    /// OCR の結果をやめ、PDF に埋め込まれた文字に戻す
+    pub(super) fn restore_pdf_layer(&mut self) {
+        let Some(pdfium) = crate::engine::pdf::pdfium() else {
+            return;
+        };
+        let Some(search) = self.book_search.as_mut() else {
+            return;
+        };
+        search.progress = Arc::new(TextProgress::default());
+        search.loading = Some(spawn_pdf_layer(
+            pdfium,
+            search.book.clone(),
+            settings_store::cache_dir(),
+            search.progress.clone(),
+            search.cancel.clone(),
+        ));
     }
 
     /// OCR の知らせを受け取る。検索の窓を閉じていても毎フレーム呼ぶ
@@ -350,6 +379,7 @@ impl MangaReader {
         let mut go = None;
         let mut start_ocr = false;
         let mut stop_ocr = false;
+        let mut restore = false;
         let engine_name = self.ocr_engine().map(|engine| short_name(&engine.name));
         // この本を OCR で読んでいれば、その進み具合。ほかの本を読んでいるか
         let (ocr, other_ocr) = match &self.book_ocr {
@@ -359,6 +389,12 @@ impl MangaReader {
             Some(_) => (None, true),
             None => (None, false),
         };
+        // OCR で読んだ文字を探しているときの、そのエンジンの名前（入っていなければ id）
+        let source_name = self.book_search.as_ref().and_then(|search| {
+            let id = search.ocr_source.as_ref()?;
+            let engine = self.plugins.ocr_engines.iter().find(|e| &e.id == id);
+            Some(short_name(engine.map_or(id, |engine| &engine.name)))
+        });
         let Some(search) = self.book_search.as_mut() else {
             return;
         };
@@ -396,6 +432,22 @@ impl MangaReader {
                     close = true;
                 }
                 ui.label(egui::RichText::new(search.status(ocr.as_deref())).small());
+                // PDF の文字を、MangaReeda の OCR の結果に置き換えているときだけ、元に戻せる
+                if let Some(name) = &source_name
+                    && search.pdf_layer
+                    && ocr.is_none()
+                    && search.loading.is_none()
+                {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(tr("search.ocr_source").replace("{engine}", name))
+                                .small(),
+                        );
+                        if ui.small_button(tr("search.restore_pdf")).clicked() {
+                            restore = true;
+                        }
+                    });
+                }
                 // 文字の層が無い本は、OCR で読める。読んでいるあいだは、やめられる
                 // （読み直しはまれで、前の結果を上書きするので、ツールのメニューから確かめてから行う）
                 if ocr.is_some() {
@@ -436,6 +488,10 @@ impl MangaReader {
             });
         if stop_ocr && let Some(ocr) = &self.book_ocr {
             ocr.cancel.store(true, Ordering::Relaxed);
+        }
+        if restore {
+            self.restore_pdf_layer();
+            return;
         }
         if !open || close {
             self.book_search = None;
