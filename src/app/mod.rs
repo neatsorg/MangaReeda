@@ -81,6 +81,14 @@ pub struct MangaReader {
     image_dimensions: std::collections::HashMap<String, [u32; 2]>,
     /// いまタイトルバーに出している文字
     window_title: String,
+    /// 表紙サムネイルの検索の語
+    shelf_filter: String,
+    /// 検索でしぼって見えなくなった本の表紙（しぼりを緩めたときに作り直さないように）
+    shelf_texture_stash: std::collections::HashMap<PathBuf, egui::TextureHandle>,
+    /// 次のフレームで検索の欄に移る（Ctrl+F）
+    focus_shelf_search: bool,
+    /// IME で、確定前の入力（Preedit）が、前の確定のあとにあったか
+    ime_had_preedit: bool,
     active_animations: [Option<AnimatedPage>; 2],
     active_animation_keys: [Option<String>; 2],
     animated_image_byte_cache: sized_cache::SizedCache<Vec<u8>>,
@@ -194,6 +202,10 @@ impl MangaReader {
             texture_cache: sized_cache::SizedCache::new(TEXTURE_CACHE_BYTES),
             image_dimensions: Default::default(),
             window_title: String::new(),
+            shelf_filter: String::new(),
+            shelf_texture_stash: Default::default(),
+            focus_shelf_search: false,
+            ime_had_preedit: false,
             active_animations: std::array::from_fn(|_| None),
             active_animation_keys: std::array::from_fn(|_| None),
             animated_image_byte_cache: sized_cache::SizedCache::new(ANIMATION_CACHE_BYTES),
@@ -259,10 +271,32 @@ impl MangaReader {
         self.error_msg = Some((msg.to_string(), Instant::now()));
     }
 }
+/// 確定前の入力（Preedit）が無いまま届いた IME の確定を、ふつうの文字の入力にする。
+/// egui の入力欄は、確定前の入力があった位置と今のカーソルが同じときだけ確定を入れるので、
+/// 日本語入力のまま押した空白（fcitx5 などは、確定前の入力なしにすぐ確定する）が捨てられてしまうため
+fn fix_bare_ime_commits(events: &mut [egui::Event], had_preedit: &mut bool) {
+    for event in events.iter_mut() {
+        match event {
+            // 空の確定前の入力（何も入力していないときにも届く）は数えない
+            egui::Event::Ime(egui::ImeEvent::Preedit(text)) if !text.is_empty() => {
+                *had_preedit = true
+            }
+            egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                if !std::mem::take(had_preedit) && !text.is_empty() {
+                    *event = egui::Event::Text(std::mem::take(text));
+                }
+            }
+            egui::Event::Ime(egui::ImeEvent::Disabled) => *had_preedit = false,
+            _ => {}
+        }
+    }
+}
+
 impl eframe::App for MangaReader {
     /// 表紙サムネイルを開いているあいだは、Tab をタブの切り替えに使う。
     /// egui に渡すとメニューやツールバーにフォーカスが移ってしまうので、ここで取り除く
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        fix_bare_ime_commits(&mut raw_input.events, &mut self.ime_had_preedit);
         if self.shelf_source().is_none() {
             return;
         }
@@ -342,6 +376,10 @@ impl eframe::App for MangaReader {
         self.render_toolbar(ctx);
         self.tick_auto_scroll(ctx, action_to_run);
 
+        // 文字を入力している（検索の欄や設定の欄にいる）あいだは、キー操作を受け付けない
+        if ctx.wants_keyboard_input() {
+            action_to_run = MangaAction::None;
+        }
         if self.thumbnails.is_some() {
             // 一覧を開いているあいだは、一覧の切り替え以外の操作を受け付けない
             if !matches!(
@@ -914,6 +952,214 @@ mod tests {
         for path in [a, b] {
             fs::remove_file(path).unwrap();
         }
+    }
+
+    /// 表紙サムネイルは、検索の語で名前をしぼれる（大文字・小文字、全角・半角を区別せず、空白で区切った語をすべて含むもの）
+    #[test]
+    fn cover_thumbnails_can_be_narrowed_by_name() {
+        use super::thumbnails::{ShelfSource, ShelfTab};
+        use std::io::Write;
+        let root = TestPages::new(&[]);
+        let root_path = history::normalize(&root.0);
+        let mut png = Vec::new();
+        image::RgbaImage::new(10, 20)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let names = [
+            "Nausicaa vol1.zip",
+            "Nausicaa vol2.zip",
+            "風の谷 第03巻.zip",
+            "other.zip",
+        ];
+        for name in names {
+            let mut zip = zip::ZipWriter::new(fs::File::create(root_path.join(name)).unwrap());
+            zip.start_file("01.png", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(&png).unwrap();
+            zip.finish().unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            None,
+        );
+        reader.open_source(root_path.join("other.zip"), &ctx);
+        reader.toggle_cover_thumbnails();
+        let shown = |reader: &MangaReader| -> Vec<String> {
+            reader
+                .thumbnails
+                .as_ref()
+                .unwrap()
+                .cover_paths()
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(shown(&reader).len(), 4);
+
+        let narrow = |reader: &mut MangaReader, query: &str| {
+            reader.shelf_filter = query.to_owned();
+            reader.reshow_shelf();
+            shown(reader)
+        };
+        // 全角の英字でも、大文字・小文字が違っても合う
+        assert_eq!(
+            narrow(&mut reader, "ＮＡＵ"),
+            ["Nausicaa vol1.zip", "Nausicaa vol2.zip"]
+        );
+        // 空白で区切った語をすべて含むもの
+        assert_eq!(narrow(&mut reader, "nausicaa 2"), ["Nausicaa vol2.zip"]);
+        assert_eq!(narrow(&mut reader, "第03"), ["風の谷 第03巻.zip"]);
+        assert!(narrow(&mut reader, "none").is_empty());
+        // 検索を消すと、全部に戻る
+        assert_eq!(narrow(&mut reader, "").len(), 4);
+
+        // 別の並びに移ったら、検索は消える
+        narrow(&mut reader, "nausicaa");
+        reader.switch_shelf_tab(ShelfTab::History);
+        assert!(reader.shelf_filter.is_empty());
+        reader.switch_shelf_tab(ShelfTab::Folder);
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Folder(root_path.clone()))
+        );
+        assert_eq!(shown(&reader).len(), 4);
+
+        // キーで: Ctrl+F で検索の欄に移り、打った文字でしぼる
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let frame_with =
+            |reader: &mut MangaReader, events: Vec<egui::Event>, modifiers: egui::Modifiers| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 800.0),
+                    )),
+                    events,
+                    modifiers,
+                    ..Default::default()
+                };
+                let _ = ctx.run(input, |ctx| reader.render_thumbnails(ctx));
+            };
+        let frame = |reader: &mut MangaReader, events: Vec<egui::Event>| {
+            frame_with(reader, events, egui::Modifiers::NONE)
+        };
+        frame_with(
+            &mut reader,
+            vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
+            egui::Modifiers::COMMAND,
+        );
+        frame(&mut reader, vec![]);
+        frame(&mut reader, vec![egui::Event::Text("vol".to_owned())]);
+        assert_eq!(reader.shelf_filter, "vol");
+        assert_eq!(shown(&reader), ["Nausicaa vol1.zip", "Nausicaa vol2.zip"]);
+        // 入力中の Backspace は文字を消すだけで、上のフォルダには移らない
+        frame(
+            &mut reader,
+            vec![key(egui::Key::Backspace, egui::Modifiers::NONE)],
+        );
+        assert_eq!(reader.shelf_filter, "vo");
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Folder(root_path.clone()))
+        );
+        let escape = || vec![key(egui::Key::Escape, egui::Modifiers::NONE)];
+        // 日本語入力のまま押した空白（確定前の入力なしに届く確定）も、区切りとして入る
+        let mut events = vec![egui::Event::Ime(egui::ImeEvent::Commit(
+            "\u{3000}".to_owned(),
+        ))];
+        let mut had_preedit = false;
+        fix_bare_ime_commits(&mut events, &mut had_preedit);
+        assert_eq!(events, [egui::Event::Text("\u{3000}".to_owned())]);
+        let mut events = vec![
+            egui::Event::Ime(egui::ImeEvent::Preedit(String::new())),
+            egui::Event::Ime(egui::ImeEvent::Commit(" ".to_owned())),
+        ];
+        fix_bare_ime_commits(&mut events, &mut had_preedit);
+        assert_eq!(events[1], egui::Event::Text(" ".to_owned()));
+        // 変換した文字（確定前の入力のあとの確定）は、そのまま egui に任せる
+        let mut events = vec![
+            egui::Event::Ime(egui::ImeEvent::Preedit("かぜ".to_owned())),
+            egui::Event::Ime(egui::ImeEvent::Commit("風".to_owned())),
+        ];
+        fix_bare_ime_commits(&mut events, &mut had_preedit);
+        assert_eq!(
+            events[1],
+            egui::Event::Ime(egui::ImeEvent::Commit("風".to_owned()))
+        );
+        assert!(!had_preedit);
+        // 入力中の ↓ で、しぼった一覧に移る。そこでは ←→ で選び、Enter で開く
+        frame(&mut reader, vec![egui::Event::Text("l".to_owned())]);
+        assert_eq!(reader.shelf_filter, "vol");
+        assert_eq!(reader.thumbnails.as_ref().unwrap().selected(), 0);
+        frame(
+            &mut reader,
+            vec![key(egui::Key::ArrowDown, egui::Modifiers::NONE)],
+        );
+        frame(
+            &mut reader,
+            vec![key(egui::Key::ArrowRight, egui::Modifiers::NONE)],
+        );
+        assert_eq!(reader.thumbnails.as_ref().unwrap().selected(), 1);
+        assert_eq!(reader.shelf_filter, "vol");
+        // 欄を離れたあとの文字は、検索に入らない
+        frame(&mut reader, vec![egui::Event::Text("x".to_owned())]);
+        assert_eq!(reader.shelf_filter, "vol");
+        // 検索に戻って、Esc で検索を消す
+        frame_with(
+            &mut reader,
+            vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
+            egui::Modifiers::COMMAND,
+        );
+        frame(&mut reader, vec![]);
+        // Esc は検索を消して欄を離れ、一覧は閉じない
+        frame(&mut reader, escape());
+        assert!(reader.shelf_filter.is_empty());
+        assert_eq!(shown(&reader).len(), 4);
+        assert!(reader.thumbnails.is_some());
+        // 空の欄にいるときの Esc も、欄を離れるだけ
+        frame_with(
+            &mut reader,
+            vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
+            egui::Modifiers::COMMAND,
+        );
+        frame(&mut reader, vec![]);
+        frame(&mut reader, escape());
+        assert!(reader.thumbnails.is_some());
+        // 欄にいなければ、Esc で一覧を閉じる
+        frame(&mut reader, escape());
+        assert!(reader.thumbnails.is_none());
+
+        // 入力して Enter で一覧に移り、もう一度 Enter で選んだ本を開く
+        reader.toggle_cover_thumbnails();
+        frame_with(
+            &mut reader,
+            vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
+            egui::Modifiers::COMMAND,
+        );
+        frame(&mut reader, vec![]);
+        frame(&mut reader, vec![egui::Event::Text("vol2".to_owned())]);
+        frame(
+            &mut reader,
+            vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+        );
+        assert!(reader.thumbnails.is_some());
+        frame(
+            &mut reader,
+            vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+        );
+        assert!(reader.thumbnails.is_none());
+        assert_eq!(reader.zip_path, Some(root_path.join("Nausicaa vol2.zip")));
     }
 
     #[test]

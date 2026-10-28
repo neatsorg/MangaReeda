@@ -345,6 +345,8 @@
   "time.hours_ago": "{n} h ago",
   "time.days_ago": "{n} days ago",
   "shelf.upper": "⬆ Up",
+  "shelf.search": "Search (Ctrl+F)",
+  "shelf.no_match": "Nothing matches the name (Esc clears the search)",
   "shelf.no_books": "No books in this folder",
   "shelf.loose_pages": "Images in this folder ({n})",
   "shelf.back": "⬅ Back",

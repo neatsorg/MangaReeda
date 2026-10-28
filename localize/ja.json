@@ -345,6 +345,8 @@
   "time.hours_ago": "{n}時間前",
   "time.days_ago": "{n}日前",
   "shelf.upper": "⬆ 上のフォルダ",
+  "shelf.search": "検索（Ctrl+F）",
+  "shelf.no_match": "名前に合うものがありません（Esc で検索を消します）",
   "shelf.no_books": "このフォルダには冊がありません",
   "shelf.loose_pages": "このフォルダの画像（{n}枚）",
   "shelf.back": "⬅ 戻る",

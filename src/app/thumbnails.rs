@@ -377,7 +377,19 @@ impl MangaReader {
     }
 
     /// 並べる冊。履歴とお気に入りは、今は無い冊（消したものや外したドライブ）を除く
+    /// 並べるもの。検索の語があれば、名前にすべての語を含むものだけ
     fn shelf_entries(&self, source: &ShelfSource) -> Vec<CoverEntry> {
+        let mut entries = self.unfiltered_shelf_entries(source);
+        if !self.shelf_filter.trim().is_empty() {
+            entries.retain(|entry| {
+                // 「このフォルダの画像」のマスは、検索では出さない
+                entry.loose_pages.is_none() && name_matches(&entry_name(entry), &self.shelf_filter)
+            });
+        }
+        entries
+    }
+
+    fn unfiltered_shelf_entries(&self, source: &ShelfSource) -> Vec<CoverEntry> {
         let paths: Vec<&PathBuf> = match source {
             ShelfSource::Folder(folder) => return folder_shelf(folder),
             ShelfSource::Plugin(id, folder) => {
@@ -496,6 +508,12 @@ impl MangaReader {
             .and_then(position)
             .or_else(|| self.zip_path.as_ref().and_then(position))
             .unwrap_or(0);
+        // 別の並びに移ったら、検索を消す。同じ並びをしぼり直すときは、しぼって見えなくなった本の表紙も使う
+        let same_source = self.shelf_source().is_some_and(|showing| showing == source);
+        if !same_source {
+            self.shelf_filter.clear();
+            self.shelf_texture_stash.clear();
+        }
         let mut made: HashMap<PathBuf, egui::TextureHandle> = self
             .thumbnails
             .take()
@@ -509,10 +527,14 @@ impl MangaReader {
                     .collect()
             })
             .unwrap_or_default();
+        made.extend(std::mem::take(&mut self.shelf_texture_stash));
         let textures: Vec<Option<egui::TextureHandle>> = entries
             .iter()
             .map(|entry| made.remove(&entry.path))
             .collect();
+        if !self.shelf_filter.trim().is_empty() {
+            self.shelf_texture_stash = made;
+        }
         let loading: Vec<usize> = (0..entries.len())
             .filter(|&index| textures[index].is_none())
             .collect();
@@ -887,6 +909,7 @@ impl MangaReader {
         let mut go_up = false;
         let mut go_back = false;
         let mut refresh = false;
+        let mut filter_changed = false;
         let tabs: Vec<(ShelfTab, String)> = self
             .shelf_tabs()
             .into_iter()
@@ -956,6 +979,7 @@ impl MangaReader {
                             i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)
                                 || i.pointer.button_clicked(egui::PointerButton::Extra1),
                             i.key_pressed(egui::Key::F5),
+                            i.modifiers.command && i.key_pressed(egui::Key::F),
                         ),
                         i.smooth_scroll_delta.y,
                         i.pointer.hover_pos(),
@@ -963,7 +987,8 @@ impl MangaReader {
                         i.pointer.primary_clicked(),
                     )
                 });
-                let (mut directions, enter, escape, backspace, delete, back, f5) = keys;
+                let (mut directions, mut enter, escape, mut backspace, mut delete, back, f5, find) =
+                    keys;
                 let tab_key = self.pending_shelf_tab.take();
                 close = escape;
 
@@ -971,6 +996,52 @@ impl MangaReader {
                     let tab_rect =
                         egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_HEIGHT));
                     rect.min.y += TAB_HEIGHT;
+                    // 右端に検索の欄。1文字ごとに並びをしぼる
+                    let search_width = (tab_rect.width() * 0.25).clamp(120.0, 260.0);
+                    let search_rect = egui::Rect::from_min_max(
+                        egui::pos2(tab_rect.right() - search_width - 6.0, tab_rect.top() + 4.0),
+                        egui::pos2(tab_rect.right() - 6.0, tab_rect.bottom() - 4.0),
+                    );
+                    let tab_rect = egui::Rect::from_min_max(
+                        tab_rect.min,
+                        egui::pos2(search_rect.left() - 6.0, tab_rect.bottom()),
+                    );
+                    let search = ui.put(
+                        search_rect,
+                        egui::TextEdit::singleline(&mut self.shelf_filter)
+                            .hint_text(tr("shelf.search"))
+                            .desired_width(search_rect.width()),
+                    );
+                    if find || std::mem::take(&mut self.focus_shelf_search) {
+                        search.request_focus();
+                    }
+                    filter_changed = search.changed();
+                    let submitted = search.lost_focus() && enter;
+                    if search.has_focus() || submitted {
+                        // 入力しているあいだのキーは、文字の入力に使う。↓ か Enter で、しぼった一覧に移る
+                        // （そこで ↑↓←→ で選び、Enter で開く。検索に戻るのは Ctrl+F かクリック）
+                        if submitted || directions.contains(&Direction::Down) {
+                            search.surrender_focus();
+                        }
+                        directions.clear();
+                        enter = false;
+                        backspace = false;
+                        delete = false;
+                    }
+                    // Esc は、検索を消して欄を離れる（一覧は閉じない）。欄にいなくても、検索があれば消す。
+                    // どちらも無ければ一覧を閉じる
+                    if escape
+                        && (search.has_focus()
+                            || search.lost_focus()
+                            || !self.shelf_filter.is_empty())
+                    {
+                        close = false;
+                        search.surrender_focus();
+                        if !self.shelf_filter.is_empty() {
+                            self.shelf_filter.clear();
+                            filter_changed = true;
+                        }
+                    }
                     if let Some(backward) = tab_key {
                         let position = tabs.iter().position(|(t, _)| *t == active).unwrap_or(0);
                         let step = if backward { tabs.len() - 1 } else { 1 };
@@ -1013,6 +1084,9 @@ impl MangaReader {
                     go_up |= backspace && can_go_up;
                     if count == 0 {
                         let message = match source {
+                            _ if !self.shelf_filter.trim().is_empty() => {
+                                tr("shelf.no_match").to_owned()
+                            }
                             ShelfSource::Folder(_) => tr("shelf.no_books").to_owned(),
                             ShelfSource::History => tr("shelf.no_history").to_owned(),
                             ShelfSource::Favorites => tr("shelf.no_favorites").to_owned(),
@@ -1270,6 +1344,14 @@ impl MangaReader {
                     egui::Color32::WHITE,
                 );
             });
+        if filter_changed && chosen.is_none() {
+            self.reshow_shelf();
+            // しぼり直したら、しぼった結果の最初の本を選ぶ
+            if let Some(view) = self.thumbnails.as_mut() {
+                view.selected = 0;
+                view.scroll = 0.0;
+            }
+        }
         if let Some(index) = chosen {
             self.choose_thumbnail(index, ctx);
         } else if close {
@@ -1504,4 +1586,35 @@ fn paint_folder_badge(painter: &egui::Painter, image: egui::Rect) {
     let backing = egui::Rect::from_min_size(image.max - size - egui::vec2(4.0, 4.0), size);
     painter.rect_filled(backing, 4.0, egui::Color32::from_black_alpha(170));
     paint_folder(painter, backing.shrink2(size * egui::vec2(0.15, 0.18)));
+}
+
+/// 検索で比べる名前。プラグインの本は書名、ほかはファイル名
+fn entry_name(entry: &CoverEntry) -> String {
+    match &entry.remote {
+        Some(remote) => remote.title.clone(),
+        None => entry
+            .path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+    }
+}
+
+/// 比べやすい形にする。大文字・小文字と、全角・半角の英数字や記号を区別しない
+fn fold_for_search(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\u{3000}' => ' ',
+            '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+            c => c,
+        })
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// `name` が、`query` を空白で区切ったすべての語を含むか
+fn name_matches(name: &str, query: &str) -> bool {
+    let name = fold_for_search(name);
+    fold_for_search(query)
+        .split_whitespace()
+        .all(|word| name.contains(word))
 }
