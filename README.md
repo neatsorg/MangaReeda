@@ -43,6 +43,16 @@ cargo build --release --workspace
 ./target/release/mangareeda [開くファイルやフォルダ]
 ```
 
+Windows では、Visual Studio（C++ のビルドツール）と [vcpkg](https://github.com/microsoft/vcpkg) で入れた dav1d を使います。`.cargo.win` を `.cargo` という名前で写すと、vcpkg の pkg-config を使うようになります。
+
+```bat
+rem vcpkg を C:\vcpkg に入れた例
+C:\vcpkg\vcpkg install dav1d:x64-windows pkgconf:x64-windows
+set VCPKG_ROOT=C:\vcpkg
+xcopy /e /i .cargo.win .cargo
+cargo build --release --workspace
+```
+
 `--workspace` を付けると、BOOKSCAN・Dropbox・Google Drive のプラグイン（`mangareeda-bookscan`、`mangareeda-dropbox`、`mangareeda-gdrive`）も同じフォルダにできます。要らなければ外してください。
 
 PDF を開くには `libpdfium.so` が必要です。実行ファイルと同じフォルダ、システムのライブラリの順に探します（安全のため、カレントディレクトリは探しません。Windows では、同梱の `pdfium.dll` を実行ファイルと同じフォルダからだけ読みます）。見つからない場合は、PDF を開こうとしたときにメッセージを表示します（PDF 以外には影響しません）。
@@ -111,6 +121,16 @@ sudo pacman -S --needed base-devel rust dav1d
 
 cargo build --release --workspace
 ./target/release/mangareeda [file or folder to open]
+```
+
+On Windows, use Visual Studio (C++ build tools) and dav1d installed with [vcpkg](https://github.com/microsoft/vcpkg). Copying `.cargo.win` to `.cargo` makes the build use vcpkg's pkg-config.
+
+```bat
+rem with vcpkg in C:\vcpkg
+C:\vcpkg\vcpkg install dav1d:x64-windows pkgconf:x64-windows
+set VCPKG_ROOT=C:\vcpkg
+xcopy /e /i .cargo.win .cargo
+cargo build --release --workspace
 ```
 
 `--workspace` also builds the BOOKSCAN, Dropbox and Google Drive plugins (`mangareeda-bookscan`, `mangareeda-dropbox`, `mangareeda-gdrive`) next to the viewer. Leave it out if you do not need them.
