@@ -297,7 +297,7 @@
   "menu.move.upper": "Upper Folder (Cover Thumbnails)",
   "menu.move.search": "Search in Book (Ctrl+F)",
   "search.title": "Search in Book",
-  "search.hint": "Words to find (Enter for next)",
+  "search.hint": "Words to find (Enter for next, Shift+Enter for previous)",
   "search.loading": "Reading the text… {done}/{total}",
   "search.no_text": "This book has no text",
   "search.failed": "({n} pages could not be read)",

@@ -297,7 +297,7 @@
   "menu.move.upper": "上のフォルダへ（表紙サムネイル）",
   "menu.move.search": "本の中を検索（Ctrl+F）",
   "search.title": "本の中を検索",
-  "search.hint": "探す語（Enter で次へ）",
+  "search.hint": "探す語（Enter で次へ、Shift+Enter で前へ）",
   "search.loading": "文字を読み込んでいます… {done}/{total}",
   "search.no_text": "この本には文字の情報がありません",
   "search.failed": "（{n} ページの文字を読めませんでした）",

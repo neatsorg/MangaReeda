@@ -414,18 +414,16 @@ impl MangaReader {
                 if std::mem::take(&mut search.focus) {
                     field.request_focus();
                 }
-                let (enter, escape) = ui.input(|i| {
+                let (enter, back, escape) = ui.input(|i| {
                     (
                         i.key_pressed(egui::Key::Enter),
+                        i.modifiers.shift,
                         i.key_pressed(egui::Key::Escape),
                     )
                 });
-                // 入力欄で Enter: 次に見つかったところへ。Esc: 閉じる
+                // 入力欄で Enter: 次に見つかったところへ。Shift+Enter: 前へ。Esc: 閉じる
                 if field.lost_focus() && enter && !search.hits.is_empty() {
-                    let next = search
-                        .selected
-                        .map_or(0, |selected| (selected + 1) % search.hits.len());
-                    go = Some(next);
+                    go = Some(step(search.selected, search.hits.len(), back));
                     field.request_focus();
                 }
                 if escape && (field.has_focus() || field.lost_focus()) {
@@ -512,6 +510,16 @@ impl MangaReader {
     }
 }
 
+/// Enter で移る先。`back` なら前へ。端まで行ったら反対の端に戻る。まだ選んでいなければ、最初か最後
+fn step(selected: Option<usize>, count: usize, back: bool) -> usize {
+    match (selected, back) {
+        (None, false) => 0,
+        (None, true) => count - 1,
+        (Some(selected), false) => (selected + 1) % count,
+        (Some(selected), true) => (selected + count - 1) % count,
+    }
+}
+
 /// 窓に出すエンジンの名前。長すぎる名前は切る
 pub(super) fn short_name(name: &str) -> String {
     const MAX: usize = 40;
@@ -519,5 +527,19 @@ pub(super) fn short_name(name: &str) -> String {
         name.to_owned()
     } else {
         name.chars().take(MAX - 1).collect::<String>() + "…"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::step;
+
+    #[test]
+    fn enter_moves_forward_and_shift_enter_backward_around_the_ends() {
+        assert_eq!(step(None, 3, false), 0);
+        assert_eq!(step(None, 3, true), 2);
+        assert_eq!(step(Some(2), 3, false), 0);
+        assert_eq!(step(Some(0), 3, true), 2);
+        assert_eq!(step(Some(1), 3, true), 0);
     }
 }
