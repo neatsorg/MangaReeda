@@ -449,6 +449,8 @@ impl eframe::App for MangaReader {
         // OCR のプラグインを止め、作業用の画像を消し終えるのを待つ
         if let Some(ocr) = self.book_ocr.take() {
             ocr.stop_and_wait(std::time::Duration::from_secs(5));
+            // 待ちきれなかったときも、作業用の画像は残さない
+            crate::engine::book_text::remove_ocr_work(&crate::engine::settings_store::cache_dir());
         }
     }
 }

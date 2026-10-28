@@ -309,6 +309,7 @@
   "search.ocr_busy": "Another book is being read with OCR. Start after it finishes",
   "search.ocr_source": "Searching text MangaReeda read with OCR ({engine})",
   "search.restore_pdf": "Back to the embedded text",
+  "search.restore_failed": "Some pages' embedded text could not be read, so the OCR result is kept",
   "search.ocr_done": "Finished reading with OCR: {book}",
   "search.none": "Not found",
   "search.count": "{n} found",

@@ -192,13 +192,12 @@ fn pdf_text(
         text.pages.push(page.unwrap_or_default());
         progress.done.store(index + 1, Ordering::Relaxed);
     }
-    if text.failed == 0 {
-        save_cache(book, cache_dir, &text, "pdf", "");
-    } else if !use_cache {
-        // 元に戻すときに読めないページがあれば、OCR の結果も消す（次に開いたときに取り出し直す）
-        let _ = std::fs::remove_file(cache_path(book, cache_dir));
-    }
+    // 読めないページがあれば、ためない。元に戻すときは、埋め込まれた文字があるときだけ置き換える
+    // （そうでなければ、ためてある OCR の結果をそのまま残す）
     let layer = !text.is_empty();
+    if text.failed == 0 && (use_cache || layer) {
+        save_cache(book, cache_dir, &text, "pdf", "");
+    }
     Some((text, layer))
 }
 
@@ -256,7 +255,8 @@ pub fn spawn_book_text(
     rx
 }
 
-/// OCR の結果をやめ、PDF に埋め込まれた文字を取り出し直す（ためておきも置き換える。別のスレッド）
+/// OCR の結果をやめ、PDF に埋め込まれた文字を取り出し直す（ためておきも置き換える。別のスレッド）。
+/// 読めないページがあったり文字が無かったりしたら None（ためてある OCR の結果は残す）
 pub fn spawn_pdf_layer(
     pdfium: SharedPdfium,
     book: PathBuf,
@@ -266,12 +266,11 @@ pub fn spawn_pdf_layer(
 ) -> Receiver<Option<LoadedText>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let loaded =
-            pdf_text(pdfium, &book, &cache_dir, &progress, &cancel, false).map(|(text, layer)| {
-                LoadedText {
-                    pdf_layer: layer,
-                    ..LoadedText::new(&text)
-                }
+        let loaded = pdf_text(pdfium, &book, &cache_dir, &progress, &cancel, false)
+            .filter(|(text, layer)| text.failed == 0 && *layer)
+            .map(|(text, layer)| LoadedText {
+                pdf_layer: layer,
+                ..LoadedText::new(&text)
             });
         let _ = tx.send(loaded);
     });
@@ -350,6 +349,19 @@ fn write_ocr_image(
 /// 作業用のフォルダの名前に付ける通し番号
 static OCR_WORK: AtomicUsize = AtomicUsize::new(0);
 
+/// このプロセスが OCR のために作った作業フォルダを消す（終了するときに、後始末を待ちきれなかったぶん）
+pub fn remove_ocr_work(cache_dir: &Path) {
+    let prefix = format!("{}-", std::process::id());
+    let Ok(entries) = std::fs::read_dir(cache_dir.join("ocr-work")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// 本のページを OCR のプラグインで読む。読めなかったページは数え、そういう本はためておかない。
 /// やめたとき（`cancel`）は空の理由の、プラグインが失敗したときはその理由のエラーを返す
 #[allow(clippy::too_many_arguments)]
@@ -396,11 +408,19 @@ fn ocr_text(
         let images: Vec<OcrImage> = batch
             .iter()
             .filter_map(|&page| {
+                // 画像を用意するのにも時間がかかるので、1ページごとに止める印を見る
+                if cancel.load(Ordering::Relaxed) {
+                    return None;
+                }
                 let path = work.join(format!("page-{page:05}.png"));
                 write_ocr_image(source, &mut reader, pdf.as_ref(), page, &path)?;
                 Some(OcrImage { page, path })
             })
             .collect();
+        if cancel.load(Ordering::Relaxed) {
+            let _ = std::fs::remove_dir_all(&work);
+            break;
+        }
         // 今回渡したページで、まだ受け取っていないものだけを受け取る。それ以外が届いたら、結果を使わない
         let sent: HashSet<usize> = images.iter().map(|image| image.page).collect();
         let answer = ocr_images(
@@ -843,6 +863,26 @@ mod tests {
         assert_eq!(restored.ocr, None);
         assert_eq!(restored.index.search("mangareeda", 10).len(), 1);
         assert_eq!(load_cache(&book, &dir.join("cache"), "").unwrap().ocr, None);
+        // 埋め込まれた文字が無ければ戻さず、ためてある OCR の結果を残す
+        // （文字を同じ長さの空白にして、PDF の中の位置をずらさない）
+        let blank = dir.join("blank.pdf");
+        let bytes = String::from_utf8(pdf_with_text())
+            .unwrap()
+            .replace("Hello MangaReeda", &" ".repeat("Hello MangaReeda".len()));
+        std::fs::write(&blank, bytes).unwrap();
+        save_cache(&blank, &dir.join("cache"), &ocr, "ocr:fake", "");
+        let none = spawn_pdf_layer(
+            pdfium,
+            blank.clone(),
+            dir.join("cache"),
+            Arc::new(TextProgress::default()),
+            cancel(),
+        )
+        .recv()
+        .unwrap();
+        assert!(none.is_none());
+        let kept = load_cache(&blank, &dir.join("cache"), "").unwrap();
+        assert_eq!(kept.ocr.as_deref(), Some("fake"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

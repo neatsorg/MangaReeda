@@ -28,7 +28,7 @@ pub(super) struct BookSearch {
     focus: bool,
     index: Option<SearchIndex>,
     loading: Option<Receiver<Option<LoadedText>>>,
-    /// この本の OCR が失敗した理由
+    /// この本の OCR が失敗した理由（埋め込まれた文字に戻せなかったときも）
     ocr_error: Option<String>,
     /// 取り出しの進み具合
     progress: Arc<TextProgress>,
@@ -41,6 +41,8 @@ pub(super) struct BookSearch {
     ocr_source: Option<String>,
     /// PDF に埋め込まれた文字がある（OCR の結果から戻せる）
     pdf_layer: bool,
+    /// 埋め込まれた文字に戻しているところ（`loading` で受け取る）
+    restoring: bool,
     pub(super) hits: Vec<Hit>,
     /// `hits` を探した語
     searched: String,
@@ -99,6 +101,11 @@ impl BookSearch {
         match rx.try_recv() {
             Ok(loaded) => {
                 self.loading = None;
+                // 戻せなかったら、OCR の結果のままにして知らせる
+                if std::mem::take(&mut self.restoring) && loaded.as_ref().is_none_or(|l| l.empty) {
+                    self.ocr_error = Some(tr("search.restore_failed").to_owned());
+                    return false;
+                }
                 match loaded.filter(|loaded| !loaded.empty) {
                     Some(loaded) => {
                         self.failed = loaded.failed;
@@ -114,7 +121,9 @@ impl BookSearch {
             Err(TryRecvError::Empty) => true,
             Err(TryRecvError::Disconnected) => {
                 self.loading = None;
-                self.no_text = true;
+                if !std::mem::take(&mut self.restoring) {
+                    self.no_text = true;
+                }
                 false
             }
         }
@@ -146,7 +155,7 @@ impl BookSearch {
             return progress("search.ocr_reading", ocr);
         }
         if let Some(error) = &self.ocr_error {
-            return format!("{}: {error}", tr("search.ocr_failed"));
+            return error.clone();
         }
         if self.no_text {
             return tr("search.no_text").to_owned();
@@ -212,6 +221,7 @@ impl MangaReader {
             failed: 0,
             ocr_source: None,
             pdf_layer: false,
+            restoring: false,
             loading: Some(loading),
             ocr_error: None,
             progress,
@@ -286,6 +296,8 @@ impl MangaReader {
             return;
         };
         search.progress = Arc::new(TextProgress::default());
+        search.ocr_error = None;
+        search.restoring = true;
         search.loading = Some(spawn_pdf_layer(
             pdfium,
             search.book.clone(),
@@ -338,7 +350,9 @@ impl MangaReader {
                     return;
                 }
                 match search {
-                    Some(search) => search.ocr_error = Some(message.to_owned()),
+                    Some(search) => {
+                        search.ocr_error = Some(format!("{}: {message}", tr("search.ocr_failed")))
+                    }
                     None => self.show_fading_error(&format!(
                         "{} ({name}): {message}",
                         tr("search.ocr_failed")
