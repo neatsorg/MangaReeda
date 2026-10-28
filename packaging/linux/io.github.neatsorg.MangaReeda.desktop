@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=MangaReeda
+GenericName=Manga Viewer
+GenericName[ja]=マンガビューア
+Comment=Read manga and comics in archives, PDFs and folders
+Comment[ja]=書庫・PDF・フォルダのマンガを読むビューア
+Exec="@EXEC@" %f
+Icon=io.github.neatsorg.MangaReeda
+Terminal=false
+Categories=Graphics;Viewer;
+Keywords=manga;comic;viewer;
+MimeType=application/zip;application/vnd.comicbook+zip;application/x-cbz;application/vnd.rar;application/vnd.comicbook-rar;application/x-cbr;application/pdf;
+StartupWMClass=io.github.neatsorg.MangaReeda

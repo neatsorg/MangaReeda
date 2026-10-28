@@ -59,6 +59,13 @@ PDF を開くには `libpdfium.so` が必要です。実行ファイルと同じ
 
 Arch Linux / Manjaro では、AUR の `pdfium-binaries-bin` を入れると `/usr/lib/libpdfium.so` に置かれ、そのまま使えます。ほかの環境では、[pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) の Linux 版を展開し、`lib/libpdfium.so` を実行ファイルと同じフォルダに置いてください。
 
+ランチャーや dock にアイコン付きで出すには、ビルドしたあとに次を実行します。この利用者のアプリケーション一覧（`~/.local/share/applications`）に `.desktop` ファイルとアイコンを入れます。外すときは `--uninstall` を付けます。
+
+```sh
+packaging/linux/install.sh            # target/release/mangareeda を登録する
+packaging/linux/install.sh /path/to/mangareeda   # ほかの場所の実行ファイルを登録する
+```
+
 設定は `~/.config/MangaReeda/settings.json`（`XDG_CONFIG_HOME` があればその下）に保存します。
 
 ## 注意事項
@@ -138,6 +145,13 @@ cargo build --release --workspace
 Opening PDFs needs `libpdfium.so`, looked up next to the executable, then system-wide (never in the working directory, for safety; on Windows, the bundled `pdfium.dll` is loaded only from the executable's folder). Without it, only PDFs are unavailable and a message says so.
 
 On Arch Linux / Manjaro, the AUR package `pdfium-binaries-bin` installs it as `/usr/lib/libpdfium.so`, which works as is. Elsewhere, extract the Linux build from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and put `lib/libpdfium.so` next to the executable.
+
+To show it with its icon in launchers and docks, run the following after building. It installs a `.desktop` file and the icon into your applications (`~/.local/share/applications`); `--uninstall` removes them.
+
+```sh
+packaging/linux/install.sh            # registers target/release/mangareeda
+packaging/linux/install.sh /path/to/mangareeda   # registers an executable elsewhere
+```
 
 Settings are stored in `~/.config/MangaReeda/settings.json` (under `XDG_CONFIG_HOME` when set).
 

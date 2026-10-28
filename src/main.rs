@@ -25,6 +25,9 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            // Linux のランチャーや dock は、この ID と同じ名前の .desktop ファイルからアイコンを探す
+            // （Wayland では、窓に付けたアイコンは使われない）。packaging/linux を参照
+            .with_app_id("io.github.neatsorg.MangaReeda")
             .with_maximized(true)
             .with_decorations(true)
             .with_icon(std::sync::Arc::new(egui::IconData {
