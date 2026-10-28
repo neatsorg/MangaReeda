@@ -213,13 +213,31 @@ fn save_book(
 ) -> Result<(), Failure> {
     let (partial, file) = create_partial(dest)?;
     let result = receive(reader, file, total, &mut progress)
-        .and_then(|received| Ok((std::fs::rename(&partial, dest)?, received)));
+        .and_then(|received| Ok((place(&partial, dest)?, received)));
     match result {
         Ok(((), received)) => progress(received),
         Err(error) => {
             let _ = std::fs::remove_file(&partial);
             Err(error)
         }
+    }
+}
+
+/// 一時ファイルを `dest` に置く。`dest` がすでにあれば置き換えずに失敗する
+/// （ダウンロード中に同じ名前のファイルが置かれたときや、別に起動したアプリが同じ場所に置いたときに、それを消さないように）
+fn place(partial: &Path, dest: &Path) -> Result<(), Failure> {
+    // ハードリンクは、同じ名前があると作れないので、確かめるのと置くのが一度に済む
+    match std::fs::hard_link(partial, dest) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(partial);
+            Ok(())
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(Failure::Other(
+            "保存先に同じ名前のファイルがあるので、置き換えずにやめました".to_owned(),
+        )),
+        // ハードリンクを作れないファイルシステム（FAT など）では、無いのを確かめてから名前を変える
+        Err(_) if !dest.exists() => Ok(std::fs::rename(partial, dest)?),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -398,6 +416,10 @@ mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), b"data");
         assert_eq!(std::fs::read(&other).unwrap(), b"keep");
         assert_eq!(reported, [4]);
+
+        // 保存先にすでにファイルがあれば、置き換えずに失敗し、一時ファイルも残さない
+        assert!(save_book(&mut &b"new"[..], &dest, Some(3), |_| Ok(())).is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"data");
         // 途中で切れたら、本も一時ファイルも残さない
         let cut = dir.join("cut.pdf");
         assert!(save_book(&mut &b"da"[..], &cut, Some(4), |_| Ok(())).is_err());

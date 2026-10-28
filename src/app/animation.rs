@@ -17,6 +17,9 @@ use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+/// 1つのアニメーションで持っておくフレームの合計の大きさ（バイト）の上限
+const MAX_ANIMATION_BYTES: usize = 1024 * 1024 * 1024;
+
 #[derive(Clone)]
 pub(super) struct AnimatedFrame {
     pub(super) image: egui::ColorImage,
@@ -366,17 +369,33 @@ impl MangaReader {
         bytes: Vec<u8>,
         spec: ImageProcessingSpec,
     ) -> Receiver<AnimationDecodeEvent> {
+        Self::spawn_animated_image_worker_within(format, bytes, spec, MAX_ANIMATION_BYTES)
+    }
+
+    /// 2枚目からのフレームを読んで送る。送ったフレームの合計が `limit` バイトを超えるところで読むのをやめ、
+    /// そこまでで再生する（小さなファイルでも、全フレームを展開するとメモリを使い切ることがあるので）
+    fn spawn_animated_image_worker_within(
+        format: AnimatedImageFormat,
+        bytes: Vec<u8>,
+        spec: ImageProcessingSpec,
+        limit: usize,
+    ) -> Receiver<AnimationDecodeEvent> {
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let process_frame = |frame: image::Frame| -> bool {
-                let event = AnimationDecodeEvent::Frame(AnimatedFrame {
-                    delay: Self::frame_delay(&frame),
-                    image: Self::color_image_from_dynamic_with_spec(
-                        DynamicImage::ImageRgba8(frame.into_buffer()),
-                        spec,
-                    ),
-                });
-                tx.send(event).is_ok()
+            let mut total = 0usize;
+            let mut process_frame = |frame: image::Frame| -> bool {
+                let delay = Self::frame_delay(&frame);
+                let image = Self::color_image_from_dynamic_with_spec(
+                    DynamicImage::ImageRgba8(frame.into_buffer()),
+                    spec,
+                );
+                total = total.saturating_add(image.pixels.len() * 4);
+                if total > limit {
+                    let _ = tx.send(AnimationDecodeEvent::Finished);
+                    return false;
+                }
+                tx.send(AnimationDecodeEvent::Frame(AnimatedFrame { image, delay }))
+                    .is_ok()
             };
 
             match format {
@@ -649,5 +668,63 @@ impl MangaReader {
         if let Some(repaint_after) = next_repaint_after {
             ctx.request_repaint_after(repaint_after.max(Duration::from_millis(1)));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ImageSizingMode, ResizeMethod};
+
+    /// フレームの合計が上限を超えるところで読むのをやめ、そこまでのフレームで終わる
+    #[test]
+    fn animations_stop_loading_frames_at_the_memory_limit() {
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            let frames = (0..6u8).map(|i| {
+                image::Frame::new(image::RgbaImage::from_pixel(
+                    10,
+                    10,
+                    image::Rgba([i * 40, 0, 0, 255]),
+                ))
+            });
+            encoder.encode_frames(frames).unwrap();
+        }
+        let spec = ImageProcessingSpec {
+            resize_method: ResizeMethod::None,
+            image_sizing_mode: ImageSizingMode::OriginalSize,
+            transparency_support: false,
+            zoom_factor: 1.0,
+            loupe: false,
+            container_size: [100.0, 100.0],
+        };
+        let decode = |limit| {
+            MangaReader::spawn_animated_image_worker_within(
+                AnimatedImageFormat::Gif,
+                gif.clone(),
+                spec,
+                limit,
+            )
+            .iter()
+            .collect::<Vec<_>>()
+        };
+        let frames = |events: &[AnimationDecodeEvent]| {
+            events
+                .iter()
+                .filter(|event| matches!(event, AnimationDecodeEvent::Frame(_)))
+                .count()
+        };
+        // 1枚目は別に読むので、送られるのは2枚目からの5枚
+        let all = decode(usize::MAX);
+        assert_eq!(frames(&all), 5);
+        assert!(matches!(all.last(), Some(AnimationDecodeEvent::Finished)));
+        // 1フレームは 10×10×4 = 400 バイト。2枚分までしか持たない
+        let limited = decode(800);
+        assert_eq!(frames(&limited), 2);
+        assert!(matches!(
+            limited.last(),
+            Some(AnimationDecodeEvent::Finished)
+        ));
     }
 }

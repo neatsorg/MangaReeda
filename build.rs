@@ -24,7 +24,13 @@ fn main() {
     }
 
     for (file_name, label) in required_files {
-        fs::copy(manifest_dir.join(file_name), target_dir.join(file_name))
+        let dest = target_dir.join(file_name);
+        // settings.json は、初めの一度だけ置く。Windows のインストールしない版は、
+        // 実行ファイルの隣の settings.json に利用者の設定を書くので、ビルドし直すたびに上書きすると消えてしまう
+        if file_name == "settings.json" && dest.exists() {
+            continue;
+        }
+        fs::copy(manifest_dir.join(file_name), dest)
             .unwrap_or_else(|_| panic!("Failed to copy {label} to target directory"));
     }
 }

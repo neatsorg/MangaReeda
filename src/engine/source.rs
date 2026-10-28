@@ -146,6 +146,17 @@ pub fn has_image_subfolders(folder: &Path) -> bool {
     })
 }
 
+/// 1ページ（画像1枚）として読む大きさの上限。書庫の中で小さく圧縮された巨大なデータ（zip 爆弾など）で
+/// メモリを使い切らないように、これを超えるものは読まない
+pub const MAX_PAGE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// `reader` を、`limit` を超えない範囲で読む。超えたら None
+fn read_limited(reader: impl Read, limit: u64) -> Option<Vec<u8>> {
+    let mut buffer = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut buffer).ok()?;
+    (buffer.len() as u64 <= limit).then_some(buffer)
+}
+
 /// Reads page bytes out of a source, keeping a ZIP archive open across reads.
 /// パスは自分で持つので、別スレッドに渡して使える
 pub struct SourceReader {
@@ -173,12 +184,14 @@ impl SourceReader {
     /// `name` is an entry of [`Listing::images`]. PDF pages are rendered, not read.
     pub fn read(&mut self, name: &str) -> Option<Vec<u8>> {
         match self.mode {
-            SourceMode::Folder => fs::read(name).ok(),
+            SourceMode::Folder => read_limited(File::open(name).ok()?, MAX_PAGE_BYTES),
             SourceMode::Zip => {
-                let mut entry = self.zip.as_mut()?.by_name(name).ok()?;
-                let mut buffer = Vec::new();
-                entry.read_to_end(&mut buffer).ok()?;
-                Some(buffer)
+                let entry = self.zip.as_mut()?.by_name(name).ok()?;
+                // 書いてある大きさで先に断り、実際に読む量も上限で切る（大きさの書き込みは偽れるので）
+                if entry.size() > MAX_PAGE_BYTES {
+                    return None;
+                }
+                read_limited(entry, MAX_PAGE_BYTES)
             }
             SourceMode::Rar => read_rar_entry(&self.path, name),
             SourceMode::Pdf => None,
@@ -201,6 +214,10 @@ fn read_rar_entry(path: &Path, name: &str) -> Option<Vec<u8>> {
         let e = cursor?;
         // Entries whose names are not valid UTF-8 can never match
         if e.entry().filename.to_str() == Some(name) {
+            // 展開する前に、書いてある大きさで断る
+            if e.entry().unpacked_size > MAX_PAGE_BYTES {
+                return None;
+            }
             return e.read().ok().map(|(bytes, _arc)| bytes);
         }
         cursor = e
@@ -235,6 +252,16 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// 上限を超える大きさは、途中まで読んで断る（展開しきらない）
+    #[test]
+    fn pages_larger_than_the_limit_are_not_read() {
+        let data = [0u8; 100];
+        assert_eq!(read_limited(&data[..], 100).map(|b| b.len()), Some(100));
+        assert_eq!(read_limited(&data[..], 99), None);
+        // 終わりの無いデータでも、上限の少し先で止まる
+        assert_eq!(read_limited(std::io::repeat(0), 1000), None);
     }
 
     fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
