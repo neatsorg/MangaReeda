@@ -1066,6 +1066,7 @@ mod tests {
             file_name: "same.pdf".to_owned(),
             cover_url: None,
             folder: false,
+            cover_data: None,
         };
         let key = ("p".to_owned(), String::new());
         let mut shelf = super::plugins::PluginShelf::default();
@@ -1126,6 +1127,7 @@ mod tests {
             file_name: file_name.to_owned(),
             cover_url: None,
             folder: false,
+            cover_data: None,
         };
         let set_shelf = |reader: &mut MangaReader, key: &(String, String), books| {
             let mut shelf = super::plugins::PluginShelf::default();

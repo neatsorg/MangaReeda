@@ -64,6 +64,9 @@ struct Book {
     file_name: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     folder: bool,
+    /// 表紙の画像（Drive が作ったサムネイルを base64 にしたもの）。本体が手元に置いて使う
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cover_data: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -471,7 +474,7 @@ fn list(request: &Request, folder: &str) -> Result<(), Failure> {
         let mut path = format!(
             "/files?q={}&fields={}&pageSize=1000",
             percent_encode(&query),
-            percent_encode("nextPageToken,files(id,name,mimeType)")
+            percent_encode("nextPageToken,files(id,name,mimeType,thumbnailLink)")
         );
         if let Some(page) = &page_token {
             path.push_str(&format!("&pageToken={}", percent_encode(page)));
@@ -488,11 +491,109 @@ fn list(request: &Request, folder: &str) -> Result<(), Failure> {
             break;
         }
     }
+    let mut books = books_from_files(&files, &names);
+    let covers = add_covers(&agent, &token, &files, &mut books);
     print(json!({
-        "books": books_from_files(&files, &names),
+        "books": books,
         "parent": parent,
         "account": account,
+        "message": covers.message(),
     }))
+}
+
+/// 表紙を付けた結果
+#[derive(Default, Debug, PartialEq)]
+struct CoverCount {
+    /// 付けた
+    found: usize,
+    /// Drive にサムネイルが無かった
+    missing: usize,
+    /// サムネイルを取れなかった
+    failed: usize,
+}
+
+impl CoverCount {
+    /// 利用者に見せる一言。本が無ければ None
+    fn message(&self) -> Option<String> {
+        let total = self.found + self.missing + self.failed;
+        if total == 0 {
+            return None;
+        }
+        let mut message = format!("表紙 {}/{total} 冊", self.found);
+        if self.missing > 0 {
+            message.push_str(&format!("（Drive にサムネイルが無い {} 冊", self.missing));
+            if self.failed > 0 {
+                message.push_str(&format!("、取れなかった {} 冊", self.failed));
+            }
+            message.push('）');
+        } else if self.failed > 0 {
+            message.push_str(&format!("（取れなかった {} 冊）", self.failed));
+        }
+        Some(message)
+    }
+}
+
+/// 表紙の画像の大きさの上限
+const COVER_LIMIT: u64 = 2 * 1024 * 1024;
+
+/// Drive が作ったサムネイル（PDF など）を取って、本に付ける。サムネイルの URL はすぐ使えなくなり、
+/// 共有していないファイルではログインの情報も要るので、本体ではなくここで取る。取れなければ付けない
+fn add_covers(agent: &Agent, token: &str, files: &[Value], books: &mut [Book]) -> CoverCount {
+    let links: HashMap<&str, &str> = files
+        .iter()
+        .filter_map(|file| {
+            Some((
+                file.get("id")?.as_str()?,
+                file.get("thumbnailLink")?.as_str()?,
+            ))
+        })
+        .collect();
+    let mut count = CoverCount::default();
+    let total = books.iter().filter(|book| !book.folder).count();
+    for (done, book) in books.iter_mut().filter(|book| !book.folder).enumerate() {
+        // 進み具合を知らせる（本体の「更新中」に出る）
+        let _ = print(json!({ "progress": done, "total": total }));
+        let Some(link) = links.get(book.id.as_str()) else {
+            count.missing += 1;
+            continue;
+        };
+        book.cover_data = fetch_cover(agent, token, &thumbnail_size(link, 400));
+        if book.cover_data.is_some() {
+            count.found += 1;
+        } else {
+            count.failed += 1;
+        }
+    }
+    let _ = print(json!({ "progress": total, "total": total }));
+    count
+}
+
+/// サムネイルの URL の大きさの指定（末尾の "=s220" など）を `side` にする
+fn thumbnail_size(link: &str, side: u32) -> String {
+    match link.rsplit_once("=s") {
+        Some((base, size)) if size.chars().all(|c| c.is_ascii_digit()) => {
+            format!("{base}=s{side}")
+        }
+        _ => link.to_owned(),
+    }
+}
+
+fn fetch_cover(agent: &Agent, token: &str, url: &str) -> Option<String> {
+    let mut response = agent
+        .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .call()
+        .ok()?;
+    if response.status() != 200 {
+        return None;
+    }
+    let bytes = response
+        .body_mut()
+        .with_config()
+        .limit(COVER_LIMIT)
+        .read_to_vec()
+        .ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 /// Drive の一覧の項目から、フォルダと本だけを、フォルダを先に名前順で並べる。
@@ -522,6 +623,7 @@ fn books_from_files(files: &[Value], folders: &[String]) -> Vec<Book> {
                 file_name: parts.join("/"),
                 title: name,
                 folder,
+                cover_data: None,
             })
         })
         .collect();
@@ -796,6 +898,7 @@ mod tests {
             title: title.to_owned(),
             file_name: file_name.to_owned(),
             folder,
+            cover_data: None,
         };
         assert_eq!(
             books_from_files(&files, &["Comics".to_owned()]),
@@ -804,6 +907,41 @@ mod tests {
                 book("a1", "a/1.pdf", "Comics/a_1.pdf", false),
                 book("b1", "b.ZIP", "Comics/b.ZIP", false),
             ]
+        );
+    }
+
+    #[test]
+    fn thumbnail_links_ask_for_a_larger_size() {
+        assert_eq!(
+            thumbnail_size("https://lh3.example/abc=s220", 400),
+            "https://lh3.example/abc=s400"
+        );
+        assert_eq!(
+            thumbnail_size("https://example/abc", 400),
+            "https://example/abc"
+        );
+        assert_eq!(
+            thumbnail_size("https://example/a=sx", 400),
+            "https://example/a=sx"
+        );
+    }
+
+    #[test]
+    fn cover_counts_say_why_covers_are_missing() {
+        let count = |found, missing, failed| CoverCount {
+            found,
+            missing,
+            failed,
+        };
+        assert_eq!(count(0, 0, 0).message(), None);
+        assert_eq!(count(3, 0, 0).message().unwrap(), "表紙 3/3 冊");
+        assert_eq!(
+            count(36, 20, 4).message().unwrap(),
+            "表紙 36/60 冊（Drive にサムネイルが無い 20 冊、取れなかった 4 冊）"
+        );
+        assert_eq!(
+            count(1, 0, 2).message().unwrap(),
+            "表紙 1/3 冊（取れなかった 2 冊）"
         );
     }
 

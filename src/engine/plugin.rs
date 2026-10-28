@@ -82,6 +82,36 @@ pub struct RemoteBook {
     /// フォルダなら真。`id` を `list` に渡すと中を返す
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folder: bool,
+    /// 表紙の画像そのもの（base64）。受け取ったら手元に置き、`cover_url` をその名前にする
+    /// （一覧のためておきには入れない）
+    #[serde(default, skip_serializing)]
+    pub cover_data: Option<String>,
+}
+
+/// `cover_data` の画像の大きさの上限
+const COVER_DATA_LIMIT: usize = 2 * 1024 * 1024;
+
+/// 一覧に付いてきた表紙の画像（`cover_data`）を `covers` に置き、その名前を `cover_url` にする。
+/// 名前は http でないので、表紙を作るときに取りに行くことはない（置いたものだけを使う）
+pub fn store_list_covers(plugin: &str, books: &mut [RemoteBook], covers: &Path) {
+    use base64::Engine;
+    for book in books.iter_mut() {
+        let Some(data) = book.cover_data.take() else {
+            continue;
+        };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data.trim()) else {
+            continue;
+        };
+        if bytes.is_empty() || bytes.len() > COVER_DATA_LIMIT {
+            continue;
+        }
+        let key = format!("plugin-cover:{plugin}:{}", book.id);
+        let _ = std::fs::create_dir_all(covers);
+        let path = covers.join(crate::engine::thumbnail::cover_cache_name(&key));
+        if crate::engine::settings_store::write_atomic(&path, &bytes).is_ok() {
+            book.cover_url = Some(key);
+        }
+    }
 }
 
 /// `list` の答え
@@ -94,6 +124,9 @@ pub struct Listing {
     /// いま使っているアカウントを見分ける値。本体は、この値から作った短い値だけを手元に置く
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// 利用者に見せる一言（表紙を取れた数など）。次に取り直すまでタブに出す
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// プラグインが保存してほしい値。空の値は消す
@@ -570,12 +603,32 @@ fn run(
     args: &[&str],
     limit: Duration,
 ) -> (Result<String, PluginError>, Store) {
+    run_reporting(manifest, credentials, args, limit, None)
+}
+
+/// `run` と同じ。進み具合の行（`{"progress": …}`）が届いたら `progress` に入れ、
+/// 動いているとみなして時間の上限を数え直す
+fn run_reporting(
+    manifest: &PluginManifest,
+    credentials: &HashMap<String, String>,
+    args: &[&str],
+    limit: Duration,
+    progress: Option<&ListProgress>,
+) -> (Result<String, PluginError>, Store) {
     let running = match Running::start(manifest, credentials, args, limit) {
         Ok(running) => running,
         Err(error) => return (Err(error), Store::new()),
     };
     let mut output = String::new();
     while let Some(line) = running.next_line() {
+        if let Some(progress) = progress
+            && let Ok(line) = serde_json::from_str::<ProgressLine>(&line)
+        {
+            running.touch();
+            if let Ok(mut progress) = progress.lock() {
+                *progress = Some((line.progress, line.total));
+            }
+        }
         output.push_str(&line);
         output.push('\n');
     }
@@ -629,29 +682,48 @@ fn failure(code: Option<i32>, stderr: &str) -> PluginError {
     }
 }
 
-/// 一覧を取る。`folder` が Some ならそのフォルダの中。終わるまで待つので、別スレッドで呼ぶ
-pub fn list(
+/// 一覧を取っているあいだの進み具合（済んだ数, 全体の数）。プラグインが知らせたときだけ入る
+pub type ListProgress = Arc<Mutex<Option<(u64, Option<u64>)>>>;
+
+/// 一覧の答えと、保存してほしい値
+pub type ListAnswer = (Result<Listing, PluginError>, Store);
+
+/// 一覧を取る。`folder` が Some ならそのフォルダの中。終わるまで待つ（本体は `spawn_list` を使う）
+#[cfg(test)]
+fn list(
     manifest: &PluginManifest,
     credentials: &HashMap<String, String>,
     folder: Option<&str>,
 ) -> (Result<Listing, PluginError>, Store) {
+    list_reporting(manifest, credentials, folder, None)
+}
+
+fn list_reporting(
+    manifest: &PluginManifest,
+    credentials: &HashMap<String, String>,
+    folder: Option<&str>,
+    progress: Option<&ListProgress>,
+) -> (Result<Listing, PluginError>, Store) {
     let mut args = vec!["list"];
     args.extend(folder);
-    let (stdout, store) = run(manifest, credentials, &args, LIST_LIMIT);
+    let (stdout, store) = run_reporting(manifest, credentials, &args, LIST_LIMIT, progress);
     (stdout.and_then(|stdout| last_reply(&stdout)), store)
 }
 
-/// `list` を別スレッドで行う
+/// `list` を別スレッドで行う。進み具合は、返す `ListProgress` で見られる
 pub fn spawn_list(
     manifest: PluginManifest,
     credentials: HashMap<String, String>,
     folder: Option<String>,
-) -> Receiver<(Result<Listing, PluginError>, Store)> {
+) -> (Receiver<ListAnswer>, ListProgress) {
     let (tx, rx) = channel();
+    let progress = ListProgress::default();
+    let reporting = progress.clone();
     thread::spawn(move || {
-        let _ = tx.send(list(&manifest, &credentials, folder.as_deref()));
+        let answer = list_reporting(&manifest, &credentials, folder.as_deref(), Some(&reporting));
+        let _ = tx.send(answer);
     });
-    rx
+    (rx, progress)
 }
 
 #[derive(Deserialize)]
@@ -834,6 +906,51 @@ mod tests {
         std::fs::remove_dir_all(exe).unwrap();
     }
 
+    /// 一覧に付いてきた表紙の画像は手元に置き、一覧のためておきには入れない
+    #[test]
+    fn covers_sent_with_lists_are_stored_and_left_out_of_the_cache() {
+        use base64::Engine;
+        let dir = temp("list-covers");
+        let book = |id: &str, data: Option<&str>| RemoteBook {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            file_name: format!("{id}.pdf"),
+            cover_url: None,
+            folder: false,
+            cover_data: data.map(str::to_owned),
+        };
+        let image = base64::engine::general_purpose::STANDARD.encode(b"image bytes");
+        let mut books = vec![
+            book("a", Some(&image)),
+            book("b", Some("not base64!")),
+            book("c", None),
+        ];
+        store_list_covers("p", &mut books, &dir.join("covers"));
+        let key = "plugin-cover:p:a";
+        assert_eq!(books[0].cover_url.as_deref(), Some(key));
+        assert_eq!(
+            std::fs::read(
+                dir.join("covers")
+                    .join(crate::engine::thumbnail::cover_cache_name(key))
+            )
+            .unwrap(),
+            b"image bytes"
+        );
+        assert_eq!(books[1].cover_url, None);
+        assert!(books.iter().all(|book| book.cover_data.is_none()));
+        // 一覧を読むときは受け取り、ためておくときは書かない
+        let listing: Listing =
+            serde_json::from_str(&format!(r#"{{"books": [{{"id": "x", "title": "x", "file_name": "x.pdf", "cover_data": "{image}"}}]}}"#))
+                .unwrap();
+        assert_eq!(listing.books[0].cover_data.as_deref(), Some(image.as_str()));
+        assert!(
+            !serde_json::to_string(&listing)
+                .unwrap()
+                .contains("cover_data")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn file_names_cannot_leave_the_library() {
         let library = Path::new("/lib");
@@ -960,6 +1077,22 @@ mod tests {
         let (listing, _) = list(&finished, &HashMap::new(), None);
         assert_eq!(listing, Ok(Listing::default()));
         assert!(started.elapsed() < DRAIN_LIMIT, "{:?}", started.elapsed());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 一覧を取るあいだの進み具合と、一覧と一緒に返した一言を受け取る
+    #[cfg(unix)]
+    #[test]
+    fn lists_report_progress_and_a_message() {
+        let dir = temp("list-progress");
+        let plugin = script_plugin(
+            &dir,
+            "read request\necho '{\"progress\": 1, \"total\": 2}'\necho '{\"progress\": 2, \"total\": 2}'\necho '{\"books\": [], \"message\": \"表紙 2/2 冊\"}'\n",
+        );
+        let (rx, progress) = spawn_list(plugin, HashMap::new(), None);
+        let (listing, _) = rx.recv().unwrap();
+        assert_eq!(listing.unwrap().message.as_deref(), Some("表紙 2/2 冊"));
+        assert_eq!(*progress.lock().unwrap(), Some((2, Some(2))));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -2590,6 +2590,7 @@ dependencies = [
 name = "mangareeda"
 version = "0.2.4"
 dependencies = [
+ "base64",
  "eframe",
  "egui",
  "gilrs",

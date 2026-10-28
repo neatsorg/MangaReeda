@@ -6,8 +6,8 @@ use super::MangaReader;
 use super::thumbnails::ShelfSource;
 use crate::engine::credentials::{Credentials, Stored};
 use crate::engine::plugin::{
-    DownloadEvent, ListCache, Listing, PluginError, PluginManifest, RemoteBook, Store, auth_url,
-    local_path, spawn_download, spawn_list,
+    DownloadEvent, ListCache, ListProgress, Listing, PluginError, PluginManifest, RemoteBook,
+    Store, auth_url, local_path, spawn_download, spawn_list, store_list_covers,
 };
 use crate::engine::settings_store;
 use crate::engine::thumbnail::{CoverEntry, RemoteRef, cover_cache_name};
@@ -34,12 +34,25 @@ pub(super) struct PluginShelf {
     /// 一覧を取った日時（UNIX 秒）。0 ならまだ取っていない
     pub(super) fetched_at: u64,
     loading: Option<Receiver<PluginAnswer<Listing>>>,
+    /// 取っているあいだの進み具合
+    progress: Option<ListProgress>,
     pub(super) error: Option<PluginError>,
+    /// プラグインが一覧と一緒に返した一言
+    pub(super) message: Option<String>,
 }
 
 impl PluginShelf {
     pub(super) fn is_loading(&self) -> bool {
         self.loading.is_some()
+    }
+
+    /// 取っているあいだの進み具合（「12/60」）。プラグインが知らせていなければ None
+    pub(super) fn progress_text(&self) -> Option<String> {
+        let (done, total) = (*self.progress.as_ref()?.lock().ok()?)?;
+        Some(match total {
+            Some(total) => format!("{done}/{total}"),
+            None => done.to_string(),
+        })
     }
 }
 
@@ -562,7 +575,9 @@ impl MangaReader {
         let folder = (!key.1.is_empty()).then(|| key.1.clone());
         let shelf = self.plugins.shelves.entry(key.clone()).or_default();
         shelf.error = None;
-        shelf.loading = Some(spawn_list(manifest, credentials, folder));
+        let (loading, progress) = spawn_list(manifest, credentials, folder);
+        shelf.loading = Some(loading);
+        shelf.progress = Some(progress);
     }
 
     /// 一覧の本を、いま置いてある（これから置く）場所。別の本が使っていれば、印を付けた場所
@@ -648,6 +663,7 @@ impl MangaReader {
     /// 一覧とダウンロードの知らせを受け取る。毎フレーム呼ぶ
     pub(super) fn poll_plugins(&mut self, ctx: &egui::Context) {
         let mut busy = false;
+        let covers = self.plugins.cover_cache_dir();
         let mut arrived = Vec::new();
         let mut stores = Vec::new();
         let mut accounts = Vec::new();
@@ -658,9 +674,12 @@ impl MangaReader {
             match rx.try_recv() {
                 Ok((result, store)) => {
                     shelf.loading = None;
+                    shelf.progress = None;
                     stores.push((key.0.clone(), store));
                     match result {
-                        Ok(listing) => {
+                        Ok(mut listing) => {
+                            store_list_covers(&key.0, &mut listing.books, &covers);
+                            shelf.message = listing.message;
                             shelf.books = listing.books;
                             shelf.parent = listing.parent;
                             shelf.fetched_at = unix_now();
@@ -673,7 +692,10 @@ impl MangaReader {
                     arrived.push(key.clone());
                 }
                 Err(TryRecvError::Empty) => busy = true,
-                Err(TryRecvError::Disconnected) => shelf.loading = None,
+                Err(TryRecvError::Disconnected) => {
+                    shelf.loading = None;
+                    shelf.progress = None;
+                }
             }
         }
         for (plugin, store) in stores {

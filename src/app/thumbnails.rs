@@ -904,6 +904,8 @@ impl MangaReader {
                         shelf.is_loading(),
                         shelf.error.clone(),
                         self.plugins.download_error.clone(),
+                        shelf.progress_text(),
+                        shelf.message.clone(),
                     )
                 }),
             _ => None,
@@ -990,7 +992,9 @@ impl MangaReader {
                         can_go_back: !self.shelf_back.is_empty(),
                         can_go_up,
                         refreshing: plugin_state.as_ref().map(|state| state.0),
+                        progress: plugin_state.as_ref().and_then(|state| state.3.clone()),
                         error: plugin_state.as_ref().and_then(|state| state.2.clone()),
+                        message: plugin_state.as_ref().and_then(|state| state.4.clone()),
                     };
                     match draw_shelf_tabs(ui, tab_rect, &strip, pointer.filter(|_| clicked)) {
                         Some(TabClick::Tab(tab)) => tab_to_show = Some(tab),
@@ -1013,11 +1017,11 @@ impl MangaReader {
                             ShelfSource::History => tr("shelf.no_history").to_owned(),
                             ShelfSource::Favorites => tr("shelf.no_favorites").to_owned(),
                             ShelfSource::Plugin(..) => match &plugin_state {
-                                Some((true, _, _)) => tr("plugin.loading").to_owned(),
-                                Some((_, Some(PluginError::Auth(message)), _)) => {
+                                Some((true, ..)) => tr("plugin.loading").to_owned(),
+                                Some((_, Some(PluginError::Auth(message)), ..)) => {
                                     format!("{message}\n{}", tr("plugin.set_credentials"))
                                 }
-                                Some((_, Some(error), _)) => error.message().to_owned(),
+                                Some((_, Some(error), ..)) => error.message().to_owned(),
                                 _ => tr("plugin.no_books").to_owned(),
                             },
                         };
@@ -1330,6 +1334,10 @@ struct TabStrip<'a> {
     can_go_up: bool,
     /// プラグインのタブなら、一覧を更新中か
     refreshing: Option<bool>,
+    /// 更新中の進み具合（「12/60」）
+    progress: Option<String>,
+    /// プラグインが一覧と一緒に返した一言
+    message: Option<String>,
     /// ダウンロードの失敗
     error: Option<String>,
 }
@@ -1403,17 +1411,17 @@ fn draw_shelf_tabs(
         button_at.x = button.right() + 8.0;
     }
     if let Some(refreshing) = strip.refreshing {
-        let label = if refreshing {
-            tr("plugin.refreshing")
-        } else {
-            tr("plugin.refresh")
+        let label = match (refreshing, &strip.progress) {
+            (true, Some(progress)) => format!("{} {progress}", tr("plugin.refreshing")),
+            (true, None) => tr("plugin.refreshing").to_owned(),
+            (false, _) => tr("plugin.refresh").to_owned(),
         };
         let button = tab_button(
             ui,
             &painter,
             button_at,
             rect.height() - 8.0,
-            label,
+            &label,
             !refreshing,
         );
         if !refreshing && click.is_some_and(|pos| button.contains(pos)) {
@@ -1423,7 +1431,10 @@ fn draw_shelf_tabs(
     let (hint, color) = match (&strip.error, strip.active) {
         (Some(error), _) => (error.as_str(), egui::Color32::from_rgb(255, 140, 120)),
         (None, ShelfTab::Folder) => (tr("shelf.hint"), egui::Color32::from_gray(150)),
-        (None, ShelfTab::Plugin(_)) => (tr("plugin.hint"), egui::Color32::from_gray(150)),
+        (None, ShelfTab::Plugin(_)) => match &strip.message {
+            Some(message) => (message.as_str(), egui::Color32::from_gray(200)),
+            None => (tr("plugin.hint"), egui::Color32::from_gray(150)),
+        },
         (None, _) => (tr("shelf.hint_remove"), egui::Color32::from_gray(150)),
     };
     painter.text(
