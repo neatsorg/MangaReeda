@@ -1034,15 +1034,15 @@ impl MangaReader {
                 // （メニューの項目を選んだクリックで、その下の冊まで開かないように）。
                 // 一覧は下地のパネルなので、前面の層の上でなければ一覧の上
                 let pointer = pointer.filter(|pos| {
-                    !self.menu_in_use
+                    !self.shelf_input_blocked
                         && ctx
                             .layer_id_at(*pos)
                             .is_none_or(|layer| layer.order == egui::Order::Background)
                 });
                 let clicked = clicked && pointer.is_some();
-                // メニューを使っているあいだのキー（矢印で項目を移る、Enter で決める、Esc で閉じる）は、
-                // メニューのもの。一覧には届けない（Enter で青枠の冊を開いたりしないように）
-                let (keys, scroll_delta) = if self.menu_in_use {
+                // メニューやダイアログを使っているあいだのキー（矢印で項目を移る、Enter で決める、Esc で閉じる）は、
+                // そちらのもの。一覧には届けない（Enter で青枠の冊を開いたり、Delete で履歴から外したりしないように）
+                let (keys, scroll_delta) = if self.shelf_input_blocked {
                     (
                         (Vec::new(), false, false, false, false, false, false, false),
                         0.0,
@@ -1052,7 +1052,11 @@ impl MangaReader {
                 };
                 let (mut directions, mut enter, escape, mut backspace, mut delete, back, f5, find) =
                     keys;
-                let tab_key = self.pending_shelf_tab.take();
+                // 取り込んであった Tab も、止めているあいだは捨てる（あとのフレームに持ち越さない）
+                let tab_key = self
+                    .pending_shelf_tab
+                    .take()
+                    .filter(|_| !self.shelf_input_blocked);
                 close = escape;
 
                 if let (Some(source), Some(active)) = (&source, active_tab) {

@@ -92,8 +92,8 @@ pub struct MangaReader {
     ime_had_preedit: bool,
     /// 本の中の検索（開いていれば）
     book_search: Option<book_search::BookSearch>,
-    /// このフレームでメニューを使っている（開いていた・項目を選んだ）。一覧はマウスを受け取らない
-    menu_in_use: bool,
+    /// このフレームでメニューやダイアログを使っている。表紙サムネイルはマウスとキーを受け取らない
+    shelf_input_blocked: bool,
     /// OCR で読んでいる本（検索の窓を閉じても続ける）
     book_ocr: Option<book_search::BookOcr>,
     active_animations: [Option<AnimatedPage>; 2],
@@ -215,7 +215,7 @@ impl MangaReader {
             ime_had_preedit: false,
             book_search: None,
             book_ocr: None,
-            menu_in_use: false,
+            shelf_input_blocked: false,
             active_animations: std::array::from_fn(|_| None),
             active_animation_keys: std::array::from_fn(|_| None),
             animated_image_byte_cache: sized_cache::SizedCache::new(ANIMATION_CACHE_BYTES),
@@ -307,7 +307,12 @@ impl eframe::App for MangaReader {
     /// egui に渡すとメニューやツールバーにフォーカスが移ってしまうので、ここで取り除く
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         fix_bare_ime_commits(&mut raw_input.events, &mut self.ime_had_preedit);
-        if self.shelf_source().is_none() {
+        // メニューやダイアログを使っているあいだの Tab は、そちらのもの（ボタンの間を移るなど）
+        if self.shelf_source().is_none()
+            || self.menu_state.is_open()
+            || self.menu_dialog.is_some()
+            || self.subfolder_question.is_some()
+        {
             return;
         }
         raw_input.events.retain(|event| match event {
@@ -376,10 +381,14 @@ impl eframe::App for MangaReader {
             menu_command = Some(command);
         }
         // メニューやダイアログを使っているあいだは、ページの操作を受け付けない
-        self.menu_in_use = menu_was_open || self.menu_state.is_open() || menu_command.is_some();
-        if self.menu_in_use || self.menu_dialog.is_some() {
+        let menu_in_use = menu_was_open || self.menu_state.is_open() || menu_command.is_some();
+        if menu_in_use || self.menu_dialog.is_some() {
             action_to_run = MangaAction::None;
         }
+        // 表紙サムネイルは、メニューやダイアログを使っているあいだ、マウスもキーも受け取らない
+        // （一覧は入力を直接読むので、ここで止める）
+        self.shelf_input_blocked =
+            menu_in_use || self.menu_dialog.is_some() || self.subfolder_question.is_some();
 
         self.render_settings_panel(ctx);
         self.render_toolbar(ctx);
@@ -2234,7 +2243,7 @@ esac
         };
         let mut reader = MangaReader::with_settings(AppSettings::default(), None);
         reader.open_cover_thumbnails(shelf.clone(), None);
-        reader.menu_in_use = true;
+        reader.shelf_input_blocked = true;
         press(&mut reader, egui::Key::ArrowRight);
         press(&mut reader, egui::Key::Enter);
         press(&mut reader, egui::Key::Escape);
@@ -2242,11 +2251,60 @@ esac
         let view = reader.thumbnails.as_ref().unwrap();
         assert_eq!(view.selected(), 0);
         // メニューを使っていなければ、今までどおり
-        reader.menu_in_use = false;
+        reader.shelf_input_blocked = false;
         press(&mut reader, egui::Key::ArrowRight);
         assert_eq!(reader.thumbnails.as_ref().unwrap().selected(), 1);
         press(&mut reader, egui::Key::Enter);
         assert_eq!(reader.zip_path, Some(shelf.join("b")));
+        fs::remove_dir_all(shelf).unwrap();
+    }
+
+    /// メニューやダイアログを使っているあいだの Tab は、一覧の切り替えに使わず、そちらに渡す。
+    /// 取り込んであった Tab も、一覧の入力を止めているあいだは捨てる
+    #[test]
+    fn tab_is_left_to_menus_and_dialogs() {
+        use eframe::App;
+        let pages = TestPages::new(&[[10, 20]]);
+        let shelf = pages.0.join("shelf");
+        fs::create_dir_all(shelf.join("book")).unwrap();
+        image::RgbaImage::new(4, 4)
+            .save(shelf.join("book").join("01.png"))
+            .unwrap();
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(AppSettings::default(), None);
+        reader.open_cover_thumbnails(shelf.clone(), None);
+        let tab = || egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        // ダイアログを出していれば、Tab は egui に残る（ボタンの間を移れる）
+        reader.menu_dialog = Some(menubar::MenuDialog::About);
+        let mut input = tab();
+        reader.raw_input_hook(&ctx, &mut input);
+        assert_eq!(input.events.len(), 1);
+        assert_eq!(reader.pending_shelf_tab, None);
+        // 出していなければ、一覧の切り替えに取り込む
+        reader.menu_dialog = None;
+        let mut input = tab();
+        reader.raw_input_hook(&ctx, &mut input);
+        assert!(input.events.is_empty());
+        assert_eq!(reader.pending_shelf_tab, Some(false));
+        // 取り込んだあとで一覧の入力を止めたら、切り替えずに捨てる
+        reader.shelf_input_blocked = true;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            reader.render_thumbnails(ctx)
+        });
+        assert_eq!(reader.pending_shelf_tab, None);
+        assert_eq!(
+            reader.shelf_source(),
+            Some(thumbnails::ShelfSource::Folder(shelf.clone()))
+        );
         fs::remove_dir_all(shelf).unwrap();
     }
 
