@@ -377,6 +377,24 @@ impl MangaReader {
     }
 
     /// 並べる冊。履歴とお気に入りは、今は無い冊（消したものや外したドライブ）を除く
+    /// 表紙の一覧を閉じていたら、検索の語と、検索で取っておいた表紙を捨てる。毎フレーム呼ぶ
+    /// （一覧を閉じる経路はいくつもあるので、閉じた状態を見て捨てる）
+    pub(super) fn tidy_closed_shelf(&mut self) {
+        if self.shelf_source().is_none() {
+            self.forget_shelf_search();
+        }
+    }
+
+    /// 検索の語と、検索で取っておいた表紙を捨てる
+    fn forget_shelf_search(&mut self) {
+        if !self.shelf_filter.is_empty() {
+            self.shelf_filter.clear();
+        }
+        if !self.shelf_texture_stash.is_empty() {
+            self.shelf_texture_stash.clear();
+        }
+    }
+
     /// 並べるもの。検索の語があれば、名前にすべての語を含むものだけ
     fn shelf_entries(&self, source: &ShelfSource) -> Vec<CoverEntry> {
         let mut entries = self.unfiltered_shelf_entries(source);
@@ -498,6 +516,12 @@ impl MangaReader {
         if let ShelfSource::Plugin(id, folder) = &source {
             self.ensure_plugin_list(&(id.clone(), folder.clone()));
         }
+        // 別の並びに移ったら、検索を消す（並べるものを作る前に。移った先が前の語でしぼられないように）。
+        // 同じ並びをしぼり直すときは、しぼって見えなくなった本の表紙も使う
+        let same_source = self.shelf_source().is_some_and(|showing| showing == source);
+        if !same_source {
+            self.forget_shelf_search();
+        }
         let entries = self.shelf_entries(&source);
         if let ShelfSource::Folder(folder) = &source {
             self.last_shelf_folder = Some(folder.clone());
@@ -508,12 +532,6 @@ impl MangaReader {
             .and_then(position)
             .or_else(|| self.zip_path.as_ref().and_then(position))
             .unwrap_or(0);
-        // 別の並びに移ったら、検索を消す。同じ並びをしぼり直すときは、しぼって見えなくなった本の表紙も使う
-        let same_source = self.shelf_source().is_some_and(|showing| showing == source);
-        if !same_source {
-            self.shelf_filter.clear();
-            self.shelf_texture_stash.clear();
-        }
         let mut made: HashMap<PathBuf, egui::TextureHandle> = self
             .thumbnails
             .take()

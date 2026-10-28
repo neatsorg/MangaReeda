@@ -414,6 +414,8 @@ impl eframe::App for MangaReader {
         // Keep preloading buffers
         self.update_buffers(ctx);
 
+        self.tidy_closed_shelf();
+
         // タイトルバー。変わったときだけ送る
         let title = self.window_title(ctx);
         if title != self.window_title {
@@ -1019,6 +1021,28 @@ mod tests {
         // 検索を消すと、全部に戻る
         assert_eq!(narrow(&mut reader, "").len(), 4);
 
+        // 検索したまま子のフォルダに入ると、子のフォルダの本は前の語でしぼらずに全部出る
+        let sub = root_path.join("sub");
+        fs::create_dir(&sub).unwrap();
+        for name in ["x.zip", "y.zip"] {
+            let mut zip = zip::ZipWriter::new(fs::File::create(sub.join(name)).unwrap());
+            zip.start_file("01.png", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(&png).unwrap();
+            zip.finish().unwrap();
+        }
+        assert_eq!(narrow(&mut reader, "sub"), ["sub"]);
+        reader.choose_thumbnail(0, &ctx);
+        assert_eq!(
+            reader.shelf_source(),
+            Some(ShelfSource::Folder(sub.clone()))
+        );
+        assert!(reader.shelf_filter.is_empty());
+        assert_eq!(shown(&reader), ["x.zip", "y.zip"]);
+        reader.go_back_in_shelf();
+        fs::remove_dir_all(&sub).unwrap();
+        reader.reshow_shelf();
+
         // 別の並びに移ったら、検索は消える
         narrow(&mut reader, "nausicaa");
         reader.switch_shelf_tab(ShelfTab::History);
@@ -1160,6 +1184,20 @@ mod tests {
         );
         assert!(reader.thumbnails.is_none());
         assert_eq!(reader.zip_path, Some(root_path.join("Nausicaa vol2.zip")));
+
+        // 検索で取っておいた表紙は、一覧を閉じたら捨てる
+        reader.shelf_filter = "vol2".to_owned();
+        reader.shelf_texture_stash.insert(
+            root_path.join("other.zip"),
+            ctx.load_texture(
+                "stashed",
+                egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                egui::TextureOptions::default(),
+            ),
+        );
+        reader.tidy_closed_shelf();
+        assert!(reader.shelf_texture_stash.is_empty());
+        assert!(reader.shelf_filter.is_empty());
     }
 
     #[test]
