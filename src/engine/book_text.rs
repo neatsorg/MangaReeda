@@ -52,6 +52,9 @@ struct CacheFile {
     #[serde(default)]
     pages_key: String,
     pages: Vec<String>,
+    /// OCR で読めなかったページの数（そのページは空）
+    #[serde(default)]
+    failed: usize,
 }
 
 /// 本の版（大きさ, 更新日時）
@@ -86,7 +89,7 @@ fn load_cache(book: &Path, cache_dir: &Path, pages_key: &str) -> Option<BookText
     }
     Some(BookText {
         pages: cache.pages,
-        failed: 0,
+        failed: cache.failed,
     })
 }
 
@@ -102,6 +105,7 @@ fn save_cache(book: &Path, cache_dir: &Path, text: &BookText, source: &str, page
         source: source.to_owned(),
         pages_key: pages_key.to_owned(),
         pages: text.pages.clone(),
+        failed: text.failed,
     };
     if let Some(parent) = path.parent()
         && std::fs::create_dir_all(parent).is_ok()
@@ -241,8 +245,10 @@ impl PageSource {
     }
 }
 
-/// 一度に OCR のプラグインに渡すページの数
+/// 一度に OCR のプラグインに渡すページの数（プラグインの説明の `ocr_batch` で変えられる）
 const OCR_BATCH: usize = 16;
+/// `ocr_batch` の上限（作業用の画像で、ディスクを使いすぎないように）
+const OCR_BATCH_MAX: usize = 128;
 /// OCR に渡す画像の長い辺の上限（ピクセル）
 const OCR_MAX_SIDE: u32 = 2400;
 /// PDF のページを描く高さ（ピクセル）
@@ -314,7 +320,11 @@ fn ocr_text(
     let mut unexpected = false;
     let mut result = Ok(());
     let order: Vec<usize> = (0..total).collect();
-    for batch in order.chunks(OCR_BATCH) {
+    let batch_size = manifest
+        .ocr_batch
+        .unwrap_or(OCR_BATCH)
+        .clamp(1, OCR_BATCH_MAX);
+    for batch in order.chunks(batch_size) {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -358,19 +368,24 @@ fn ocr_text(
             "OCR のプラグインが、渡していないページの文字を返しました".to_owned(),
         ));
     }
+    // 1ページも読めなければ、プラグインが動いていない。前に読んだ結果を消さないよう、ためない
+    if total > 0 && done == 0 {
+        return Err(PluginError::Other(
+            "OCR のプラグインが、1ページも読めませんでした".to_owned(),
+        ));
+    }
     let text = BookText {
         failed: pages.iter().filter(|page| page.is_none()).count(),
         pages: pages.into_iter().map(Option::unwrap_or_default).collect(),
     };
-    if text.failed == 0 {
-        save_cache(
-            book,
-            cache_dir,
-            &text,
-            &format!("ocr:{}", manifest.id),
-            &source.key(),
-        );
-    }
+    // 読めなかったページがあっても、読めたページは使えるようにためる（長い時間をかけた結果を捨てない）
+    save_cache(
+        book,
+        cache_dir,
+        &text,
+        &format!("ocr:{}", manifest.id),
+        &source.key(),
+    );
     Ok(text)
 }
 
@@ -745,6 +760,7 @@ mod tests {
             credentials: Vec::new(),
             auth: false,
             kind: crate::engine::plugin::PluginKind::Ocr,
+            ocr_batch: None,
             dir: dir.to_path_buf(),
         }
     }
@@ -837,6 +853,7 @@ mod tests {
                 credentials: Vec::new(),
                 auth: false,
                 kind: crate::engine::plugin::PluginKind::Ocr,
+                ocr_batch: None,
                 dir: dir.clone(),
             }
         };
@@ -858,13 +875,21 @@ mod tests {
         let always_first = plugin("echo '{\"page\": 0, \"text\": \"x\"}'\n");
         assert!(run(always_first).is_err());
         assert!(load_cache(&book, &dir.join("cache"), &source().key()).is_none());
-        // text の無い行は読めた知らせにならず、読めなかったページとして数える
+        // text の無い行は読めた知らせにならない。1ページも読めなければ、失敗にしてためない
         let no_text = plugin(
             "for page in $(echo \"$request\" | grep -o '\"page\":[0-9]*' | cut -d: -f2); do\n\
              echo \"{\\\"page\\\": $page}\"\ndone\n",
         );
-        assert_eq!(run(no_text).ok().unwrap().failed, 17);
+        assert!(run(no_text).is_err());
         assert!(load_cache(&book, &dir.join("cache"), &source().key()).is_none());
+        // 読めないページがあっても、読めたページはためる（読めなかった数も）
+        let skip_first = plugin(
+            "for page in $(echo \"$request\" | grep -o '\"page\":[0-9]*' | cut -d: -f2); do\n\
+             [ \"$page\" = 0 ] || echo \"{\\\"page\\\": $page, \\\"text\\\": \\\"p$page\\\"}\"\ndone\n",
+        );
+        assert_eq!(run(skip_first).ok().unwrap().failed, 1);
+        let kept = load_cache(&book, &dir.join("cache"), &source().key()).unwrap();
+        assert_eq!((kept.failed, kept.pages[1].as_str()), (1, "p1"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

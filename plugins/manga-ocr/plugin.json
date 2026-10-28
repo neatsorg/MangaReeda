@@ -1,0 +1,7 @@
+{
+  "id": "manga-ocr",
+  "name": "manga-ocr",
+  "command": ["./run.sh"],
+  "kind": "ocr",
+  "ocr_batch": 64
+}

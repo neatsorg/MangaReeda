@@ -68,6 +68,9 @@ pub struct PluginManifest {
     /// プラグインの種類。省けば本の一覧
     #[serde(default)]
     pub kind: PluginKind,
+    /// OCR のプラグインに一度に渡すページの数。省けば 16。起動の準備に時間がかかるエンジンは大きくする
+    #[serde(default)]
+    pub ocr_batch: Option<usize>,
     #[serde(skip)]
     pub dir: PathBuf,
 }
@@ -205,6 +208,13 @@ pub fn discover(plugins_dir: &Path, exe_dir: Option<&Path>) -> Vec<PluginManifes
         .unwrap_or_default();
     dirs.sort();
     for dir in dirs {
+        // 名前が . で始まるフォルダは見ない（入れている途中や、入れ替える前のものに使う）
+        if dir
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+        {
+            continue;
+        }
         let Ok(data) = std::fs::read_to_string(dir.join("plugin.json")) else {
             continue;
         };
@@ -247,6 +257,7 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
             ],
             auth: false,
             kind: PluginKind::Books,
+            ocr_batch: None,
             dir: exe_dir.to_path_buf(),
         },
         PluginManifest {
@@ -262,6 +273,7 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
             ],
             auth: true,
             kind: PluginKind::Books,
+            ocr_batch: None,
             dir: exe_dir.to_path_buf(),
         },
         PluginManifest {
@@ -278,6 +290,7 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
             ],
             auth: true,
             kind: PluginKind::Books,
+            ocr_batch: None,
             dir: exe_dir.to_path_buf(),
         },
         PluginManifest {
@@ -287,6 +300,7 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
             credentials: Vec::new(),
             auth: false,
             kind: PluginKind::Ocr,
+            ocr_batch: None,
             dir: exe_dir.to_path_buf(),
         },
     ];
@@ -305,6 +319,7 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
                 credentials: Vec::new(),
                 auth: false,
                 kind: PluginKind::Ocr,
+                ocr_batch: None,
                 dir: exe_dir.to_path_buf(),
             },
         );
@@ -1093,6 +1108,7 @@ mod tests {
             credentials: Vec::new(),
             auth: false,
             kind: PluginKind::Books,
+            ocr_batch: None,
             dir: dir.to_path_buf(),
         }
     }
@@ -1167,6 +1183,7 @@ mod tests {
             credentials: Vec::new(),
             auth: false,
             kind: PluginKind::Books,
+            ocr_batch: None,
             dir: std::env::temp_dir(),
         };
         // cmd の子の ping が、標準出力を握ったまま 30 秒動く
@@ -1266,6 +1283,7 @@ esac
             credentials: Vec::new(),
             auth: true,
             kind: PluginKind::Books,
+            ocr_batch: None,
             dir: dir.clone(),
         };
         let good = HashMap::from([("token".to_owned(), "good".to_owned())]);

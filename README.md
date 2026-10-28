@@ -18,7 +18,7 @@ LinuxとWindowsで動く、オフラインのマンガ・コミックビュー�
 - 冊ごとに読んでいた位置を覚えるしおりと履歴
 - 履歴とお気に入りを表紙で並べるブックリスト（表紙サムネイルの画面で Tab で切り替え）
 - プラグインで本の一覧を足せるブックリスト。Dropbox・Google Driveのフォルダ、そしてBOOKSCAN の本棚を表示できるプラグインを同梱（[docs/plugins.md](docs/plugins.md)）
-- 本の中の検索（Ctrl+F）。PDF の透明テキストを探し、文字の層の無い本は OCR のプラグインで読んでから探す（Windows は OS 標準の高性能な OCRを使います。Linux は Tesseract のプラグインを同梱）
+- 本の中の検索（Ctrl+F）。PDF の透明テキストを探し、文字の層の無い本は OCR のプラグインで読んでから探す（Windows は OS 標準の高性能な OCRを使います。Linux は Tesseract のプラグインを同梱）。マンガ向けに [manga-ocr のプラグイン](plugins/manga-ocr/README.md)も入れられます
 - ルーペ、ズーム、縮小・拡大のフィルタ（最近傍〜Lanczos3）
 - 書庫を展開せずに直接読む。サブフォルダの画像も読める
 - 同じフォルダの前後の冊、隣のフォルダへの移動
@@ -117,7 +117,7 @@ Plugins bring up-to-date features: cloud services such as Dropbox and Google Dri
 - Per-book bookmarks and history
 - A book list of history and favorites shown as covers (Tab switches lists in the cover thumbnails)
 - Plugins that add book lists; plugins for Dropbox and Google Drive folders and the BOOKSCAN bookshelf are included ([docs/plugins.md](docs/plugins.md), in Japanese)
-- Search in a book (Ctrl+F): the text layer of PDFs, or text read by an OCR plugin for books without one (on Windows, the capable OCR built into the OS; on Linux, a Tesseract plugin is included)
+- Search in a book (Ctrl+F): the text layer of PDFs, or text read by an OCR plugin for books without one (on Windows, the capable OCR built into the OS; on Linux, a Tesseract plugin is included). A [manga-ocr plugin](plugins/manga-ocr/README.md) for manga can be installed as well
 - Loupe, zoom, and resampling filters (nearest to Lanczos3)
 - Reads archives directly without extracting them, optionally including images in subfolders
 - Moves to the previous / next book in the folder and to neighbouring folders

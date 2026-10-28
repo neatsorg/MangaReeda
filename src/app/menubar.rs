@@ -27,7 +27,9 @@ pub(super) enum MenuCommand {
     CloseBook,
     OpenRecent(PathBuf),
     PageView(PageViewOptions),
-    ReadingDirection { right_to_left: bool },
+    ReadingDirection {
+        right_to_left: bool,
+    },
     CoverBlank,
     ResizeMethod(ResizeMethod),
     Sizing(ImageSizingMode),
@@ -42,6 +44,8 @@ pub(super) enum MenuCommand {
     ChooseCover,
     ImageInfo,
     About,
+    /// OCR で本の文字を読み直す（確かめてから）
+    ReadWithOcr,
 }
 
 /// 項目の左に付ける印
@@ -216,9 +220,14 @@ fn key_char(key: egui::Key) -> Option<char> {
 
 /// 開いているメニューのダイアログ
 pub(super) enum MenuDialog {
-    GoToPage { text: String, focused: bool },
+    GoToPage {
+        text: String,
+        focused: bool,
+    },
     ImageInfo,
     About,
+    /// OCR で読み直す前の確かめ
+    ConfirmOcr,
 }
 
 impl MangaReader {
@@ -576,6 +585,12 @@ impl MangaReader {
                 .collect(),
             ),
             MenuEntry::Separator,
+            // 読み直しはまれで時間もかかるので、検索の窓ではなくここに置き、確かめてから始める
+            needs_book(
+                item(tr("menu.tools.ocr"), 'O', MenuCommand::ReadWithOcr),
+                has_book && self.ocr_engine().is_some() && !self.book_ocr_running(),
+            ),
+            MenuEntry::Separator,
             item(
                 tr("menu.tools.mangameeya"),
                 'M',
@@ -740,6 +755,7 @@ impl MangaReader {
             }
             MenuCommand::ImageInfo => self.menu_dialog = Some(MenuDialog::ImageInfo),
             MenuCommand::About => self.menu_dialog = Some(MenuDialog::About),
+            MenuCommand::ReadWithOcr => self.menu_dialog = Some(MenuDialog::ConfirmOcr),
         }
     }
 
@@ -848,6 +864,7 @@ impl MangaReader {
         };
         let mut close = false;
         let mut go_to = None;
+        let mut start_ocr = false;
         let response = match dialog {
             MenuDialog::GoToPage { text, focused } => {
                 let count = self.image_files.len();
@@ -902,9 +919,36 @@ impl MangaReader {
                     close = true;
                 }
             }),
+            MenuDialog::ConfirmOcr => {
+                let engine = self
+                    .ocr_engine()
+                    .map(|engine| super::book_search::short_name(&engine.name))
+                    .unwrap_or_default();
+                let body = tr("dialog.ocr.body")
+                    .replace("{engine}", &engine)
+                    .replace("{pages}", &self.image_files.len().to_string());
+                egui::Modal::new(egui::Id::new("confirm_ocr")).show(ctx, |ui| {
+                    ui.heading(tr("dialog.ocr.title"));
+                    ui.label(body);
+                    ui.horizontal(|ui| {
+                        if ui.button(tr("dialog.ocr.start")).clicked() {
+                            start_ocr = true;
+                            close = true;
+                        }
+                        if ui.button(tr("subfolder.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                })
+            }
         };
         if close || response.should_close() {
             self.menu_dialog = None;
+        }
+        // 進み具合は検索の窓に出す
+        if start_ocr {
+            self.open_book_search();
+            self.start_book_ocr();
         }
         if let Some(index) = go_to {
             self.go_to_page(index, ctx);

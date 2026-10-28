@@ -92,6 +92,8 @@ pub struct MangaReader {
     ime_had_preedit: bool,
     /// 本の中の検索（開いていれば）
     book_search: Option<book_search::BookSearch>,
+    /// OCR で読んでいる本（検索の窓を閉じても続ける）
+    book_ocr: Option<book_search::BookOcr>,
     active_animations: [Option<AnimatedPage>; 2],
     active_animation_keys: [Option<String>; 2],
     animated_image_byte_cache: sized_cache::SizedCache<Vec<u8>>,
@@ -210,6 +212,7 @@ impl MangaReader {
             focus_shelf_search: false,
             ime_had_preedit: false,
             book_search: None,
+            book_ocr: None,
             active_animations: std::array::from_fn(|_| None),
             active_animation_keys: std::array::from_fn(|_| None),
             animated_image_byte_cache: sized_cache::SizedCache::new(ANIMATION_CACHE_BYTES),
@@ -410,6 +413,7 @@ impl eframe::App for MangaReader {
         {
             self.open_book_search();
         }
+        self.poll_book_ocr(ctx);
         if self.thumbnails.is_none() {
             self.render_book_search(ctx);
         }
@@ -442,6 +446,10 @@ impl eframe::App for MangaReader {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.remember_current_book();
         self.save_settings();
+        // OCR のプラグインを止め、作業用の画像を消し終えるのを待つ
+        if let Some(ocr) = self.book_ocr.take() {
+            ocr.stop_and_wait(std::time::Duration::from_secs(5));
+        }
     }
 }
 
@@ -1233,6 +1241,7 @@ mod tests {
         );
         let frame = |reader: &mut MangaReader| {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                reader.poll_book_ocr(ctx);
                 reader.render_book_search(ctx)
             });
         };
@@ -1248,10 +1257,10 @@ mod tests {
         assert!(reader.book_search.is_none());
     }
 
-    /// 文字の層の無い本は、検索の窓から OCR のプラグインで読み、探せるようになる
+    /// 文字の層の無い本は、OCR のプラグインで読み、探せるようになる。検索の窓を閉じても読み続ける
     #[cfg(unix)]
     #[test]
-    fn books_without_text_can_be_read_with_ocr_from_the_search_window() {
+    fn books_without_text_can_be_read_with_ocr_even_after_closing_the_search_window() {
         use std::os::unix::fs::PermissionsExt;
         let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
         let ctx = egui::Context::default();
@@ -1284,6 +1293,7 @@ mod tests {
                 credentials: Vec::new(),
                 auth: false,
                 kind: crate::engine::plugin::PluginKind::Ocr,
+                ocr_batch: None,
                 dir: plugin_dir.clone(),
             }],
             crate::engine::credentials::Credentials::memory_only(),
@@ -1294,11 +1304,23 @@ mod tests {
         assert_eq!(reader.ocr_engine().map(|e| e.id.as_str()), Some("fake"));
         let frame = |reader: &mut MangaReader| {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                reader.poll_book_ocr(ctx);
                 reader.render_book_search(ctx)
             });
         };
         reader.open_book_search();
         reader.start_book_ocr();
+        // 窓を閉じても、OCR は続き、読んだ文字はためておかれる
+        reader.book_search = None;
+        for _ in 0..300 {
+            frame(&mut reader);
+            if !reader.book_ocr_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!reader.book_ocr_running());
+        reader.open_book_search();
         reader.book_search.as_mut().unwrap().query = "ページ1".to_owned();
         for _ in 0..300 {
             frame(&mut reader);
@@ -1564,6 +1586,7 @@ mod tests {
                 credentials: Vec::new(),
                 auth: false,
                 kind: crate::engine::plugin::PluginKind::Books,
+                ocr_batch: None,
                 dir: library.clone(),
             }],
             crate::engine::credentials::Credentials::memory_only(),
@@ -1738,6 +1761,7 @@ esac
                 credentials: Vec::new(),
                 auth: false,
                 kind: crate::engine::plugin::PluginKind::Books,
+                ocr_batch: None,
                 dir: root.clone(),
             }],
             crate::engine::credentials::Credentials::memory_only(),
