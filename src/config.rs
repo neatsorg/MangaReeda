@@ -713,18 +713,6 @@ fn default_top_down_image_drag_speed() -> f32 {
     3.0
 }
 
-fn default_settings_button_y_offset() -> f32 {
-    0.0
-}
-
-fn default_settings_button_width() -> f32 {
-    20.0
-}
-
-fn default_settings_button_x_offset() -> f32 {
-    0.0
-}
-
 // 既存の設定ファイルにこの項目が無いときも、ミーヤと同じく下に置く
 fn default_toolbar_at_bottom() -> bool {
     true
@@ -772,8 +760,6 @@ pub struct AppSettings {
     pub language: UiLanguage,
     pub settings_width: f32,
     pub show_settings: bool,
-    #[serde(default)]
-    pub auto_hide_settings_button: bool,
     pub transparency_support: bool,
     pub enable_single_file_caching: bool,
     #[serde(default = "default_enable_animated_images")]
@@ -798,12 +784,6 @@ pub struct AppSettings {
     pub top_down_image_slide_speed: f32,
     #[serde(default = "default_top_down_image_drag_speed")]
     pub top_down_image_drag_speed: f32,
-    #[serde(default = "default_settings_button_width")]
-    pub settings_button_width: f32,
-    #[serde(default = "default_settings_button_x_offset")]
-    pub settings_button_x_offset: f32,
-    #[serde(default = "default_settings_button_y_offset")]
-    pub settings_button_y_offset: f32,
     #[serde(default = "default_top_toolbar_scale")]
     pub top_toolbar_scale: f32,
     pub show_top_bar: bool,
@@ -945,7 +925,6 @@ impl Default for AppSettings {
             language: UiLanguage::Japanese,
             settings_width: 300.0,
             show_settings: false,
-            auto_hide_settings_button: true,
             transparency_support: false,
             enable_single_file_caching: true,
             enable_animated_images: default_enable_animated_images(),
@@ -960,9 +939,6 @@ impl Default for AppSettings {
             top_down_double_click_threshold_ms: 160,
             top_down_image_slide_speed: default_top_down_image_slide_speed(),
             top_down_image_drag_speed: default_top_down_image_drag_speed(),
-            settings_button_width: default_settings_button_width(),
-            settings_button_x_offset: default_settings_button_x_offset(),
-            settings_button_y_offset: default_settings_button_y_offset(),
             top_toolbar_scale: default_top_toolbar_scale(),
             show_top_bar: true,
             toolbar_at_bottom: default_toolbar_at_bottom(),

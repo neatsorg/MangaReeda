@@ -125,6 +125,19 @@ impl MangaReader {
         Some(page_count)
     }
 
+    /// フォルダを選んで冊として開くダイアログ。結果はファイルを開くダイアログと同じ経路で受け取る
+    pub(super) fn open_folder_dialog(&mut self) {
+        if self.is_dialog_open {
+            return;
+        }
+        self.is_dialog_open = true;
+        self.last_dialog_time = std::time::Instant::now();
+        let sender = self.dialog_tx.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(rfd::FileDialog::new().pick_folder());
+        });
+    }
+
     pub(super) fn open_file_dialog(&mut self) {
         let now = std::time::Instant::now();
         if now.duration_since(self.last_dialog_time) > std::time::Duration::from_millis(500) {

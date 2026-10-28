@@ -51,7 +51,11 @@ impl MangaReader {
     }
 
     /// 自動見開きを `right_to_left` の向きでオンにする。None ならオフ
-    pub(super) fn set_auto_page_layout(&mut self, right_to_left: Option<bool>, ctx: &egui::Context) {
+    pub(super) fn set_auto_page_layout(
+        &mut self,
+        right_to_left: Option<bool>,
+        ctx: &egui::Context,
+    ) {
         self.config.set_auto_page_layout(right_to_left);
         self.reset_buffer();
         self.texture_cache.clear();

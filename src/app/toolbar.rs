@@ -2,7 +2,7 @@
 
 use super::{
     AUTO_SCROLL_MAX_DELAY_MS, AUTO_SCROLL_MIN_DELAY_MS, FULLSCREEN_TITLE_BAR_HEIGHT,
-    FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT, MangaReader,
+    FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT, MENU_BAR_HEIGHT, MangaReader,
 };
 use crate::engine::thumbnail::ThumbnailMode;
 use crate::localize::tr;
@@ -47,7 +47,9 @@ impl MangaReader {
         };
         let top_height = reveal(
             self.fullscreen_top_chrome_visible,
-            FULLSCREEN_TITLE_BAR_HEIGHT + if at_bottom { 0.0 } else { toolbar_height },
+            FULLSCREEN_TITLE_BAR_HEIGHT
+                + MENU_BAR_HEIGHT
+                + if at_bottom { 0.0 } else { toolbar_height },
         );
         let bottom_height = reveal(self.fullscreen_bottom_toolbar_visible, toolbar_height);
         let screen = ctx.content_rect();
@@ -144,17 +146,12 @@ impl MangaReader {
 
     /// ツールバー。設定に従って画面の下（ミーヤと同じ）か上に置く
     pub(super) fn render_toolbar(&mut self, ctx: &egui::Context) {
-        self.update_fullscreen_top_chrome_visibility(ctx);
         let revealed = if self.config.toolbar_at_bottom {
             self.fullscreen_bottom_toolbar_visible
         } else {
             self.fullscreen_top_chrome_visible
         };
         let show_toolbar = self.config.show_top_bar && (!self.is_fullscreen || revealed);
-
-        if self.is_fullscreen && self.fullscreen_top_chrome_visible {
-            self.render_fullscreen_title_bar(ctx);
-        }
 
         if show_toolbar {
             let panel = if self.config.toolbar_at_bottom {

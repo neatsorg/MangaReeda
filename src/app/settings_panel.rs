@@ -1,8 +1,6 @@
 // このファイルは RustMangaReader（Lycoris52、Apache License 2.0）のコードを元に改変したものです。
 
-use super::{
-    AUTO_SCROLL_MAX_DELAY_MS, MangaReader, SETTINGS_TOGGLE_FADE_DURATION, ZOOM_MAX, ZOOM_MIN,
-};
+use super::{AUTO_SCROLL_MAX_DELAY_MS, MangaReader, ZOOM_MAX, ZOOM_MIN};
 use crate::config::{
     AppSettings, GamepadButton, GamepadConfig, ImageSizingMode, KeyConfig, LastPageAction,
     MangaAction, MouseConfig, PageViewOptions, ResizeMethod, Shortcut, SubfolderMode, UiLanguage,
@@ -12,7 +10,6 @@ use crate::utils::{
     action_label, gamepad_button_label, language_label, render_mouse_action_dropdown, separator_pct,
 };
 use eframe::egui;
-use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ControlProfile {
@@ -554,8 +551,13 @@ impl MangaReader {
                     self.config.settings_width = ui.available_width();
 
                     ui.add_space(10.0);
-                    ui.vertical_centered(|ui| {
+                    ui.horizontal(|ui| {
                         ui.heading(egui::RichText::new(tr("settings.title")).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("✕").on_hover_text(tr("settings.close")).clicked() {
+                                self.config.show_settings = false;
+                            }
+                        });
                     });
                     ui.add_space(10.0);
                     separator_pct(ui);
@@ -989,16 +991,6 @@ impl MangaReader {
                                 {
                                     self.save_settings();
                                 }
-                                // setting for auto hide the setting button
-                                if ui
-                                    .checkbox(
-                                        &mut self.config.auto_hide_settings_button,
-                                        tr("settings.auto_hide_settings_button"),
-                                    )
-                                    .changed()
-                                {
-                                    self.save_settings();
-                                }
                                 ui.checkbox(
                                     &mut self.config.transparency_support,
                                     tr("settings.transparency"),
@@ -1091,67 +1083,6 @@ impl MangaReader {
                                 if ui
                                     .add(
                                         egui::Slider::new(
-                                            &mut self.config.settings_button_width,
-                                            3.0..=30.0,
-                                        )
-                                        .text(tr("settings.settings_button_width")),
-                                    )
-                                    .on_hover_text(tr("settings.settings_button_width.tooltip"))
-                                    .changed()
-                                {
-                                    self.config.settings_button_width =
-                                        self.config.settings_button_width.clamp(3.0, 30.0);
-                                    self.save_settings();
-                                }
-                                ui.spacing_mut().slider_width = previous_slider_width;
-                                let previous_slider_width = ui.spacing().slider_width;
-                                ui.spacing_mut().slider_width =
-                                    self.config.settings_width * 0.9 - 190.0;
-                                if ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.config.settings_button_x_offset,
-                                            0.0..=20.0,
-                                        )
-                                        .text(tr("settings.settings_button_x_position")),
-                                    )
-                                    .on_hover_text(tr(
-                                        "settings.settings_button_x_position.tooltip",
-                                    ))
-                                    .changed()
-                                {
-                                    self.config.settings_button_x_offset =
-                                        self.config.settings_button_x_offset.clamp(0.0, 20.0);
-                                    self.save_settings();
-                                }
-                                ui.spacing_mut().slider_width = previous_slider_width;
-                                let previous_slider_width = ui.spacing().slider_width;
-                                ui.spacing_mut().slider_width =
-                                    self.config.settings_width * 0.9 - 190.0;
-                                if ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.config.settings_button_y_offset,
-                                            -1.0..=1.0,
-                                        )
-                                        .text(tr("settings.settings_button_y_position")),
-                                    )
-                                    .on_hover_text(tr(
-                                        "settings.settings_button_y_position.tooltip",
-                                    ))
-                                    .changed()
-                                {
-                                    self.config.settings_button_y_offset =
-                                        self.config.settings_button_y_offset.clamp(-1.0, 1.0);
-                                    self.save_settings();
-                                }
-                                ui.spacing_mut().slider_width = previous_slider_width;
-                                let previous_slider_width = ui.spacing().slider_width;
-                                ui.spacing_mut().slider_width =
-                                    self.config.settings_width * 0.9 - 190.0;
-                                if ui
-                                    .add(
-                                        egui::Slider::new(
                                             &mut self.config.top_toolbar_scale,
                                             1.0..=3.0,
                                         )
@@ -1213,115 +1144,6 @@ impl MangaReader {
                                 ui.add_space(50.0);
                             });
                         });
-                });
-        }
-    }
-
-    pub(super) fn render_settings_toggle(&mut self, ctx: &egui::Context) {
-        // This allows opening/closing the settings
-        let screen_rect = ctx.content_rect();
-        let button_width = self.config.settings_button_width.clamp(3.0, 30.0);
-        let button_height = 140.0;
-
-        // Calculate X position based on whether panel is open
-        let base_x_pos = if self.config.show_settings {
-            screen_rect.max.x - self.config.settings_width - button_width - 20.0
-        } else {
-            screen_rect.max.x
-        };
-        let x_pos = base_x_pos + self.config.settings_button_x_offset.clamp(0.0, 20.0);
-
-        // Calculate Y position to center the 200px button vertically
-        let centered_y_pos = screen_rect.center().y - (button_height / 2.0);
-        let min_y_pos = screen_rect.min.y;
-        let max_y_pos = screen_rect.max.y - button_height;
-        let y_pos =
-            centered_y_pos + self.config.settings_button_y_offset * ((max_y_pos - min_y_pos) / 2.0);
-        let y_pos = y_pos.clamp(min_y_pos, max_y_pos);
-
-        // check whether we should auto hide the setting button
-        let settings_toggle_reveal_width = 60.0
-            + if self.config.show_settings {
-                self.config.settings_width
-            } else {
-                0.0
-            };
-        let is_pointer_near_right_edge = ctx
-            .input(|i| i.pointer.hover_pos())
-            .is_some_and(|pos| screen_rect.max.x - pos.x <= settings_toggle_reveal_width);
-        let settings_toggle_pinned = self.config.show_settings
-            || !self.config.auto_hide_settings_button
-            || self.image_files.is_empty();
-        let should_refresh_settings_toggle = settings_toggle_pinned || is_pointer_near_right_edge;
-        if should_refresh_settings_toggle {
-            self.settings_toggle_last_visible_at = Instant::now();
-        }
-        let fade_elapsed =
-            Instant::now().saturating_duration_since(self.settings_toggle_last_visible_at);
-        let settings_toggle_opacity = if should_refresh_settings_toggle {
-            1.0
-        } else {
-            (1.0 - fade_elapsed.as_secs_f32() / SETTINGS_TOGGLE_FADE_DURATION.as_secs_f32())
-                .clamp(0.0, 1.0)
-        };
-
-        if settings_toggle_opacity > 0.0 {
-            if settings_toggle_opacity < 1.0 {
-                ctx.request_repaint();
-            }
-            egui::Area::new(egui::Id::new("settings_toggle"))
-                .fixed_pos([x_pos, y_pos])
-                .show(ctx, |ui| {
-                    let text = if self.config.show_settings {
-                        "▶"
-                    } else {
-                        "◀"
-                    };
-
-                    ui.scope(|ui| {
-                        let mut visuals = ui.style().visuals.clone();
-                        visuals.widgets.inactive.bg_fill = visuals
-                            .widgets
-                            .inactive
-                            .bg_fill
-                            .gamma_multiply(settings_toggle_opacity);
-                        visuals.widgets.inactive.weak_bg_fill = visuals
-                            .widgets
-                            .inactive
-                            .weak_bg_fill
-                            .gamma_multiply(settings_toggle_opacity);
-                        visuals.widgets.inactive.bg_stroke.color = visuals
-                            .widgets
-                            .inactive
-                            .bg_stroke
-                            .color
-                            .gamma_multiply(settings_toggle_opacity);
-                        visuals.widgets.inactive.fg_stroke.color = visuals
-                            .widgets
-                            .inactive
-                            .fg_stroke
-                            .color
-                            .gamma_multiply(settings_toggle_opacity);
-                        visuals.override_text_color = Some(
-                            ui.visuals()
-                                .text_color()
-                                .gamma_multiply(settings_toggle_opacity),
-                        );
-                        ui.style_mut().visuals = visuals;
-
-                        let toggle_btn = egui::Button::new(
-                            egui::RichText::new(text)
-                                .size(if button_width < 16.0 { 0.0 } else { 16.0 })
-                                .color(ui.visuals().text_color()),
-                        );
-                        if ui
-                            .add_sized([button_width, button_height], toggle_btn)
-                            .clicked()
-                        {
-                            self.config.show_settings = !self.config.show_settings;
-                            self.settings_toggle_last_visible_at = Instant::now();
-                        }
-                    });
                 });
         }
     }

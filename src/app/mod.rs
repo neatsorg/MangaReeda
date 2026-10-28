@@ -4,6 +4,7 @@ mod animation;
 mod commands;
 mod input;
 mod loader;
+mod menubar;
 mod navigation;
 mod overlay;
 mod pageview;
@@ -31,7 +32,6 @@ use std::time::{Duration, Instant};
 const LONG_CLICK_DURATION: Duration = Duration::from_millis(450);
 const GAMEPAD_INITIAL_REPEAT_DELAY: Duration = Duration::from_millis(800);
 const MOUSE_DRAG_THRESHOLD: f32 = 6.0;
-const SETTINGS_TOGGLE_FADE_DURATION: Duration = Duration::from_secs(1);
 const AUTO_SCROLL_MIN_DELAY_MS: u64 = 200;
 const AUTO_SCROLL_MAX_DELAY_MS: u64 = 30_000;
 const ANIMATION_SCAN_AHEAD_PAGES: usize = 5;
@@ -45,6 +45,8 @@ const JUMP_PAGE_COUNT: usize = 20;
 const ZOOM_RELOAD_DELAY: Duration = Duration::from_secs(1);
 const FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT: f32 = 20.0;
 const FULLSCREEN_TITLE_BAR_HEIGHT: f32 = 28.0;
+/// メニューバーの高さ。全画面で上端に近づけたときに出す範囲に使う
+const MENU_BAR_HEIGHT: f32 = 24.0;
 
 pub struct MangaReader {
     zip_path: Option<PathBuf>,
@@ -109,7 +111,6 @@ pub struct MangaReader {
     gamepad: Option<Gilrs>,
     gamepad_repeat_deadlines: [Option<Instant>; 16],
     selected_control_profile: ControlProfile,
-    settings_toggle_last_visible_at: Instant,
     fullscreen_top_chrome_visible: bool,
     /// 全画面で、下に置いたツールバーを出しているか
     fullscreen_bottom_toolbar_visible: bool,
@@ -128,6 +129,9 @@ pub struct MangaReader {
     thumbnail_cache: thumbnails::ThumbnailCache,
     /// 次に表示し直すとき、見開きの組を合わせ直さない（サムネイルで選んだページから見開きにする）
     keep_spread_start: bool,
+    /// 開いているメニューと、メニューから開いたダイアログ
+    menu_state: menubar::MenuState,
+    menu_dialog: Option<menubar::MenuDialog>,
 }
 
 impl MangaReader {
@@ -205,7 +209,6 @@ impl MangaReader {
             gamepad: Gilrs::new().ok(),
             gamepad_repeat_deadlines: [None; 16],
             selected_control_profile: ControlProfile::Default,
-            settings_toggle_last_visible_at: Instant::now(),
             fullscreen_top_chrome_visible: false,
             fullscreen_bottom_toolbar_visible: false,
             history: History::default(),
@@ -216,6 +219,8 @@ impl MangaReader {
             thumbnails: None,
             thumbnail_cache: Default::default(),
             keep_spread_start: false,
+            menu_state: Default::default(),
+            menu_dialog: None,
         }
     }
 
@@ -261,8 +266,30 @@ impl eframe::App for MangaReader {
         }
         self.reload_zoom_textures_if_settled(ctx);
 
+        // メニューのキー操作は、ほかの操作より先に受け取る
+        let menu_was_open = self.menu_state.is_open();
+        let mut menu_command = self.handle_menu_keys(ctx);
+
+        self.update_fullscreen_top_chrome_visibility(ctx);
+        if self.is_fullscreen && self.fullscreen_top_chrome_visible {
+            self.render_fullscreen_title_bar(ctx);
+        }
+        // 全画面では、上端に近づけたときとメニューを開いているときだけ出す
+        let show_menu_bar =
+            !self.is_fullscreen || self.fullscreen_top_chrome_visible || self.menu_state.is_open();
+        if show_menu_bar && let Some(command) = self.render_menu_bar(ctx) {
+            menu_command = Some(command);
+        }
+        // メニューやダイアログを使っているあいだは、ページの操作を受け付けない
+        if menu_was_open
+            || self.menu_state.is_open()
+            || menu_command.is_some()
+            || self.menu_dialog.is_some()
+        {
+            action_to_run = MangaAction::None;
+        }
+
         self.render_settings_panel(ctx);
-        self.render_settings_toggle(ctx);
         self.render_toolbar(ctx);
         self.tick_auto_scroll(ctx, action_to_run);
 
@@ -282,9 +309,13 @@ impl eframe::App for MangaReader {
             self.render_page_view(ctx, &mut action_to_run);
         }
         self.render_subfolder_question(ctx);
+        self.render_menu_dialog(ctx);
         // ダイアログに答えるまでは、ページの操作を受け付けない
-        if self.subfolder_question.is_some() {
+        if self.subfolder_question.is_some() || self.menu_dialog.is_some() {
             action_to_run = MangaAction::None;
+        }
+        if let Some(command) = menu_command {
+            self.execute_menu_command(command, ctx);
         }
 
         if action_to_run != MangaAction::None {
