@@ -2,10 +2,12 @@
 
 # MangaReeda
 
-Linux で動く、オフラインのマンガ・コミックビューアです。
-見開き表示、書庫を展開せずに読む、キー・マウス・ゲームパッドでの操作を中心にしています。
+LinuxとWindowsで動く、オフラインのマンガ・コミックビューアです。Rustで書かれています。Macでは検証していませんが移植できる可能性は高いです。
+見開き表示、書庫を展開せずに読む、キー・マウス・ゲームパッドでの操作などができます。
 
-かつての「マンガミーヤ」にインスパイアされて作りました。マンガミーヤのコードは含まず、マンガミーヤの作者とも関係ありません。
+かつての人気ソフト「マンガミーヤ」にインスパイアされて作りました。マンガミーヤのコードは含まず、マンガミーヤの作者とも関係ありません。
+
+プラグイン形式でDropbox、GoogleDriveなどのクラウド連携やブックリストのインクリメンタル検索、OCRテキストの検索、OCR透明テキストのないPDF等に対してはOCRエンジンを利用してテキスト補完を行うなど、今日的な機能を多数搭載しました。
 
 ## 主な機能
 
@@ -15,8 +17,8 @@ Linux で動く、オフラインのマンガ・コミックビューアです�
 - ページのサムネイル一覧と、同じフォルダの冊を表紙で並べる表紙サムネイル
 - 冊ごとに読んでいた位置を覚えるしおりと履歴
 - 履歴とお気に入りを表紙で並べるブックリスト（表紙サムネイルの画面で Tab で切り替え）
-- プラグインで本の一覧を足せるブックリスト。BOOKSCAN の本棚と、Dropbox・Google Drive のフォルダを読むプラグインを同梱（[docs/plugins.md](docs/plugins.md)）
-- 本の中の検索（Ctrl+F）。PDF の透明テキストを探し、文字の層の無い本は OCR のプラグインで読んでから探す（Windows は Windows の OCR、Linux は Tesseract のプラグインを同梱）
+- プラグインで本の一覧を足せるブックリスト。Dropbox・Google Driveのフォルダ、そしてBOOKSCAN の本棚を表示できるプラグインを同梱（[docs/plugins.md](docs/plugins.md)）
+- 本の中の検索（Ctrl+F）。PDF の透明テキストを探し、文字の層の無い本は OCR のプラグインで読んでから探す（Windows は OS 標準の高性能な OCRを使います。Linux は Tesseract のプラグインを同梱）
 - ルーペ、ズーム、縮小・拡大のフィルタ（最近傍〜Lanczos3）
 - 書庫を展開せずに直接読む。サブフォルダの画像も読める
 - 同じフォルダの前後の冊、隣のフォルダへの移動
@@ -32,12 +34,18 @@ Linux で動く、オフラインのマンガ・コミックビューアです�
 | フォルダ | フォルダ内の画像をそのまま読む |
 | 画像 | `.png` `.jpg` `.jpeg` `.bmp` `.tiff` `.webp` `.avif` `.tga` `.gif` |
 
+## リリース
+
+ビルドしないひと用。使用するOSのファイルをダウンロードしてバイナリを実行すれば起動できます。
+
+プラグインを使用するには各サービスのAPIキーや登録情報が必要です。詳しくはdocs/plugins.mdを参照してください。
+
 ## ビルド
 
-Rust のツールチェーン、C/C++ コンパイラ（RAR の展開に使う）、AVIF のデコードに使う dav1d が必要です。
+ビルドには Rust のツールチェーン、C/C++ コンパイラ（RAR の展開に使う）、AVIF のデコードに使う dav1d が必要です。
 
 ```sh
-# Arch Linux / Manjaro の例
+# Arch Linux 系の例
 sudo pacman -S --needed base-devel rust dav1d
 
 cargo build --release --workspace
@@ -54,36 +62,35 @@ xcopy /e /i .cargo.win .cargo
 cargo build --release --workspace
 ```
 
-`--workspace` を付けると、BOOKSCAN・Dropbox・Google Drive のプラグイン（`mangareeda-bookscan`、`mangareeda-dropbox`、`mangareeda-gdrive`）と、OCR のプラグイン（`mangareeda-ocr-tesseract`、Windows では `mangareeda-ocr-windows`）も同じフォルダにできます。要らなければ外してください。
+ビルド時に `--workspace` を付けると、BOOKSCAN・Dropbox・Google Drive のプラグイン（`mangareeda-bookscan`、`mangareeda-dropbox`、`mangareeda-gdrive`）と、OCR のプラグイン（`mangareeda-ocr-tesseract`、Windows では `mangareeda-ocr-windows`）も同じフォルダにできます。要らなければ外してください。
 
-Linux で OCR を使うには Tesseract と日本語のデータが要ります（Arch Linux / Manjaro なら `sudo pacman -S tesseract tesseract-data-jpn tesseract-data-jpn_vert`）。Windows の OCR は、Windows の設定で日本語を追加すると使えます。
+Linux で OCR を使うには Tesseract と日本語のデータが要ります（Arch Linux 系では `sudo pacman -S tesseract tesseract-data-jpn tesseract-data-jpn_vert`）。Windows では、Windows の言語機能のインストールで日本語が追加されていれば使えるはずです。
 
-PDF を開くには `libpdfium.so` が必要です。実行ファイルと同じフォルダ、システムのライブラリの順に探します（安全のため、カレントディレクトリは探しません。Windows では、同梱の `pdfium.dll` を実行ファイルと同じフォルダからだけ読みます）。見つからない場合は、PDF を開こうとしたときにメッセージを表示します（PDF 以外には影響しません）。
+Linux で PDF を開くには `libpdfium.so` が必要です。別途インストールしてください。実行ファイルと同じフォルダ、システムのライブラリの順に探します。Arch Linux 系の場合は、AUR の `pdfium-binaries-bin` を入れると `/usr/lib/libpdfium.so` に置かれ、そのまま使えます。ほかの Linux 環境では、[pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) の Linux 版を展開し、`lib/libpdfium.so` を実行ファイルと同じフォルダに置いてください。
 
-Arch Linux / Manjaro では、AUR の `pdfium-binaries-bin` を入れると `/usr/lib/libpdfium.so` に置かれ、そのまま使えます。ほかの環境では、[pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) の Linux 版を展開し、`lib/libpdfium.so` を実行ファイルと同じフォルダに置いてください。
-
-ランチャーや dock にアイコン付きで出すには、ビルドしたあとに次を実行します。この利用者のアプリケーション一覧（`~/.local/share/applications`）に `.desktop` ファイルとアイコンを入れます。外すときは `--uninstall` を付けます。
+Linux の Wayland 環境の場合、ランチャーや dock にアイコン付きで出すには、ビルドしたあとに次を実行する必要があるかもしれません。これはアプリケーション一覧（`~/.local/share/applications`）に `.desktop` ファイルとアイコンを入れるスクリプトです。外すときは `--uninstall` を付けて実行してください。
 
 ```sh
 packaging/linux/install.sh            # target/release/mangareeda を登録する
 packaging/linux/install.sh /path/to/mangareeda   # ほかの場所の実行ファイルを登録する
 ```
 
-設定は `~/.config/MangaReeda/settings.json`（`XDG_CONFIG_HOME` があればその下）に保存します。
+ソフトの設定は `~/.config/MangaReeda/settings.json`（`XDG_CONFIG_HOME` があるならその下）に保存されます。
+
 
 ## 注意事項
 
 このソフトは閲覧するための道具です。
 
-- マンガ、コミック、書庫などのコンテンツを提供・配布せず、入手先へのリンクも持ちません。
-- プラグインは、利用者自身が契約しているサービスに、利用者のアカウントで接続します。サービスの利用規約に従って使ってください。
+- マンガ、コミック、書庫などのコンテンツを提供・配布するためのものではなく、入手先へのリンクも持ちません。
+- プラグインは、利用者自身が契約しているサービスに、利用者のアカウントで接続します。サービスの利用規約にしたがって使ってください。
 - 開くコンテンツについては、利用者が責任を持ってください。
 - 利用者が選んだコンテンツや入手先によって生じた著作権侵害その他の問題について、開発者は責任を負いません。
 
 ## ライセンス
 
 Apache License 2.0（[LICENSE](LICENSE)）。
-このソフトは Lycoris52 さんの [RustMangaReader](https://github.com/Lycoris52/RustMangaReader) を元にしています。詳しくは [NOTICE](NOTICE) を参照してください。
+このソフトのベースにさせていただいたのは Lycoris52 氏の [RustMangaReader](https://github.com/Lycoris52/RustMangaReader) です。詳しくは [NOTICE](NOTICE) を参照してください。
 
 同梱しているフォント（Noto Sans JP）は SIL Open Font License 1.1 です（[src/assets/OFL.txt](src/assets/OFL.txt)）。
 Windows 用に同梱している `pdfium.dll` と `dav1d.dll` のライセンスは [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。
@@ -94,9 +101,12 @@ Windows 用に同梱している `pdfium.dll` と `dav1d.dll` のライセンス
 
 # MangaReeda (English)
 
-An offline manga and comic viewer for Linux, focused on double-page spreads, reading archives without extracting them, and keyboard / mouse / gamepad control.
+An offline manga and comic viewer for Linux and Windows, written in Rust. It has not been tried on macOS, but porting it is likely to be straightforward.
+It shows double-page spreads, reads archives without extracting them, and is controlled with the keyboard, mouse or a gamepad.
 
-Inspired by the classic Japanese viewer MangaMeeya. It contains no MangaMeeya code and is not affiliated with MangaMeeya's author.
+Inspired by MangaMeeya, a once-popular Japanese viewer. It contains no MangaMeeya code and is not affiliated with MangaMeeya's author.
+
+Plugins bring up-to-date features: cloud services such as Dropbox and Google Drive, incremental search in the book list, searching the text of books, and reading PDFs and other books without a text layer with an OCR engine so that they can be searched too.
 
 ## Features
 
@@ -104,9 +114,10 @@ Inspired by the classic Japanese viewer MangaMeeya. It contains no MangaMeeya co
 - Automatic spreads for runs of portrait pages, and an odd-page start that puts a blank page before the first page
 - Splitting wide pages into halves shown one at a time
 - Page thumbnails, and cover thumbnails of the books in the same folder
-- Per-book bookmarks and history, and a book list of history and favorites shown as covers
-- Plugins that add book lists; plugins for the BOOKSCAN bookshelf and Dropbox and Google Drive folders are included ([docs/plugins.md](docs/plugins.md), in Japanese)
-- Search in a book (Ctrl+F): the text layer of PDFs, or text read by an OCR plugin for books without one (the OCR built into Windows, and Tesseract on Linux, are included)
+- Per-book bookmarks and history
+- A book list of history and favorites shown as covers (Tab switches lists in the cover thumbnails)
+- Plugins that add book lists; plugins for Dropbox and Google Drive folders and the BOOKSCAN bookshelf are included ([docs/plugins.md](docs/plugins.md), in Japanese)
+- Search in a book (Ctrl+F): the text layer of PDFs, or text read by an OCR plugin for books without one (on Windows, the capable OCR built into the OS; on Linux, a Tesseract plugin is included)
 - Loupe, zoom, and resampling filters (nearest to Lanczos3)
 - Reads archives directly without extracting them, optionally including images in subfolders
 - Moves to the previous / next book in the folder and to neighbouring folders
@@ -122,12 +133,18 @@ Inspired by the classic Japanese viewer MangaMeeya. It contains no MangaMeeya co
 | Folders | images in the folder |
 | Images | `.png` `.jpg` `.jpeg` `.bmp` `.tiff` `.webp` `.avif` `.tga` `.gif` |
 
+## Releases
+
+For those who do not build it themselves: download the file for your OS and run the binary.
+
+Plugins need an API key or account details for each service. See docs/plugins.md for details.
+
 ## Build
 
-Requires a Rust toolchain, a C/C++ compiler (for RAR support) and dav1d (for AVIF).
+Building needs a Rust toolchain, a C/C++ compiler (for RAR support) and dav1d (for AVIF).
 
 ```sh
-# Arch Linux / Manjaro
+# Arch Linux and derivatives
 sudo pacman -S --needed base-devel rust dav1d
 
 cargo build --release --workspace
@@ -144,15 +161,13 @@ xcopy /e /i .cargo.win .cargo
 cargo build --release --workspace
 ```
 
-`--workspace` also builds the BOOKSCAN, Dropbox and Google Drive plugins (`mangareeda-bookscan`, `mangareeda-dropbox`, `mangareeda-gdrive`) and the OCR plugins (`mangareeda-ocr-tesseract`, and `mangareeda-ocr-windows` on Windows) next to the viewer. Leave it out if you do not need them.
+Building with `--workspace` also builds the BOOKSCAN, Dropbox and Google Drive plugins (`mangareeda-bookscan`, `mangareeda-dropbox`, `mangareeda-gdrive`) and the OCR plugins (`mangareeda-ocr-tesseract`, and `mangareeda-ocr-windows` on Windows) next to the viewer. Leave it out if you do not need them.
 
-OCR on Linux needs Tesseract with Japanese data (on Arch Linux / Manjaro, `sudo pacman -S tesseract tesseract-data-jpn tesseract-data-jpn_vert`). The OCR built into Windows works once Japanese is added in Windows settings.
+OCR on Linux needs Tesseract with Japanese data (on Arch Linux and derivatives, `sudo pacman -S tesseract tesseract-data-jpn tesseract-data-jpn_vert`). On Windows, it should work once Japanese has been added through Windows' language features.
 
-Opening PDFs needs `libpdfium.so`, looked up next to the executable, then system-wide (never in the working directory, for safety; on Windows, the bundled `pdfium.dll` is loaded only from the executable's folder). Without it, only PDFs are unavailable and a message says so.
+Opening PDFs on Linux needs `libpdfium.so`; install it separately. It is looked up next to the executable, then among the system libraries. On Arch Linux and derivatives, the AUR package `pdfium-binaries-bin` installs it as `/usr/lib/libpdfium.so`, which works as is. On other Linux systems, extract the Linux build from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and put `lib/libpdfium.so` next to the executable.
 
-On Arch Linux / Manjaro, the AUR package `pdfium-binaries-bin` installs it as `/usr/lib/libpdfium.so`, which works as is. Elsewhere, extract the Linux build from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and put `lib/libpdfium.so` next to the executable.
-
-To show it with its icon in launchers and docks, run the following after building. It installs a `.desktop` file and the icon into your applications (`~/.local/share/applications`); `--uninstall` removes them.
+On Linux with Wayland, you may need to run the following after building to show the app with its icon in launchers and docks. The script installs a `.desktop` file and the icon into your applications (`~/.local/share/applications`); run it with `--uninstall` to remove them.
 
 ```sh
 packaging/linux/install.sh            # registers target/release/mangareeda
@@ -163,9 +178,17 @@ Settings are stored in `~/.config/MangaReeda/settings.json` (under `XDG_CONFIG_H
 
 ## Disclaimer
 
-MangaReeda is a viewing utility only. It does not provide, host, or link to any content or download sources. Plugins connect to services the user subscribes to, with the user's own account; follow each service's terms. Users are responsible for what they open, and the developers take no responsibility for copyright or other issues arising from it.
+MangaReeda is a tool for viewing.
+
+- It is not meant to provide or distribute manga, comics, archives or other content, and it has no links to download sources.
+- Plugins connect to services the user subscribes to, with the user's own account. Follow each service's terms of use.
+- Users are responsible for the content they open.
+- The developers take no responsibility for copyright infringement or other issues arising from the content or sources users choose.
 
 ## License
 
-Apache License 2.0 ([LICENSE](LICENSE)). Based on [RustMangaReader](https://github.com/Lycoris52/RustMangaReader) by Lycoris52; see [NOTICE](NOTICE).
-The bundled Noto Sans JP font is under the SIL Open Font License 1.1 ([src/assets/OFL.txt](src/assets/OFL.txt)). For `pdfium.dll` and `dav1d.dll`, bundled for Windows, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Apache License 2.0 ([LICENSE](LICENSE)).
+This software is based on [RustMangaReader](https://github.com/Lycoris52/RustMangaReader) by Lycoris52; see [NOTICE](NOTICE).
+
+The bundled Noto Sans JP font is under the SIL Open Font License 1.1 ([src/assets/OFL.txt](src/assets/OFL.txt)).
+For `pdfium.dll` and `dav1d.dll`, bundled for Windows, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
