@@ -263,9 +263,10 @@ fn parse_shelf(html: &str, page: usize) -> (Vec<Book>, bool) {
             let title = attr("alt")
                 .or_else(|| attr("title"))
                 .unwrap_or_else(|| file_name.trim_end_matches(".pdf").to_owned());
+            // 表紙の無い本は、Amazon の「画像なし」の URL になっている（サイトはひな形を出す）
             let cover_url = attr("data-original")
                 .or_else(|| attr("data-amazon-path"))
-                .filter(|url| url.starts_with("https://"));
+                .filter(|url| url.starts_with("https://") && !url.ends_with("/notfound.jpg"));
             Some(Book {
                 id,
                 title,
@@ -325,6 +326,12 @@ mod tests {
     <img src="/mypage/assets/img/common/loading.gif" alt="">
   </a>
 </li>
+<li class="sortable_item">
+  <input type="hidden" name="order_ids[]" class="order_ids" value="6e6f2d636f7665722e706466">
+  <a class="fancybox" href="/mypage/showbook.php?h=ee&amp;d=ff&amp;f=z.pdf&amp;bid=3">
+    <img src="/mypage/assets/img/common/loading.gif" class="lazy" data-original="https://images-na.ssl-images-amazon.com/images/P/notfound.jpg" data-amazon-path="https://images-na.ssl-images-amazon.com/images/P/notfound.jpg" alt="" title="no-cover.pdf">
+  </a>
+</li>
 </ul>
 <a href="?&amp;page=2">2</a>
 </body></html>"#;
@@ -346,6 +353,13 @@ mod tests {
                 Book {
                     id: "/mypage/showbook.php?h=cc&d=dd&f=y.pdf&bid=2".to_owned(),
                     title: "no-cover".to_owned(),
+                    file_name: "no-cover.pdf".to_owned(),
+                    cover_url: None,
+                },
+                // Amazon の「画像なし」は、表紙が無いのと同じ
+                Book {
+                    id: "/mypage/showbook.php?h=ee&d=ff&f=z.pdf&bid=3".to_owned(),
+                    title: "no-cover.pdf".to_owned(),
                     file_name: "no-cover.pdf".to_owned(),
                     cover_url: None,
                 },
