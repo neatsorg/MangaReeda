@@ -1030,6 +1030,26 @@ impl MangaReader {
                         i.pointer.primary_clicked(),
                     )
                 });
+                // メニューの項目やウインドウなど、上に重なったものの上のマウスは受け取らない
+                // （メニューの項目を選んだクリックで、その下の冊まで開かないように）。
+                // 一覧は下地のパネルなので、前面の層の上でなければ一覧の上
+                let pointer = pointer.filter(|pos| {
+                    !self.menu_in_use
+                        && ctx
+                            .layer_id_at(*pos)
+                            .is_none_or(|layer| layer.order == egui::Order::Background)
+                });
+                let clicked = clicked && pointer.is_some();
+                // メニューを使っているあいだのキー（矢印で項目を移る、Enter で決める、Esc で閉じる）は、
+                // メニューのもの。一覧には届けない（Enter で青枠の冊を開いたりしないように）
+                let (keys, scroll_delta) = if self.menu_in_use {
+                    (
+                        (Vec::new(), false, false, false, false, false, false, false),
+                        0.0,
+                    )
+                } else {
+                    (keys, scroll_delta)
+                };
                 let (mut directions, mut enter, escape, mut backspace, mut delete, back, f5, find) =
                     keys;
                 let tab_key = self.pending_shelf_tab.take();

@@ -92,6 +92,8 @@ pub struct MangaReader {
     ime_had_preedit: bool,
     /// 本の中の検索（開いていれば）
     book_search: Option<book_search::BookSearch>,
+    /// このフレームでメニューを使っている（開いていた・項目を選んだ）。一覧はマウスを受け取らない
+    menu_in_use: bool,
     /// OCR で読んでいる本（検索の窓を閉じても続ける）
     book_ocr: Option<book_search::BookOcr>,
     active_animations: [Option<AnimatedPage>; 2],
@@ -213,6 +215,7 @@ impl MangaReader {
             ime_had_preedit: false,
             book_search: None,
             book_ocr: None,
+            menu_in_use: false,
             active_animations: std::array::from_fn(|_| None),
             active_animation_keys: std::array::from_fn(|_| None),
             animated_image_byte_cache: sized_cache::SizedCache::new(ANIMATION_CACHE_BYTES),
@@ -373,11 +376,8 @@ impl eframe::App for MangaReader {
             menu_command = Some(command);
         }
         // メニューやダイアログを使っているあいだは、ページの操作を受け付けない
-        if menu_was_open
-            || self.menu_state.is_open()
-            || menu_command.is_some()
-            || self.menu_dialog.is_some()
-        {
+        self.menu_in_use = menu_was_open || self.menu_state.is_open() || menu_command.is_some();
+        if self.menu_in_use || self.menu_dialog.is_some() {
             action_to_run = MangaAction::None;
         }
 
@@ -2135,6 +2135,119 @@ esac
         for book in ["a", "b"] {
             fs::remove_dir_all(parent.0.join(book)).unwrap();
         }
+    }
+
+    /// メニューの項目など、前面に重なったものの上のクリックは、下の表紙サムネイルの冊を開かない
+    #[test]
+    fn clicks_on_a_menu_over_the_shelf_do_not_open_the_book_below() {
+        let pages = TestPages::new(&[[10, 20]]);
+        let shelf = pages.0.join("shelf");
+        for book in ["a", "b"] {
+            fs::create_dir_all(shelf.join(book)).unwrap();
+            image::RgbaImage::new(4, 4)
+                .save(shelf.join(book).join("01.png"))
+                .unwrap();
+        }
+        let ctx = egui::Context::default();
+        // 画面のあちこちをクリックしてみる。`cover` なら、前面に画面全体を覆う領域を重ねる（メニューの項目と同じ層）
+        let click_around = |cover: bool| {
+            let mut reader = MangaReader::with_settings(AppSettings::default(), None);
+            reader.open_cover_thumbnails(shelf.clone(), None);
+            let frame = |reader: &mut MangaReader, events: Vec<egui::Event>| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                let _ = ctx.run(input, |ctx| {
+                    if cover {
+                        egui::Area::new(egui::Id::new("cover"))
+                            .order(egui::Order::Foreground)
+                            .fixed_pos(egui::Pos2::ZERO)
+                            .show(ctx, |ui| {
+                                ui.allocate_space(egui::vec2(600.0, 400.0));
+                            });
+                    }
+                    reader.render_thumbnails(ctx);
+                });
+            };
+            frame(&mut reader, Vec::new());
+            for y in (60..400).step_by(40) {
+                for x in (20..600).step_by(40) {
+                    let pos = egui::pos2(x as f32, y as f32);
+                    let press = |pressed| egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    };
+                    frame(
+                        &mut reader,
+                        vec![egui::Event::PointerMoved(pos), press(true)],
+                    );
+                    frame(&mut reader, vec![press(false)]);
+                    if reader.zip_path.is_some() {
+                        return true;
+                    }
+                }
+            }
+            false
+        };
+        // 重なったものが無ければ、どこかで冊が開く。重なっていれば、どこをクリックしても開かない
+        assert!(click_around(false));
+        assert!(!click_around(true));
+        fs::remove_dir_all(shelf).unwrap();
+    }
+
+    /// メニューを使っているあいだの Enter や矢印キーは、表紙サムネイルに届かない
+    /// （メニューの項目を Enter で決めたときに、青枠の冊まで開かないように）
+    #[test]
+    fn keys_for_the_menu_do_not_reach_the_shelf() {
+        let pages = TestPages::new(&[[10, 20]]);
+        let shelf = pages.0.join("shelf");
+        for book in ["a", "b"] {
+            fs::create_dir_all(shelf.join(book)).unwrap();
+            image::RgbaImage::new(4, 4)
+                .save(shelf.join(book).join("01.png"))
+                .unwrap();
+        }
+        let ctx = egui::Context::default();
+        let press = |reader: &mut MangaReader, key| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 400.0),
+                )),
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| reader.render_thumbnails(ctx));
+        };
+        let mut reader = MangaReader::with_settings(AppSettings::default(), None);
+        reader.open_cover_thumbnails(shelf.clone(), None);
+        reader.menu_in_use = true;
+        press(&mut reader, egui::Key::ArrowRight);
+        press(&mut reader, egui::Key::Enter);
+        press(&mut reader, egui::Key::Escape);
+        assert!(reader.zip_path.is_none());
+        let view = reader.thumbnails.as_ref().unwrap();
+        assert_eq!(view.selected(), 0);
+        // メニューを使っていなければ、今までどおり
+        reader.menu_in_use = false;
+        press(&mut reader, egui::Key::ArrowRight);
+        assert_eq!(reader.thumbnails.as_ref().unwrap().selected(), 1);
+        press(&mut reader, egui::Key::Enter);
+        assert_eq!(reader.zip_path, Some(shelf.join("b")));
+        fs::remove_dir_all(shelf).unwrap();
     }
 
     /// 1フレーム分のマウス入力を与え、画面全体を覆う領域で拾った操作を返す
