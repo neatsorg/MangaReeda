@@ -1248,6 +1248,72 @@ mod tests {
         assert!(reader.book_search.is_none());
     }
 
+    /// 文字の層の無い本は、検索の窓から OCR のプラグインで読み、探せるようになる
+    #[cfg(unix)]
+    #[test]
+    fn books_without_text_can_be_read_with_ocr_from_the_search_window() {
+        use std::os::unix::fs::PermissionsExt;
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        let plugin_dir = pages.0.join("plugin");
+        fs::create_dir(&plugin_dir).unwrap();
+        let script = plugin_dir.join("ocr.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\nread request\n\
+             for page in $(echo \"$request\" | grep -o '\"page\":[0-9]*' | cut -d: -f2); do\n\
+             echo \"{\\\"page\\\": $page, \\\"text\\\": \\\"ページ$page\\\"}\"\n\
+             done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        reader.plugins = super::plugins::PluginHost::with(
+            vec![crate::engine::plugin::PluginManifest {
+                id: "fake".to_owned(),
+                name: "Fake OCR".to_owned(),
+                command: vec!["./ocr.sh".to_owned()],
+                credentials: Vec::new(),
+                auth: false,
+                kind: crate::engine::plugin::PluginKind::Ocr,
+                dir: plugin_dir.clone(),
+            }],
+            crate::engine::credentials::Credentials::memory_only(),
+            pages.0.join("cache"),
+        );
+        // OCR のプラグインは、本の一覧のタブには並べない
+        assert!(reader.plugins.manifests.is_empty());
+        assert_eq!(reader.ocr_engine().map(|e| e.id.as_str()), Some("fake"));
+        let frame = |reader: &mut MangaReader| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                reader.render_book_search(ctx)
+            });
+        };
+        reader.open_book_search();
+        reader.start_book_ocr();
+        reader.book_search.as_mut().unwrap().query = "ページ1".to_owned();
+        for _ in 0..300 {
+            frame(&mut reader);
+            if !reader.book_search.as_ref().unwrap().hits.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let hits = &reader.book_search.as_ref().unwrap().hits;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].page, 1);
+        fs::remove_dir_all(&plugin_dir).unwrap();
+        let _ = fs::remove_dir_all(pages.0.join("cache"));
+    }
+
     /// 検索の窓が開いているあいだの Esc は、窓を閉じるだけで、終了などのキー操作には渡さない
     #[test]
     fn escape_closes_the_book_search_without_reaching_shortcuts() {
@@ -1497,6 +1563,7 @@ mod tests {
                 command: vec![library.join("missing").to_string_lossy().into_owned()],
                 credentials: Vec::new(),
                 auth: false,
+                kind: crate::engine::plugin::PluginKind::Books,
                 dir: library.clone(),
             }],
             crate::engine::credentials::Credentials::memory_only(),
@@ -1670,6 +1737,7 @@ esac
                 command: vec!["./run.sh".to_owned()],
                 credentials: Vec::new(),
                 auth: false,
+                kind: crate::engine::plugin::PluginKind::Books,
                 dir: root.clone(),
             }],
             crate::engine::credentials::Credentials::memory_only(),

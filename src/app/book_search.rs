@@ -1,9 +1,12 @@
-//! 本の中の検索。いまは PDF の透明テキストを探す（文字の層の無い本は、OCR を足すまで探せない）。
-//! 本の文字は別のスレッドで取り出し、ためておく。語を打つたびに探し直し、選ぶとそのページへ移る。
+//! 本の中の検索。PDF の透明テキストを探す。文字の層の無い本は、OCR のプラグインで読んでから探す。
+//! 本の文字は別のスレッドで取り出し（読み）、ためておく。語を打つたびに探し直し、選ぶとそのページへ移る。
 
 use super::MangaReader;
 use crate::config::SourceMode;
-use crate::engine::book_text::{Hit, LoadedText, SearchIndex, TextProgress, spawn_book_text};
+use crate::engine::book_text::{
+    Hit, LoadedText, OcrSource, SearchIndex, TextProgress, spawn_book_ocr, spawn_book_text,
+};
+use crate::engine::plugin::{PluginError, PluginManifest};
 use crate::engine::settings_store;
 use crate::localize::tr;
 use eframe::egui;
@@ -23,6 +26,10 @@ pub(super) struct BookSearch {
     focus: bool,
     index: Option<SearchIndex>,
     loading: Option<Receiver<Option<LoadedText>>>,
+    /// OCR で読んでいるあいだの知らせ
+    reading: Option<Receiver<Result<LoadedText, PluginError>>>,
+    /// OCR が失敗した理由
+    ocr_error: Option<String>,
     progress: Arc<TextProgress>,
     cancel: Arc<AtomicBool>,
     /// 文字の層が無い（探せない）
@@ -44,8 +51,30 @@ impl Drop for BookSearch {
 }
 
 impl BookSearch {
-    /// 取り出しの知らせを受け取る。取り出しているあいだは true
+    /// 取り出しと OCR の知らせを受け取る。どちらかをしているあいだは true
     fn poll(&mut self) -> bool {
+        if let Some(rx) = &self.reading {
+            match rx.try_recv() {
+                Ok(Ok(loaded)) => {
+                    self.reading = None;
+                    self.no_text = false;
+                    self.failed = loaded.failed;
+                    self.index = Some(loaded.index);
+                    self.searched.clear();
+                }
+                Ok(Err(error)) => {
+                    self.reading = None;
+                    // 理由が空なのは、利用者がやめたとき
+                    let message = error.message().trim();
+                    if !message.is_empty() {
+                        self.ocr_error = Some(message.to_owned());
+                    }
+                }
+                Err(TryRecvError::Empty) => return true,
+                Err(TryRecvError::Disconnected) => self.reading = None,
+            }
+            return false;
+        }
         let Some(rx) = &self.loading else {
             return false;
         };
@@ -83,11 +112,8 @@ impl BookSearch {
     }
 
     fn status(&self) -> String {
-        if self.no_text {
-            return tr("search.no_text").to_owned();
-        }
-        if self.loading.is_some() {
-            return tr("search.loading")
+        let progress = |key: &str| {
+            tr(key)
                 .replace(
                     "{done}",
                     &self.progress.done.load(Ordering::Relaxed).to_string(),
@@ -95,7 +121,19 @@ impl BookSearch {
                 .replace(
                     "{total}",
                     &self.progress.total.load(Ordering::Relaxed).to_string(),
-                );
+                )
+        };
+        if self.reading.is_some() {
+            return progress("search.ocr_reading");
+        }
+        if let Some(error) = &self.ocr_error {
+            return format!("{}: {error}", tr("search.ocr_failed"));
+        }
+        if self.no_text {
+            return tr("search.no_text").to_owned();
+        }
+        if self.loading.is_some() {
+            return progress("search.loading");
         }
         let failed = if self.failed > 0 {
             format!(
@@ -131,30 +169,74 @@ impl MangaReader {
         }
         let progress = Arc::new(TextProgress::default());
         let cancel = Arc::new(AtomicBool::new(false));
+        // PDF は透明テキストを、ほかの本は前に OCR してためた文字を読む
         let pdfium = crate::engine::pdf::pdfium().filter(|_| self.source_mode == SourceMode::Pdf);
-        let loading = pdfium.map(|pdfium| {
-            spawn_book_text(
-                pdfium,
-                book.clone(),
-                settings_store::cache_dir(),
-                progress.clone(),
-                cancel.clone(),
-            )
-        });
+        let loading = spawn_book_text(
+            pdfium,
+            book.clone(),
+            settings_store::cache_dir(),
+            progress.clone(),
+            cancel.clone(),
+        );
         self.book_search = Some(BookSearch {
             book,
             query: String::new(),
             focus: true,
             index: None,
-            no_text: loading.is_none(),
+            no_text: false,
             failed: 0,
-            loading,
+            loading: Some(loading),
+            reading: None,
+            ocr_error: None,
             progress,
             cancel,
             hits: Vec::new(),
             searched: String::new(),
             selected: None,
         });
+    }
+
+    /// 使う OCR のプラグイン。設定で選んだもの、無ければ最初に見つかったもの
+    pub(super) fn ocr_engine(&self) -> Option<&PluginManifest> {
+        let engines = &self.plugins.ocr_engines;
+        engines
+            .iter()
+            .find(|engine| engine.id == self.config.ocr_engine)
+            .or_else(|| engines.first())
+    }
+
+    /// 今の本を OCR のプラグインで読み始める
+    pub(super) fn start_book_ocr(&mut self) {
+        let Some(engine) = self.ocr_engine().cloned() else {
+            return;
+        };
+        let Some(book) = self.zip_path.clone() else {
+            return;
+        };
+        let credentials = self.plugins.credentials_for(&engine);
+        let source = OcrSource {
+            mode: self.source_mode,
+            root: book.clone(),
+            names: self.image_files.clone(),
+        };
+        let pdfium = crate::engine::pdf::pdfium();
+        let Some(search) = self.book_search.as_mut() else {
+            return;
+        };
+        // 前にやめたときの印が残らないよう、止める印は読むたびに新しくする
+        search.cancel = Arc::new(AtomicBool::new(false));
+        search.progress = Arc::new(TextProgress::default());
+        search.ocr_error = None;
+        search.reading = Some(spawn_book_ocr(
+            engine,
+            credentials,
+            book,
+            source,
+            pdfium,
+            settings_store::cache_dir(),
+            search.progress.clone(),
+            search.cancel.clone(),
+        ));
     }
 
     /// 検索の窓が開いていれば、Esc で閉じる。Esc はここで使い切り、ほかのキー操作には渡さない
@@ -185,6 +267,11 @@ impl MangaReader {
         let mut open = true;
         let mut close = false;
         let mut go = None;
+        let mut start_ocr = false;
+        let engine_name = self.ocr_engine().map(|engine| engine.name.clone());
+        let Some(search) = self.book_search.as_mut() else {
+            return;
+        };
         egui::Window::new(tr("search.title"))
             .open(&mut open)
             .default_pos(ctx.content_rect().right_top() + egui::vec2(-400.0, 60.0))
@@ -219,6 +306,35 @@ impl MangaReader {
                     close = true;
                 }
                 ui.label(egui::RichText::new(search.status()).small());
+                // 文字の層が無い本は、OCR で読める。読んでいるあいだは、やめられる
+                if search.reading.is_some() {
+                    if ui.button(tr("search.ocr_stop")).clicked() {
+                        search.cancel.store(true, Ordering::Relaxed);
+                    }
+                } else if search.index.is_some() {
+                    // 文字の層があっても質が悪いとき（マンガの透明テキストなど）は、OCR で読み直せる
+                    if let Some(name) = &engine_name
+                        && ui
+                            .small_button(tr("search.ocr_again").replace("{engine}", name))
+                            .clicked()
+                    {
+                        start_ocr = true;
+                    }
+                } else if search.no_text {
+                    match &engine_name {
+                        Some(name) => {
+                            if ui
+                                .button(tr("search.ocr_start").replace("{engine}", name))
+                                .clicked()
+                            {
+                                start_ocr = true;
+                            }
+                        }
+                        None => {
+                            ui.label(egui::RichText::new(tr("search.no_ocr")).small());
+                        }
+                    }
+                }
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (index, hit) in search.hits.iter().enumerate() {
@@ -235,6 +351,10 @@ impl MangaReader {
             });
         if !open || close {
             self.book_search = None;
+            return;
+        }
+        if start_ocr {
+            self.start_book_ocr();
             return;
         }
         let Some(index) = go else {

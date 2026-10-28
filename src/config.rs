@@ -817,6 +817,8 @@ pub struct AppSettings {
     /// プラグインごとに、最後に見ていたフォルダ（次に開いたときにそこから）
     #[serde(default)]
     pub plugin_folders: std::collections::HashMap<String, String>,
+    /// 本の中の検索で使う OCR のプラグインの id。空なら最初に見つかったもの
+    pub ocr_engine: String,
     pub enable_auto_image_byte_fix: bool,
     pub last_page_action: LastPageAction,
     #[serde(default)]
@@ -945,6 +947,7 @@ impl Default for AppSettings {
             split_landscape_pages: false,
             library_dir: String::new(),
             plugin_folders: std::collections::HashMap::new(),
+            ocr_engine: String::new(),
             image_sizing_mode: ImageSizingMode::FitHeight,
             spread_center_offset: 0.0,
             cover_blank_page: false,

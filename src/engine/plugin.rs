@@ -65,8 +65,22 @@ pub struct PluginManifest {
     /// ブラウザで許可する接続（auth-url）に答えるか
     #[serde(default)]
     pub auth: bool,
+    /// プラグインの種類。省けば本の一覧
+    #[serde(default)]
+    pub kind: PluginKind,
     #[serde(skip)]
     pub dir: PathBuf,
+}
+
+/// プラグインの種類
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginKind {
+    /// 本の一覧を返し、本をダウンロードする（list・download）
+    #[default]
+    Books,
+    /// ページの画像の文字を読む（ocr）
+    Ocr,
 }
 
 /// プラグインが返す本
@@ -222,7 +236,7 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
         let path = exe_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
         vec![path.to_string_lossy().into_owned()]
     };
-    vec![
+    let mut plugins = vec![
         PluginManifest {
             id: "bookscan".to_owned(),
             name: "BOOKSCAN".to_owned(),
@@ -232,6 +246,7 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
                 CredentialField::new("password", true, false),
             ],
             auth: false,
+            kind: PluginKind::Books,
             dir: exe_dir.to_path_buf(),
         },
         PluginManifest {
@@ -246,6 +261,7 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
                 CredentialField::new("account_id", false, true),
             ],
             auth: true,
+            kind: PluginKind::Books,
             dir: exe_dir.to_path_buf(),
         },
         PluginManifest {
@@ -261,9 +277,39 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
                 CredentialField::new("account_id", false, true),
             ],
             auth: true,
+            kind: PluginKind::Books,
             dir: exe_dir.to_path_buf(),
         },
-    ]
+        PluginManifest {
+            id: "tesseract".to_owned(),
+            name: "Tesseract".to_owned(),
+            command: program("mangareeda-ocr-tesseract"),
+            credentials: Vec::new(),
+            auth: false,
+            kind: PluginKind::Ocr,
+            dir: exe_dir.to_path_buf(),
+        },
+    ];
+    // Windows に入っている OCR は、Windows でだけ使える。Windows では、これを既定（最初の OCR）にする
+    if cfg!(windows) {
+        let first_ocr = plugins
+            .iter()
+            .position(|plugin| plugin.kind == PluginKind::Ocr)
+            .unwrap_or(plugins.len());
+        plugins.insert(
+            first_ocr,
+            PluginManifest {
+                id: "windows-ocr".to_owned(),
+                name: "Windows OCR".to_owned(),
+                command: program("mangareeda-ocr-windows"),
+                credentials: Vec::new(),
+                auth: false,
+                kind: PluginKind::Ocr,
+                dir: exe_dir.to_path_buf(),
+            },
+        );
+    }
+    plugins
 }
 
 /// 標準出力の行から、"store" の値を集める
@@ -424,6 +470,8 @@ struct Watch {
     last: Mutex<Instant>,
     /// 止めてほしい（受け手がいなくなったときなど）
     stop: AtomicBool,
+    /// 外から止めてほしいとき（利用者がやめたとき）に立つ
+    cancel: Option<Arc<AtomicBool>>,
     timed_out: AtomicBool,
     /// 終わったときと、終わり方
     ended: Mutex<Option<(Instant, Result<ExitStatus, String>)>>,
@@ -448,11 +496,13 @@ struct Running {
 
 impl Running {
     /// プラグインを起動し、ログイン情報を渡して、見張りを始める
+    /// `request` は、標準入力に渡す1行（ログイン情報など）。`cancel` が立ったら止める
     fn start(
         manifest: &PluginManifest,
-        credentials: &HashMap<String, String>,
+        request: &str,
         args: &[&str],
         limit: Duration,
+        cancel: Option<Arc<AtomicBool>>,
     ) -> Result<Self, PluginError> {
         let mut command = manifest
             .command(args)
@@ -469,7 +519,7 @@ impl Running {
                 "プラグインとつながりませんでした".to_owned(),
             ));
         };
-        let _ = writeln!(stdin, "{}", request_line(credentials));
+        let _ = writeln!(stdin, "{request}");
         drop(stdin);
 
         let (line_tx, lines) = channel();
@@ -496,6 +546,7 @@ impl Running {
         let watch = Arc::new(Watch {
             last: Mutex::new(Instant::now()),
             stop: AtomicBool::new(false),
+            cancel,
             timed_out: AtomicBool::new(false),
             ended: Mutex::new(None),
         });
@@ -507,7 +558,11 @@ impl Running {
                     .last
                     .lock()
                     .map_or(Duration::ZERO, |last| last.elapsed());
-                let stop = shared.stop.load(Ordering::Relaxed);
+                let stop = shared.stop.load(Ordering::Relaxed)
+                    || shared
+                        .cancel
+                        .as_ref()
+                        .is_some_and(|cancel| cancel.load(Ordering::Relaxed));
                 let exited = group.exited(&mut child);
                 if !exited && !stop && idle <= limit {
                     continue;
@@ -615,7 +670,7 @@ fn run_reporting(
     limit: Duration,
     progress: Option<&ListProgress>,
 ) -> (Result<String, PluginError>, Store) {
-    let running = match Running::start(manifest, credentials, args, limit) {
+    let running = match Running::start(manifest, &request_line(credentials), args, limit, None) {
         Ok(running) => running,
         Err(error) => return (Err(error), Store::new()),
     };
@@ -680,6 +735,47 @@ fn failure(code: Option<i32>, stderr: &str) -> PluginError {
     } else {
         PluginError::Other(message)
     }
+}
+
+/// OCR で、読み終えたページが届かないまま待つ時間（準備に時間のかかるエンジンもあるので長め）
+const OCR_IDLE_LIMIT: Duration = Duration::from_secs(5 * 60);
+
+/// OCR で読ませるページの画像
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct OcrImage {
+    /// ページ（0 から）
+    pub page: usize,
+    pub path: PathBuf,
+}
+
+/// OCR のプラグインが返す、1ページぶんの文字
+#[derive(Deserialize)]
+struct OcrLine {
+    page: usize,
+    #[serde(default)]
+    text: String,
+}
+
+/// OCR のプラグインに、まとめて画像を読ませる（`ocr` の命令）。読めたページから順に
+/// `on_page(ページ, 文字)` を呼ぶ。ページが届くたびに、時間の上限を数え直す。`cancel` が立ったら止める
+pub fn ocr_images(
+    manifest: &PluginManifest,
+    credentials: &HashMap<String, String>,
+    images: &[OcrImage],
+    cancel: Arc<AtomicBool>,
+    mut on_page: impl FnMut(usize, String),
+) -> Result<(), PluginError> {
+    let request = serde_json::json!({ "credentials": credentials, "images": images }).to_string();
+    let running = Running::start(manifest, &request, &["ocr"], OCR_IDLE_LIMIT, Some(cancel))?;
+    while let Some(line) = running.next_line() {
+        if let Ok(line) = serde_json::from_str::<OcrLine>(&line) {
+            running.touch();
+            on_page(line.page, line.text);
+        } else if serde_json::from_str::<ProgressLine>(&line).is_ok() {
+            running.touch();
+        }
+    }
+    running.finish()
 }
 
 /// 一覧を取っているあいだの進み具合（済んだ数, 全体の数）。プラグインが知らせたときだけ入る
@@ -771,7 +867,13 @@ fn spawn_download_within(
         }
         let dest_text = dest.to_string_lossy().into_owned();
         let args = ["download", id.as_str(), dest_text.as_str()];
-        let running = match Running::start(&manifest, &credentials, &args, idle_limit) {
+        let running = match Running::start(
+            &manifest,
+            &request_line(&credentials),
+            &args,
+            idle_limit,
+            None,
+        ) {
             Ok(running) => running,
             Err(error) => return done(Err(error)),
         };
@@ -987,6 +1089,7 @@ mod tests {
             command: vec!["./run.sh".to_owned()],
             credentials: Vec::new(),
             auth: false,
+            kind: PluginKind::Books,
             dir: dir.to_path_buf(),
         }
     }
@@ -1060,6 +1163,7 @@ mod tests {
             ],
             credentials: Vec::new(),
             auth: false,
+            kind: PluginKind::Books,
             dir: std::env::temp_dir(),
         };
         // cmd の子の ping が、標準出力を握ったまま 30 秒動く
@@ -1132,6 +1236,7 @@ esac
             command: vec!["./run.sh".to_owned()],
             credentials: Vec::new(),
             auth: true,
+            kind: PluginKind::Books,
             dir: dir.clone(),
         };
         let good = HashMap::from([("token".to_owned(), "good".to_owned())]);

@@ -6,8 +6,8 @@ use super::MangaReader;
 use super::thumbnails::ShelfSource;
 use crate::engine::credentials::{Credentials, Stored};
 use crate::engine::plugin::{
-    DownloadEvent, ListCache, ListProgress, Listing, PluginError, PluginManifest, RemoteBook,
-    Store, auth_url, local_path, spawn_download, spawn_list,
+    DownloadEvent, ListCache, ListProgress, Listing, PluginError, PluginKind, PluginManifest,
+    RemoteBook, Store, auth_url, local_path, spawn_download, spawn_list,
 };
 use crate::engine::settings_store;
 use crate::engine::thumbnail::{CoverEntry, RemoteRef, cover_cache_name};
@@ -108,7 +108,10 @@ pub(super) enum DownloadStatus {
 }
 
 pub(super) struct PluginHost {
+    /// 本の一覧のプラグイン（表紙サムネイルのタブ）
     pub(super) manifests: Vec<PluginManifest>,
+    /// OCR のプラグイン
+    pub(super) ocr_engines: Vec<PluginManifest>,
     pub(super) shelves: HashMap<ShelfKey, PluginShelf>,
     credentials: Credentials,
     queue: VecDeque<PendingDownload>,
@@ -156,8 +159,13 @@ impl PluginHost {
         credentials: Credentials,
         cache_dir: PathBuf,
     ) -> Self {
+        // 本の一覧のプラグインはタブに並べ、OCR のプラグインは本の中の検索で使う
+        let (ocr_engines, manifests) = manifests
+            .into_iter()
+            .partition(|manifest| manifest.kind == PluginKind::Ocr);
         Self {
             manifests,
+            ocr_engines,
             shelves: HashMap::new(),
             credentials,
             queue: VecDeque::new(),
@@ -212,7 +220,7 @@ impl PluginHost {
     }
 
     /// プラグインに渡すログイン情報（隠した項目も含む）
-    fn credentials_for(&self, manifest: &PluginManifest) -> HashMap<String, String> {
+    pub(super) fn credentials_for(&self, manifest: &PluginManifest) -> HashMap<String, String> {
         self.credentials.for_plugin(&manifest.id, &manifest.keys())
     }
 
@@ -872,12 +880,41 @@ impl MangaReader {
         {
             self.save_settings();
         }
-        if self.plugins.manifests.is_empty() {
+        if self.plugins.manifests.is_empty() && self.plugins.ocr_engines.is_empty() {
             ui.add_space(6.0);
             ui.label(tr("settings.no_plugins"));
             return;
         }
-        let manifests = self.plugins.manifests.clone();
+        // 本の中の検索で使う OCR のエンジン
+        if !self.plugins.ocr_engines.is_empty() {
+            ui.add_space(6.0);
+            let current = self
+                .ocr_engine()
+                .map(|engine| engine.name.clone())
+                .unwrap_or_default();
+            let mut chosen = None;
+            egui::ComboBox::from_label(tr("settings.ocr_engine"))
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for engine in &self.plugins.ocr_engines {
+                        if ui.selectable_label(false, &engine.name).clicked() {
+                            chosen = Some(engine.id.clone());
+                        }
+                    }
+                });
+            if let Some(id) = chosen {
+                self.config.ocr_engine = id;
+                self.save_settings();
+            }
+        }
+        // ログイン情報の欄は、本の一覧のプラグインと OCR のプラグインの両方に出す
+        let manifests: Vec<PluginManifest> = self
+            .plugins
+            .manifests
+            .iter()
+            .chain(&self.plugins.ocr_engines)
+            .cloned()
+            .collect();
         for manifest in manifests {
             let mut changed = false;
             ui.add_space(10.0);

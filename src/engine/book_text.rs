@@ -1,9 +1,13 @@
 //! 本の文字（いまは PDF の透明テキスト）を取り出し、ためておき、検索する。
 //! 取り出した文字は本ごとにファイルにためておき、本が変わっていなければ次からはそれを使う。
 
-use crate::engine::pdf::SharedPdfium;
+use crate::config::SourceMode;
+use crate::engine::pdf::{PdfDoc, SharedPdfium};
+use crate::engine::plugin::{OcrImage, PluginError, PluginManifest, ocr_images};
+use crate::engine::source::SourceReader;
 use crate::engine::thumbnail::cover_cache_name;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -41,6 +45,9 @@ const CACHE_LIMIT: usize = 300;
 struct CacheFile {
     size: u64,
     modified: u64,
+    /// どう読んだか（"pdf" は透明テキスト、"ocr:<プラグインの id>" は OCR）
+    #[serde(default)]
+    source: String,
     pages: Vec<String>,
 }
 
@@ -80,7 +87,7 @@ fn load_cache(book: &Path, cache_dir: &Path) -> Option<BookText> {
 }
 
 /// 取り出した文字をためておき、上限を超えたら古いものから消す
-fn save_cache(book: &Path, cache_dir: &Path, text: &BookText) {
+fn save_cache(book: &Path, cache_dir: &Path, text: &BookText, source: &str) {
     let Some((size, modified)) = version(book) else {
         return;
     };
@@ -88,6 +95,7 @@ fn save_cache(book: &Path, cache_dir: &Path, text: &BookText) {
     let cache = CacheFile {
         size,
         modified,
+        source: source.to_owned(),
         pages: text.pages.clone(),
     };
     if let Some(parent) = path.parent()
@@ -150,7 +158,7 @@ fn pdf_text(
         progress.done.store(index + 1, Ordering::Relaxed);
     }
     if text.failed == 0 {
-        save_cache(book, cache_dir, &text);
+        save_cache(book, cache_dir, &text, "pdf");
     }
     Some(text)
 }
@@ -164,9 +172,20 @@ pub struct LoadedText {
     pub failed: usize,
 }
 
-/// 本の文字を別のスレッドで取り出し、検索のための形にする。`cancel` を立てると止まる
+impl LoadedText {
+    fn new(text: &BookText) -> Self {
+        Self {
+            index: SearchIndex::new(text),
+            empty: text.is_empty(),
+            failed: text.failed,
+        }
+    }
+}
+
+/// 本の文字を別のスレッドで取り出し、検索のための形にする。`cancel` を立てると止まる。
+/// PDF なら透明テキストを（`pdfium` を渡す）、ほかの本は前に OCR してためたものだけを使う
 pub fn spawn_book_text(
-    pdfium: SharedPdfium,
+    pdfium: Option<SharedPdfium>,
     book: PathBuf,
     cache_dir: PathBuf,
     progress: Arc<TextProgress>,
@@ -174,13 +193,169 @@ pub fn spawn_book_text(
 ) -> Receiver<Option<LoadedText>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let loaded =
-            pdf_text(pdfium, &book, &cache_dir, &progress, &cancel).map(|text| LoadedText {
-                index: SearchIndex::new(&text),
-                empty: text.is_empty(),
-                failed: text.failed,
-            });
-        let _ = tx.send(loaded);
+        let text = match pdfium {
+            Some(pdfium) => pdf_text(pdfium, &book, &cache_dir, &progress, &cancel),
+            None => Some(load_cache(&book, &cache_dir).unwrap_or_default()),
+        };
+        let _ = tx.send(text.as_ref().map(LoadedText::new));
+    });
+    rx
+}
+
+/// OCR で読む本のページ
+pub struct OcrSource {
+    pub mode: SourceMode,
+    /// 書庫・フォルダ・PDF
+    pub root: PathBuf,
+    /// ページの名前（`source::list_images` の並び。PDF は "pdf_page_<番号>"）
+    pub names: Vec<String>,
+}
+
+/// 一度に OCR のプラグインに渡すページの数
+const OCR_BATCH: usize = 16;
+/// OCR に渡す画像の長い辺の上限（ピクセル）
+const OCR_MAX_SIDE: u32 = 2400;
+/// PDF のページを描く高さ（ピクセル）
+const OCR_PDF_HEIGHT: f32 = 2000.0;
+
+/// OCR に渡すページの画像を、PNG にそろえて `path` に書く
+fn write_ocr_image(
+    source: &OcrSource,
+    reader: &mut Option<SourceReader>,
+    pdf: Option<&PdfDoc>,
+    page: usize,
+    path: &Path,
+) -> Option<()> {
+    let image = match pdf {
+        Some(pdf) => pdf.render(page, OCR_PDF_HEIGHT, Some(OCR_PDF_HEIGHT))?,
+        None => {
+            let reader =
+                reader.get_or_insert_with(|| SourceReader::open(source.mode, &source.root));
+            let bytes = reader.read(source.names.get(page)?)?;
+            image::load_from_memory(&bytes).ok()?
+        }
+    };
+    let image = if image.width().max(image.height()) > OCR_MAX_SIDE {
+        image.resize(
+            OCR_MAX_SIDE,
+            OCR_MAX_SIDE,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        image
+    };
+    image.save_with_format(path, image::ImageFormat::Png).ok()
+}
+
+/// 作業用のフォルダの名前に付ける通し番号
+static OCR_WORK: AtomicUsize = AtomicUsize::new(0);
+
+/// 本のページを OCR のプラグインで読む。読めなかったページは数え、そういう本はためておかない。
+/// やめたとき（`cancel`）は空の理由の、プラグインが失敗したときはその理由のエラーを返す
+#[allow(clippy::too_many_arguments)]
+fn ocr_text(
+    manifest: &PluginManifest,
+    credentials: &HashMap<String, String>,
+    book: &Path,
+    source: &OcrSource,
+    pdfium: Option<SharedPdfium>,
+    cache_dir: &Path,
+    progress: &TextProgress,
+    cancel: &Arc<AtomicBool>,
+) -> Result<BookText, PluginError> {
+    let pdf = match (source.mode, pdfium) {
+        (SourceMode::Pdf, Some(pdfium)) => Some(
+            pdfium
+                .open(&source.root)
+                .ok_or_else(|| PluginError::Other("PDF を開けませんでした".to_owned()))?,
+        ),
+        _ => None,
+    };
+    let total = source.names.len();
+    progress.total.store(total, Ordering::Relaxed);
+    let mut pages: Vec<Option<String>> = vec![None; total];
+    let work = cache_dir.join("ocr-work").join(format!(
+        "{}-{}",
+        std::process::id(),
+        OCR_WORK.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut reader = None;
+    let mut done = 0;
+    let mut result = Ok(());
+    let order: Vec<usize> = (0..total).collect();
+    for batch in order.chunks(OCR_BATCH) {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let _ = std::fs::create_dir_all(&work);
+        let images: Vec<OcrImage> = batch
+            .iter()
+            .filter_map(|&page| {
+                let path = work.join(format!("page-{page:05}.png"));
+                write_ocr_image(source, &mut reader, pdf.as_ref(), page, &path)?;
+                Some(OcrImage { page, path })
+            })
+            .collect();
+        let answer = ocr_images(
+            manifest,
+            credentials,
+            &images,
+            cancel.clone(),
+            |page, text| {
+                if let Some(slot) = pages.get_mut(page)
+                    && slot.is_none()
+                {
+                    *slot = Some(text);
+                    done += 1;
+                    progress.done.store(done, Ordering::Relaxed);
+                }
+            },
+        );
+        let _ = std::fs::remove_dir_all(&work);
+        if let Err(error) = answer {
+            result = Err(error);
+            break;
+        }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(PluginError::Other(String::new()));
+    }
+    result?;
+    let text = BookText {
+        failed: pages.iter().filter(|page| page.is_none()).count(),
+        pages: pages.into_iter().map(Option::unwrap_or_default).collect(),
+    };
+    if text.failed == 0 {
+        save_cache(book, cache_dir, &text, &format!("ocr:{}", manifest.id));
+    }
+    Ok(text)
+}
+
+/// 本のページを OCR のプラグインで読み、検索のための形にする（別のスレッド）
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_book_ocr(
+    manifest: PluginManifest,
+    credentials: HashMap<String, String>,
+    book: PathBuf,
+    source: OcrSource,
+    pdfium: Option<SharedPdfium>,
+    cache_dir: PathBuf,
+    progress: Arc<TextProgress>,
+    cancel: Arc<AtomicBool>,
+) -> Receiver<Result<LoadedText, PluginError>> {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let text = ocr_text(
+            &manifest,
+            &credentials,
+            &book,
+            &source,
+            pdfium,
+            &cache_dir,
+            &progress,
+            &cancel,
+        );
+        let _ = tx.send(text.map(|text| LoadedText::new(&text)));
     });
     rx
 }
@@ -383,12 +558,12 @@ mod tests {
         let book = dir.join("a.pdf");
         std::fs::write(&book, "1").unwrap();
         let text = book_text(vec!["文字".to_owned()]);
-        save_cache(&book, &dir, &text);
+        save_cache(&book, &dir, &text, "pdf");
         assert_eq!(load_cache(&book, &dir), Some(text));
         // 本が変わったら、ためておいたものは使わず、同じファイルを書き直す
         std::fs::write(&book, "22").unwrap();
         assert_eq!(load_cache(&book, &dir), None);
-        save_cache(&book, &dir, &book_text(vec!["新".to_owned()]));
+        save_cache(&book, &dir, &book_text(vec!["新".to_owned()]), "pdf");
         assert_eq!(std::fs::read_dir(dir.join("text")).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -483,7 +658,7 @@ mod tests {
         std::fs::write(&book, pdf_with_text()).unwrap();
         let progress = Arc::new(TextProgress::default());
         let rx = spawn_book_text(
-            pdfium,
+            Some(pdfium),
             book.clone(),
             dir.join("cache"),
             progress.clone(),
@@ -498,6 +673,87 @@ mod tests {
         assert_eq!(hits[0].page, 1);
         // 2回目は、ためておいたものを使う
         assert!(cache_path(&book, &dir.join("cache")).is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// ページごとに「ページ<番号> の文字」を返す、テスト用の OCR のプラグイン
+    #[cfg(unix)]
+    fn script_ocr(dir: &Path) -> PluginManifest {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("ocr.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nread request\n\
+             for page in $(echo \"$request\" | grep -o '\"page\":[0-9]*' | cut -d: -f2); do\n\
+             echo \"{\\\"page\\\": $page, \\\"text\\\": \\\"ページ$page の 文字\\\"}\"\n\
+             done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        PluginManifest {
+            id: "fake".to_owned(),
+            name: "Fake OCR".to_owned(),
+            command: vec!["./ocr.sh".to_owned()],
+            credentials: Vec::new(),
+            auth: false,
+            kind: crate::engine::plugin::PluginKind::Ocr,
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    /// 文字の層の無い本を OCR のプラグインで読み、探せるようにして、ためておく
+    #[cfg(unix)]
+    #[test]
+    fn books_without_text_are_read_with_ocr_plugins() {
+        let dir = std::env::temp_dir().join(format!("manga-book-ocr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let book = dir.join("book");
+        std::fs::create_dir_all(&book).unwrap();
+        for name in ["01.png", "02.png", "03.png"] {
+            image::RgbaImage::new(20, 30).save(book.join(name)).unwrap();
+        }
+        let listing = crate::engine::source::list_images(&book, false).unwrap();
+        let source = || OcrSource {
+            mode: listing.mode,
+            root: listing.root.clone(),
+            names: listing.images.clone(),
+        };
+        let progress = Arc::new(TextProgress::default());
+        let rx = spawn_book_ocr(
+            script_ocr(&dir),
+            HashMap::new(),
+            book.clone(),
+            source(),
+            None,
+            dir.join("cache"),
+            progress.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let loaded = rx.recv().unwrap().unwrap();
+        assert_eq!(loaded.failed, 0);
+        assert_eq!(progress.done.load(Ordering::Relaxed), 3);
+        assert_eq!(loaded.index.search("ページ2の文字", 10)[0].page, 2);
+        // 読んだ文字はためておき、次に開いたときに使う（作業用の画像は残さない）
+        let cached = load_cache(&book, &dir.join("cache")).unwrap();
+        assert_eq!(cached.pages[0], "ページ0 の 文字");
+        assert!(
+            std::fs::read_dir(dir.join("cache").join("ocr-work"))
+                .map_or(true, |mut entries| entries.next().is_none())
+        );
+        // やめたら、理由の無いエラーで止まる
+        let cancel = Arc::new(AtomicBool::new(true));
+        let rx = spawn_book_ocr(
+            script_ocr(&dir),
+            HashMap::new(),
+            book.clone(),
+            source(),
+            None,
+            dir.join("cache2"),
+            Arc::new(TextProgress::default()),
+            cancel,
+        );
+        let error = rx.recv().unwrap().err().unwrap();
+        assert!(error.message().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
