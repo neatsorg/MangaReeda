@@ -1,0 +1,12 @@
+[package]
+name = "mangareeda-plugin-common"
+version = "0.1.0"
+edition = "2024"
+description = "Shared parts of the plugins bundled with MangaReeda"
+license = "Apache-2.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.180"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

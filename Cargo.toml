@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [workspace]
-members = ["plugins/bookscan", "plugins/dropbox", "plugins/gdrive"]
+members = ["plugins/bookscan", "plugins/dropbox", "plugins/gdrive", "plugins/common"]
 
 [profile.dev]
 debug = true

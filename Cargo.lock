@@ -2612,6 +2612,7 @@ dependencies = [
 name = "mangareeda-bookscan"
 version = "0.1.0"
 dependencies = [
+ "mangareeda-plugin-common",
  "scraper",
  "serde",
  "serde_json",
@@ -2624,6 +2625,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
+ "mangareeda-plugin-common",
  "serde",
  "serde_json",
  "sha2",
@@ -2636,10 +2638,19 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
+ "mangareeda-plugin-common",
  "serde",
  "serde_json",
  "sha2",
  "ureq",
+]
+
+[[package]]
+name = "mangareeda-plugin-common"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -7,7 +7,7 @@ use super::thumbnails::ShelfSource;
 use crate::engine::credentials::{Credentials, Stored};
 use crate::engine::plugin::{
     DownloadEvent, ListCache, ListProgress, Listing, PluginError, PluginManifest, RemoteBook,
-    Store, auth_url, local_path, spawn_download, spawn_list, store_list_covers,
+    Store, auth_url, local_path, spawn_download, spawn_list,
 };
 use crate::engine::settings_store;
 use crate::engine::thumbnail::{CoverEntry, RemoteRef, cover_cache_name};
@@ -573,9 +573,10 @@ impl MangaReader {
         }
         let credentials = self.plugins.credentials_for(&manifest);
         let folder = (!key.1.is_empty()).then(|| key.1.clone());
+        let covers = self.plugins.cover_cache_dir();
         let shelf = self.plugins.shelves.entry(key.clone()).or_default();
         shelf.error = None;
-        let (loading, progress) = spawn_list(manifest, credentials, folder);
+        let (loading, progress) = spawn_list(manifest, credentials, folder, covers);
         shelf.loading = Some(loading);
         shelf.progress = Some(progress);
     }
@@ -663,7 +664,6 @@ impl MangaReader {
     /// 一覧とダウンロードの知らせを受け取る。毎フレーム呼ぶ
     pub(super) fn poll_plugins(&mut self, ctx: &egui::Context) {
         let mut busy = false;
-        let covers = self.plugins.cover_cache_dir();
         let mut arrived = Vec::new();
         let mut stores = Vec::new();
         let mut accounts = Vec::new();
@@ -677,8 +677,7 @@ impl MangaReader {
                     shelf.progress = None;
                     stores.push((key.0.clone(), store));
                     match result {
-                        Ok(mut listing) => {
-                            store_list_covers(&key.0, &mut listing.books, &covers);
+                        Ok(listing) => {
                             shelf.message = listing.message;
                             shelf.books = listing.books;
                             shelf.parent = listing.parent;

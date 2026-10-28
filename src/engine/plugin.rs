@@ -710,18 +710,24 @@ fn list_reporting(
     (stdout.and_then(|stdout| last_reply(&stdout)), store)
 }
 
-/// `list` を別スレッドで行う。進み具合は、返す `ListProgress` で見られる
+/// `list` を別スレッドで行う。進み具合は、返す `ListProgress` で見られる。
+/// 一覧に付いてきた表紙の画像は、画面を止めないよう、このスレッドで `covers` に置く
 pub fn spawn_list(
     manifest: PluginManifest,
     credentials: HashMap<String, String>,
     folder: Option<String>,
+    covers: PathBuf,
 ) -> (Receiver<ListAnswer>, ListProgress) {
     let (tx, rx) = channel();
     let progress = ListProgress::default();
     let reporting = progress.clone();
     thread::spawn(move || {
-        let answer = list_reporting(&manifest, &credentials, folder.as_deref(), Some(&reporting));
-        let _ = tx.send(answer);
+        let (mut listing, store) =
+            list_reporting(&manifest, &credentials, folder.as_deref(), Some(&reporting));
+        if let Ok(listing) = listing.as_mut() {
+            store_list_covers(&manifest.id, &mut listing.books, &covers);
+        }
+        let _ = tx.send((listing, store));
     });
     (rx, progress)
 }
@@ -1089,7 +1095,7 @@ mod tests {
             &dir,
             "read request\necho '{\"progress\": 1, \"total\": 2}'\necho '{\"progress\": 2, \"total\": 2}'\necho '{\"books\": [], \"message\": \"表紙 2/2 冊\"}'\n",
         );
-        let (rx, progress) = spawn_list(plugin, HashMap::new(), None);
+        let (rx, progress) = spawn_list(plugin, HashMap::new(), None, dir.join("covers"));
         let (listing, _) = rx.recv().unwrap();
         assert_eq!(listing.unwrap().message.as_deref(), Some("表紙 2/2 冊"));
         assert_eq!(*progress.lock().unwrap(), Some((2, Some(2))));

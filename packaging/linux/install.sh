@@ -33,16 +33,21 @@ if [ ! -x "$exe" ]; then
     echo "先に cargo build --release でビルドしてください" >&2
     exit 1
 fi
+# .desktop の Exec で特別な意味を持つ文字（" ` $ \ と %）、改行、sed の区切りに使う | は断る
+newline='
+'
 case $exe in
-    *'"'* | *'|'* | *'\'* | *'`'* | *'$'*)
+    *'"'* | *'|'* | *'\'* | *'`'* | *'$'* | *'%'* | *"$newline"*)
         echo "実行ファイルのパスに使えない文字があります: $exe" >&2
         exit 1
         ;;
 esac
+# sed の置換では & が「見つけた文字列」になるので、文字として書く
+exe_for_sed=$(printf '%s' "$exe" | sed 's/&/\\&/g')
 
 mkdir -p "$(dirname "$desktop")" "$(dirname "$icon")"
 install -m 644 "$root/src/assets/icon256.png" "$icon"
-sed "s|@EXEC@|$exe|" "$here/$id.desktop" >"$desktop"
+sed "s|@EXEC@|$exe_for_sed|" "$here/$id.desktop" >"$desktop"
 chmod 644 "$desktop"
 refresh
 echo "入れました: $desktop"

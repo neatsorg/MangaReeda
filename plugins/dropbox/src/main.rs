@@ -10,12 +10,13 @@
 //! 利用者に貼ってもらう。認可コードは一度だけ更新用のトークンに取り替え、"store" で本体に保存してもらう。
 
 use base64::Engine;
+use mangareeda_plugin_common::{SaveError, save_book};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
@@ -69,6 +70,12 @@ enum Failure {
 impl From<ureq::Error> for Failure {
     fn from(error: ureq::Error) -> Self {
         Failure::Other(format!("Dropbox と通信できませんでした: {error}"))
+    }
+}
+
+impl From<SaveError> for Failure {
+    fn from(error: SaveError) -> Self {
+        Failure::Other(error.to_string())
     }
 }
 
@@ -489,189 +496,9 @@ fn download(request: &Request, id: &str, dest: &Path) -> Result<(), Failure> {
     })
 }
 
-/// 本を `dest` に書く。途中で止まったときに壊れたファイルが残らないよう、同じフォルダの一時ファイルに書いてから
-/// 名前を変える。一時ファイルは、新しく作れた名前だけを使う（あるファイルを切り詰めたり、リンクの先に書いたりしない）。
-/// 失敗したら一時ファイルを消す。`progress` には受け取った量を知らせる
-fn save_book(
-    reader: &mut impl Read,
-    dest: &Path,
-    total: Option<u64>,
-    mut progress: impl FnMut(u64) -> Result<(), Failure>,
-) -> Result<(), Failure> {
-    let (partial, file) = create_partial(dest)?;
-    let result = receive(reader, file, total, &mut progress)
-        .and_then(|received| Ok((place(&partial, dest)?, received)));
-    match result {
-        Ok(((), received)) => progress(received),
-        Err(error) => {
-            let _ = std::fs::remove_file(&partial);
-            Err(error)
-        }
-    }
-}
-
-/// 保存先にすでにファイルがあったときの知らせ
-const DEST_EXISTS: &str = "保存先に同じ名前のファイルがあるので、置き換えずにやめました";
-
-/// 一時ファイルを `dest` に置く。`dest` がすでにあれば置き換えずに失敗する
-/// （ダウンロード中に同じ名前のファイルが置かれたときや、別に起動したアプリが同じ場所に置いたときに、それを消さないように）
-fn place(partial: &Path, dest: &Path) -> Result<(), Failure> {
-    // ハードリンクは、同じ名前があると作れないので、確かめるのと置くのが一度に済む
-    match std::fs::hard_link(partial, dest) {
-        Ok(()) => {
-            let _ = std::fs::remove_file(partial);
-            Ok(())
-        }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            Err(Failure::Other(DEST_EXISTS.to_owned()))
-        }
-        Err(_) => copy_into_new(partial, dest),
-    }
-}
-
-/// 保存先を「新しく作れたときだけ」開いて、一時ファイルの中身を写す。ハードリンクを作れないファイルシステム
-/// （FAT など）で使う（名前を変える方法では、無いのを確かめたあとにできたファイルを置き換えてしまうので）
-fn copy_into_new(partial: &Path, dest: &Path) -> Result<(), Failure> {
-    let mut target = match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dest)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            return Err(Failure::Other(DEST_EXISTS.to_owned()));
-        }
-        Err(e) => return Err(e.into()),
-    };
-    let copied = std::fs::File::open(partial)
-        .and_then(|mut source| io::copy(&mut source, &mut target))
-        .and_then(|_| target.sync_all());
-    drop(target);
-    match copied {
-        Ok(()) => {
-            let _ = std::fs::remove_file(partial);
-            Ok(())
-        }
-        Err(e) => {
-            // 自分で作った保存先なので、書きかけは消す
-            let _ = std::fs::remove_file(dest);
-            Err(e.into())
-        }
-    }
-}
-
-/// 保存先と同じフォルダに、ほかと重ならない一時ファイルを新しく作る
-fn create_partial(dest: &Path) -> io::Result<(PathBuf, std::fs::File)> {
-    let name = dest.file_name().map_or_else(
-        || "book".to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    for serial in 0..100 {
-        let partial = dest.with_file_name(format!(".{name}.{}-{serial}.part", std::process::id()));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&partial)
-        {
-            Ok(file) => return Ok((partial, file)),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "一時ファイルの名前を決められませんでした",
-    ))
-}
-
-/// 受け取って書く。受け取った量を返す。1MB ごとに進み具合を知らせる
-fn receive(
-    reader: &mut impl Read,
-    mut file: std::fs::File,
-    total: Option<u64>,
-    progress: &mut impl FnMut(u64) -> Result<(), Failure>,
-) -> Result<u64, Failure> {
-    let mut buffer = vec![0; 256 * 1024];
-    let (mut received, mut reported) = (0u64, 0u64);
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        file.write_all(&buffer[..read])?;
-        received += read as u64;
-        if received - reported >= 1024 * 1024 {
-            reported = received;
-            progress(received)?;
-        }
-    }
-    file.sync_all()?;
-    if total.is_some_and(|total| total != received) {
-        return Err(Failure::Other("ダウンロードが途中で切れました".to_owned()));
-    }
-    Ok(received)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// ハードリンクを作れないときの写し方も、保存先にファイルがあれば置き換えない
-    #[test]
-    fn copying_into_place_never_replaces_a_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "{}-copy-{}",
-            env!("CARGO_PKG_NAME"),
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let (partial, dest) = (dir.join("p.part"), dir.join("book.pdf"));
-        std::fs::write(&partial, "new").unwrap();
-        std::fs::write(&dest, "old").unwrap();
-        assert!(copy_into_new(&partial, &dest).is_err());
-        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
-        std::fs::remove_file(&dest).unwrap();
-        assert!(copy_into_new(&partial, &dest).is_ok());
-        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
-        assert!(!partial.exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    /// 一時ファイルは新しい名前で作り、同じ名前のファイルがあっても切り詰めない。失敗したら消す
-    #[test]
-    fn books_are_written_without_touching_other_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "{}-save-{}",
-            env!("CARGO_PKG_NAME"),
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dest = dir.join("book.pdf");
-        let other = dir.join("book.part");
-        std::fs::write(&other, "keep").unwrap();
-        let mut reported = Vec::new();
-        save_book(&mut &b"data"[..], &dest, Some(4), |n| {
-            reported.push(n);
-            Ok(())
-        })
-        .ok()
-        .unwrap();
-        assert_eq!(std::fs::read(&dest).unwrap(), b"data");
-        assert_eq!(std::fs::read(&other).unwrap(), b"keep");
-        assert_eq!(reported, [4]);
-
-        // 保存先にすでにファイルがあれば、置き換えずに失敗し、一時ファイルも残さない
-        assert!(save_book(&mut &b"new"[..], &dest, Some(3), |_| Ok(())).is_err());
-        assert_eq!(std::fs::read(&dest).unwrap(), b"data");
-        // 途中で切れたら、本も一時ファイルも残さない
-        let cut = dir.join("cut.pdf");
-        assert!(save_book(&mut &b"da"[..], &cut, Some(4), |_| Ok(())).is_err());
-        assert!(!cut.exists());
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 
     #[test]
     fn challenge_matches_the_pkce_example() {
