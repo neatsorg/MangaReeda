@@ -569,7 +569,8 @@ impl MangaReader {
                     ui.horizontal(|ui| {
                         ui.heading(egui::RichText::new(tr("settings.title")).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("✕").on_hover_text(tr("settings.close")).clicked() {
+                            // 同梱のフォントに ✕ が無いので ×（四角になってしまう）
+                            if ui.button("×").on_hover_text(tr("settings.close")).clicked() {
                                 self.config.show_settings = false;
                             }
                         });
@@ -583,18 +584,6 @@ impl MangaReader {
                         .show(ui, |ui| {
                             ui.vertical(|ui| {
                                 ui.add_space(10.0);
-
-                                // [Open File] Button
-                                if ui
-                                    .add_sized(
-                                        [ui.available_width() * 0.94, 30.0],
-                                        egui::Button::new(tr("settings.open_file")),
-                                    )
-                                    .clicked()
-                                {
-                                    self.open_file_dialog();
-                                }
-                                ui.add_space(20.0);
                                 ui.label(
                                     egui::RichText::new(tr("language.label"))
                                         .size(20.0)

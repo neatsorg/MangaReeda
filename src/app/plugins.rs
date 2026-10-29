@@ -966,7 +966,7 @@ impl MangaReader {
                     }
                     if stored.is_some()
                         && ui
-                            .small_button("✕")
+                            .small_button("×")
                             .on_hover_text(tr("plugin.forget"))
                             .clicked()
                     {
