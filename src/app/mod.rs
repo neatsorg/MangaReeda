@@ -1453,7 +1453,11 @@ mod tests {
                 ..Default::default()
             };
             eframe::App::raw_input_hook(reader, &ctx, &mut input);
-            let _ = ctx.run(input, |ctx| reader.prepare_book_texts(ctx));
+            // 次に描き直すまで（何も操作しなくても、そのときに起こしてもらえる）
+            ctx.run(input, |ctx| reader.prepare_book_texts(ctx))
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay)
         };
         let key = |key| egui::Event::Key {
             key,
@@ -1465,10 +1469,11 @@ mod tests {
         // 操作してすぐは始めない
         frame(&mut reader, Vec::new());
         assert!(!reader.text_prefetch.idle_running());
-        // 1分操作が無ければ始め、ためておきに入る
+        // 1分操作が無ければ始め、ためておきに入る。始めたフレームで、30 分後の集め直しに起こしてもらう予約もする
         reader.text_prefetch.pretend_idle();
-        frame(&mut reader, Vec::new());
+        let wake = frame(&mut reader, Vec::new());
         assert!(reader.text_prefetch.idle_running());
+        assert!(wake <= std::time::Duration::from_secs(30 * 60));
         let cache = settings_store::cache_dir();
         for _ in 0..300 {
             if crate::engine::book_text::has_cache(&book, &cache) {

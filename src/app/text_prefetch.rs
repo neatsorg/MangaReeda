@@ -183,6 +183,8 @@ impl MangaReader {
         if self.text_prefetch.idle_job.is_none() {
             if self.text_prefetch.scanned_at.is_none() {
                 self.text_prefetch.scanned_at = Some(Instant::now());
+                // 集め始めたこのフレームでも、30 分後に起こしてもらう
+                ctx.request_repaint_after(RESCAN_AFTER);
             }
             self.start_idle_prefetch(pdfium);
         }
