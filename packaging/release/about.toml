@@ -1,0 +1,28 @@
+# cargo-about の設定。リリースのファイルに入れる THIRD_PARTY_LICENSES.html を作る
+# （packaging/release/package.sh が使う）
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "NCSA",
+    "bzip2-1.0.6",
+    "CDLA-Permissive-2.0",
+    "LGPL-2.1-or-later",
+]
+# 配るプログラムに入るものだけ（テスト用の依存は入らない）
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]

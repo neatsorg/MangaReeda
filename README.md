@@ -36,7 +36,17 @@ LinuxとWindowsで動く、オフラインのマンガ・コミックビュー�
 
 ## リリース
 
-ビルドしないひと用。使用するOSのファイルをダウンロードしてバイナリを実行すれば起動できます。
+ビルドしないひと用。[Releases](https://github.com/neatsorg/MangaReeda/releases) から、使用する OS のファイルをダウンロードして展開し、バイナリを実行すれば起動できます。
+
+| ファイル | 中身 |
+|---|---|
+| `mangareeda-<版>-windows-x64.zip` | Windows 版。本体と、Dropbox・Google Drive・OCR のプラグイン |
+| `mangareeda-<版>-linux-x64.tar.gz` | Linux 版。同じく本体とプラグイン（PDF を開くための libpdfium.so も同梱） |
+| `mangareeda-bookscan-<版>-<OS>-x64` | BOOKSCAN のプラグイン。使う人だけ、本体と同じフォルダに置く |
+| `mangareeda-manga-ocr-<版>.tar.gz` | マンガ向けの OCR のプラグイン（Linux、GPL-3.0） |
+
+- Windows では、署名をしていないので、初めて起動するときに SmartScreen の警告が出ることがあります。
+- Linux では、展開したフォルダの `packaging/linux/install.sh` を実行すると、ランチャーにアイコン付きで出せます。OCR を使うには Tesseract が要ります（ビルドの節を参照）。
 
 プラグインを使用するには各サービスのAPIキーや登録情報が必要です。詳しくはdocs/plugins.mdを参照してください。
 
@@ -135,7 +145,17 @@ Plugins bring up-to-date features: cloud services such as Dropbox and Google Dri
 
 ## Releases
 
-For those who do not build it themselves: download the file for your OS and run the binary.
+For those who do not build it themselves: download the file for your OS from [Releases](https://github.com/neatsorg/MangaReeda/releases), extract it and run the binary.
+
+| File | Contents |
+|---|---|
+| `mangareeda-<version>-windows-x64.zip` | Windows build: the viewer and the Dropbox, Google Drive and OCR plugins |
+| `mangareeda-<version>-linux-x64.tar.gz` | Linux build: the same, with libpdfium.so for opening PDFs |
+| `mangareeda-bookscan-<version>-<OS>-x64` | The BOOKSCAN plugin. Put it in the viewer's folder only if you use it |
+| `mangareeda-manga-ocr-<version>.tar.gz` | An OCR plugin for manga (Linux, GPL-3.0) |
+
+- On Windows, the programs are not signed, so SmartScreen may warn the first time you run them.
+- On Linux, run `packaging/linux/install.sh` in the extracted folder to show the app with its icon in launchers. OCR needs Tesseract (see Build).
 
 Plugins need an API key or account details for each service. See docs/plugins.md for details.
 

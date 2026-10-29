@@ -4,7 +4,8 @@
 # （io.github.neatsorg.MangaReeda）で探す。
 #
 # 使い方:
-#   packaging/linux/install.sh [実行ファイルのパス]   入れる（省くと target/release/mangareeda）
+#   packaging/linux/install.sh [実行ファイルのパス]   入れる（省くと、リリースのファイルを展開したフォルダの
+#                                                    mangareeda、無ければ target/release/mangareeda）
 #   packaging/linux/install.sh --uninstall           外す
 set -eu
 
@@ -27,7 +28,11 @@ if [ "${1:-}" = "--uninstall" ]; then
     exit 0
 fi
 
-exe=$(realpath "${1:-$root/target/release/mangareeda}")
+default="$root/target/release/mangareeda"
+if [ -x "$root/mangareeda" ]; then
+    default="$root/mangareeda"
+fi
+exe=$(realpath "${1:-$default}")
 if [ ! -x "$exe" ]; then
     echo "実行ファイルが見つかりません: $exe" >&2
     echo "先に cargo build --release でビルドしてください" >&2

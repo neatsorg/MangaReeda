@@ -1,0 +1,118 @@
+# リリースのファイルを作る。
+# - v で始まるタグを付けると、Windows と Linux のファイルを作り、リリースの下書きに置く（公開は手で行う）
+# - 手で動かしたとき（workflow_dispatch）は、ファイルを作って、この実行の成果物に置くだけ（試すため）
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Windows 版と同じ pdfium（THIRD_PARTY_NOTICES.md）
+  PDFIUM_TAG: chromium/7665
+  CARGO_ABOUT_VERSION: 0.9.3
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            # glibc の古い環境で作り、新しいディストリビューションでも動くようにする
+            runner: ubuntu-22.04
+          - os: windows
+            runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Version
+        shell: bash
+        # タグを付けたとき（push）だけ、タグの版にする。手で動かしたときは、タグを選んでも dev
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = push ] && [ "${GITHUB_REF_TYPE}" = tag ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install cargo-about
+        shell: bash
+        run: cargo install cargo-about --locked --features cli --version "$CARGO_ABOUT_VERSION"
+
+      # Linux: dav1d はソースから静的ライブラリとしてビルドしてリンクする（Ubuntu 22.04 の dav1d は古い）。
+      # pdfium は pdfium-binaries の Linux 版を同梱する
+      - name: Prepare (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libudev-dev libdbus-1-dev meson ninja-build nasm
+          echo "SYSTEM_DEPS_DAV1D_BUILD_INTERNAL=always" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/pdfium"
+          curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-v8-linux-x64.tgz" \
+            | tar -xz -C "$RUNNER_TEMP/pdfium"
+          echo "PDFIUM_LIB=$RUNNER_TEMP/pdfium/lib/libpdfium.so" >> "$GITHUB_ENV"
+
+      # Windows: dav1d は vcpkg で入れ、pkg-config は vcpkg の pkgconf を使う（.cargo.win）。
+      # 同梱する dav1d.dll と pdfium.dll は、リポジトリにあるもの
+      - name: Prepare (Windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install dav1d:x64-windows pkgconf:x64-windows
+          cp -R .cargo.win .cargo
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --workspace --locked
+
+      # Linux 版は、dav1d を静的にリンクしたか（libdav1d.so を使っていないか）と、要る glibc の版を確かめる
+      - name: Check (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          if ldd target/release/mangareeda | grep dav1d; then
+            echo "dav1d が静的にリンクされていません" >&2
+            exit 1
+          fi
+          objdump -T target/release/mangareeda | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+
+      - name: Package
+        shell: bash
+        run: packaging/release/package.sh "${{ matrix.os }}" "$VERSION" dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  # リリースの下書きは、タグを付けたとき（push）だけ作る（手で動かしたときは、タグを選んでも作らない）
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt
+
+      # 下書きにする。中身を確かめてから、GitHub の画面で公開する
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist/*

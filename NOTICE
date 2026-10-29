@@ -10,9 +10,11 @@ source file that contains code from RustMangaReader starts with a
 comment saying so. The commit history of this repository records every
 change made after the fork point (upstream commit 6def3e2).
 
-Third-party files bundled in this repository (pdfium.dll, dav1d.dll and
-the Noto Sans JP font) are listed with their licenses in
-THIRD_PARTY_NOTICES.md.
+Third-party files and code bundled in this repository and in the release
+archives (pdfium, dav1d, UnRAR and the Noto Sans JP font) are listed
+with their licenses in THIRD_PARTY_NOTICES.md. The Rust crates compiled
+into the programs are listed in THIRD_PARTY_LICENSES.html in the release
+archives.
 
 "RustMangaReader" is the name of the original project. MangaReeda is
 not endorsed by or affiliated with its author, nor with the author of

@@ -7,7 +7,8 @@ mokuro は、吹き出しの場所を [comic-text-detector](https://github.com/d
 
 ## 入れ方（Linux）
 
-[uv](https://docs.astral.sh/uv/) が要ります。リポジトリのこのフォルダで次を実行すると、`~/.config/MangaReeda/plugins/manga-ocr` に入ります（`XDG_CONFIG_HOME` があればその下）。
+[uv](https://docs.astral.sh/uv/) が要ります。次を実行すると、`~/.config/MangaReeda/plugins/manga-ocr` に入ります（`XDG_CONFIG_HOME` があればその下）。
+リリースの `mangareeda-manga-ocr-<版>.tar.gz` を使うときは、展開したフォルダの `./install.sh` を実行します。
 
 ```sh
 plugins/manga-ocr/install.sh          # CPU 版の PyTorch で入れる
