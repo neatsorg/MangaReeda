@@ -4,6 +4,7 @@
 
 pub mod book_text;
 pub mod credentials;
+pub mod cross_search;
 pub mod history;
 pub mod imaging;
 pub mod layout;

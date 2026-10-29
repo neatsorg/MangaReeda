@@ -39,28 +39,36 @@ pub struct TextProgress {
 }
 
 /// ためておく本の数の上限。超えたら、長く使っていないものから消す
-/// （消したり動かしたりした本のぶんが、たまり続けないように）
+/// （消したり動かしたりした本のぶんが、たまり続けないように）。
+/// OCR の結果は、読み直すのに時間がかかるので、別のフォルダに置いて上限の外にする
 const CACHE_LIMIT: usize = 300;
+
+/// PDF の埋め込まれた文字をためるフォルダ（上限まで）と、OCR の結果をためるフォルダ（上限なし）
+pub const TEXT_DIR: &str = "text";
+pub const OCR_TEXT_DIR: &str = "text-ocr";
 
 /// ためておくファイルの中身。本が変わったか見分けるため、大きさと更新日時も書く
 #[derive(Serialize, Deserialize)]
-struct CacheFile {
-    size: u64,
-    modified: u64,
+pub(crate) struct CacheFile {
+    /// 本の場所（横断検索で、どの本の文字かを引くのに使う。前の版で書いたものには無い）
+    #[serde(default)]
+    pub book: String,
+    pub size: u64,
+    pub modified: u64,
     /// どう読んだか（"pdf" は透明テキスト、"ocr:<プラグインの id>" は OCR）
     #[serde(default)]
-    source: String,
+    pub source: String,
     /// 読んだときのページの並び（`PageSource::key`）。今の並びと違えば使わない
     #[serde(default)]
-    pages_key: String,
-    pages: Vec<String>,
+    pub pages_key: String,
+    pub pages: Vec<String>,
     /// OCR で読めなかったページの数（そのページは空）
     #[serde(default)]
-    failed: usize,
+    pub failed: usize,
 }
 
 /// 本の版（大きさ, 更新日時）
-fn version(book: &Path) -> Option<(u64, u64)> {
+pub(crate) fn version(book: &Path) -> Option<(u64, u64)> {
     let meta = std::fs::metadata(book).ok()?;
     let modified = meta
         .modified()
@@ -70,23 +78,47 @@ fn version(book: &Path) -> Option<(u64, u64)> {
     Some((meta.len(), modified))
 }
 
-/// ためておくファイル。本の場所ごとに1つ（本が変わったら書き直す）
-fn cache_path(book: &Path, cache_dir: &Path) -> PathBuf {
-    cache_dir.join("text").join(format!(
-        "{}.json",
-        cover_cache_name(&book.to_string_lossy())
-    ))
+/// ためておくファイル。本の場所ごとに1つ（本が変わったら書き直す）。`ocr` なら OCR の結果のフォルダ
+fn cache_path(book: &Path, cache_dir: &Path, ocr: bool) -> PathBuf {
+    cache_dir
+        .join(if ocr { OCR_TEXT_DIR } else { TEXT_DIR })
+        .join(format!(
+            "{}.json",
+            cover_cache_name(&book.to_string_lossy())
+        ))
 }
 
-/// ためておいた文字。本が変わっていれば（ページの並びが `pages_key` と違えば）None。
-/// 使ったものとして、ファイルの時刻を新しくする
+/// ためておいた文字。OCR の結果があればそれを、無ければ PDF の埋め込まれた文字を使う。
+/// 本が変わっていれば（ページの並びが `pages_key` と違えば）None。使ったものとして、ファイルの時刻を新しくする
 fn load_cache(book: &Path, cache_dir: &Path, pages_key: &str) -> Option<BookText> {
-    let path = cache_path(book, cache_dir);
-    let cache: CacheFile = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    let ocr_path = cache_path(book, cache_dir, true);
+    let text_path = cache_path(book, cache_dir, false);
+    let (path, mut cache) = [ocr_path.clone(), text_path].into_iter().find_map(|path| {
+        let cache: CacheFile = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+        Some((path, cache))
+    })?;
     if version(book)? != (cache.size, cache.modified) || cache.pages_key != pages_key {
         return None;
     }
-    if let Ok(file) = std::fs::File::options().write(true).open(&path) {
+    // 前の版で、上限のあるフォルダに置いた OCR の結果は、上限の外に移す
+    let path = if cache.source.starts_with("ocr:") && path != ocr_path {
+        let _ = std::fs::create_dir_all(cache_dir.join(OCR_TEXT_DIR));
+        match std::fs::rename(&path, &ocr_path) {
+            Ok(()) => ocr_path,
+            Err(_) => path,
+        }
+    } else {
+        path
+    };
+    // 前の版で書いたものには本の場所が無い。横断検索で引けるよう、書き足す（書き直すので時刻も新しくなる）
+    let book_name = book.to_string_lossy();
+    let rewritten = cache.book != book_name && {
+        cache.book = book_name.into_owned();
+        serde_json::to_string(&cache).is_ok_and(|json| {
+            crate::engine::settings_store::write_atomic(&path, json.as_bytes()).is_ok()
+        })
+    };
+    if !rewritten && let Ok(file) = std::fs::File::options().write(true).open(&path) {
         let _ = file.set_modified(SystemTime::now());
     }
     Some(BookText {
@@ -101,8 +133,10 @@ fn save_cache(book: &Path, cache_dir: &Path, text: &BookText, source: &str, page
     let Some((size, modified)) = version(book) else {
         return;
     };
-    let path = cache_path(book, cache_dir);
+    let ocr = source.starts_with("ocr:");
+    let path = cache_path(book, cache_dir, ocr);
     let cache = CacheFile {
+        book: book.to_string_lossy().into_owned(),
         size,
         modified,
         source: source.to_owned(),
@@ -113,10 +147,12 @@ fn save_cache(book: &Path, cache_dir: &Path, text: &BookText, source: &str, page
     if let Some(parent) = path.parent()
         && std::fs::create_dir_all(parent).is_ok()
         && let Ok(json) = serde_json::to_string(&cache)
+        && crate::engine::settings_store::write_atomic(&path, json.as_bytes()).is_ok()
     {
-        let _ = crate::engine::settings_store::write_atomic(&path, json.as_bytes());
+        // もう片方のフォルダの古い結果は消す（OCR の結果をやめて埋め込まれた文字に戻したときなど）
+        let _ = std::fs::remove_file(cache_path(book, cache_dir, !ocr));
     }
-    prune_cache(&cache_dir.join("text"), CACHE_LIMIT);
+    prune_cache(&cache_dir.join(TEXT_DIR), CACHE_LIMIT);
 }
 
 /// `dir` の、ためておいた文字のファイルを `limit` 個まで残し、長く使っていないものから消す
@@ -505,7 +541,7 @@ pub fn spawn_book_ocr(
 
 /// 比べやすい形の1文字。空白は None（無視する）。縦書き用の句読点やかっこはふつうの形に、
 /// 全角の英数字や記号は半角に、大文字は小文字にする
-fn fold_char(c: char) -> Option<char> {
+pub(crate) fn fold_char(c: char) -> Option<char> {
     if c.is_whitespace() {
         return None;
     }
@@ -824,7 +860,7 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].page, 1);
         // 2回目は、ためておいたものを使う
-        assert!(cache_path(&book, &dir.join("cache")).is_file());
+        assert!(cache_path(&book, &dir.join("cache"), false).is_file());
         // OCR で読み直したものは、埋め込まれた文字があることも知らせ、元に戻せる
         let ocr = book_text(vec!["x".to_owned(), "y".to_owned()]);
         save_cache(&book, &dir.join("cache"), &ocr, "ocr:fake", "");
@@ -1037,6 +1073,62 @@ mod tests {
         assert_eq!(run(skip_first).ok().unwrap().failed, 1);
         let kept = load_cache(&book, &dir.join("cache"), &source().key()).unwrap();
         assert_eq!((kept.failed, kept.pages[1].as_str()), (1, "p1"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// OCR の結果は上限の外のフォルダに置き、古いものから消すときにも消さない。
+    /// 前の版で上限のあるフォルダに置いた OCR の結果は、読んだときに移す。埋め込まれた文字に戻したら消す
+    #[test]
+    fn ocr_results_are_kept_apart_from_the_limit() {
+        let dir = std::env::temp_dir().join(format!("manga-ocr-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let book = dir.join("book.pdf");
+        std::fs::write(&book, b"x").unwrap();
+        let cache = dir.join("cache");
+        let text = book_text(vec!["一".to_owned()]);
+        save_cache(&book, &cache, &text, "ocr:x", "");
+        assert!(cache_path(&book, &cache, true).is_file());
+        assert!(!cache_path(&book, &cache, false).exists());
+        // 本の場所も書く（横断検索で使う）
+        let file: CacheFile = serde_json::from_str(
+            &std::fs::read_to_string(cache_path(&book, &cache, true)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(file.book, book.to_string_lossy());
+        // 上限まで消しても、OCR の結果は残る
+        prune_cache(&cache.join(TEXT_DIR), 0);
+        assert_eq!(
+            load_cache(&book, &cache, "").unwrap().ocr.as_deref(),
+            Some("x")
+        );
+        // 埋め込まれた文字に戻したら、OCR の結果は消える
+        save_cache(&book, &cache, &text, "pdf", "");
+        assert!(!cache_path(&book, &cache, true).exists());
+        assert_eq!(load_cache(&book, &cache, "").unwrap().ocr, None);
+        // 前の版で上限のあるフォルダに置いた OCR の結果は、読んだときに上限の外へ移す。
+        // 前の版で書いたものには本の場所が無いので、書き足す
+        let book_field = format!(
+            "\"book\":{},",
+            serde_json::to_string(&book.to_string_lossy()).unwrap()
+        );
+        let old = std::fs::read_to_string(cache_path(&book, &cache, false))
+            .unwrap()
+            .replace("\"source\":\"pdf\"", "\"source\":\"ocr:y\"")
+            .replace(&book_field, "");
+        assert!(!old.contains("\"book\""));
+        std::fs::write(cache_path(&book, &cache, false), old).unwrap();
+        assert_eq!(
+            load_cache(&book, &cache, "").unwrap().ocr.as_deref(),
+            Some("y")
+        );
+        assert!(cache_path(&book, &cache, true).is_file());
+        assert!(!cache_path(&book, &cache, false).exists());
+        let file: CacheFile = serde_json::from_str(
+            &std::fs::read_to_string(cache_path(&book, &cache, true)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(file.book, book.to_string_lossy());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

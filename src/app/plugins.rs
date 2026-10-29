@@ -407,7 +407,7 @@ fn open_in_browser(url: &str) -> std::io::Result<()> {
 
 impl MangaReader {
     /// プラグインからダウンロードした本を置くフォルダ
-    fn library_dir(&self) -> PathBuf {
+    pub(super) fn library_dir(&self) -> PathBuf {
         if self.config.library_dir.trim().is_empty() {
             settings_store::default_library_dir()
         } else {
@@ -880,6 +880,7 @@ impl MangaReader {
         {
             self.save_settings();
         }
+        self.render_cross_search_settings(ui);
         if self.plugins.manifests.is_empty() && self.plugins.ocr_engines.is_empty() {
             ui.add_space(6.0);
             ui.label(tr("settings.no_plugins"));

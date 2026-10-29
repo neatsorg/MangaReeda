@@ -1022,7 +1022,9 @@ impl MangaReader {
                             i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)
                                 || i.pointer.button_clicked(egui::PointerButton::Extra1),
                             i.key_pressed(egui::Key::F5),
-                            i.modifiers.command && i.key_pressed(egui::Key::F),
+                            i.modifiers.command
+                                && !i.modifiers.shift
+                                && i.key_pressed(egui::Key::F),
                         ),
                         i.smooth_scroll_delta.y,
                         i.pointer.hover_pos(),

@@ -3,6 +3,7 @@
 mod animation;
 mod book_search;
 mod commands;
+mod cross_search;
 mod input;
 mod loader;
 mod menubar;
@@ -94,6 +95,10 @@ pub struct MangaReader {
     book_search: Option<book_search::BookSearch>,
     /// このフレームでメニューやダイアログを使っている。表紙サムネイルはマウスとキーを受け取らない
     shelf_input_blocked: bool,
+    /// 横断検索の窓（本を変えても開いたまま）
+    cross_search: Option<cross_search::CrossSearchWindow>,
+    /// 設定画面で書いている、横断検索でたどるフォルダ（書き終えたら設定に入れる）
+    search_folders_text: Option<String>,
     /// OCR で読んでいる本（検索の窓を閉じても続ける）
     book_ocr: Option<book_search::BookOcr>,
     active_animations: [Option<AnimatedPage>; 2],
@@ -215,6 +220,8 @@ impl MangaReader {
             ime_had_preedit: false,
             book_search: None,
             book_ocr: None,
+            cross_search: None,
+            search_folders_text: None,
             shelf_input_blocked: false,
             active_animations: std::array::from_fn(|_| None),
             active_animation_keys: std::array::from_fn(|_| None),
@@ -347,6 +354,7 @@ impl eframe::App for MangaReader {
         }
 
         // 検索の窓が開いているあいだの Esc は、窓を閉じるだけにする（終了などのキー操作に渡さない）
+        self.close_cross_search_on_escape(ctx);
         self.close_book_search_on_escape(ctx);
         let mut action_to_run = self.collect_input_action(ctx);
 
@@ -387,8 +395,23 @@ impl eframe::App for MangaReader {
         }
         // 表紙サムネイルは、メニューやダイアログを使っているあいだ、マウスもキーも受け取らない
         // （一覧は入力を直接読むので、ここで止める）
-        self.shelf_input_blocked =
-            menu_in_use || self.menu_dialog.is_some() || self.subfolder_question.is_some();
+        // 横断検索の入力欄にいるあいだも、キーはそちらのもの
+        self.shelf_input_blocked = menu_in_use
+            || self.menu_dialog.is_some()
+            || self.subfolder_question.is_some()
+            || self
+                .cross_search
+                .as_ref()
+                .is_some_and(|window| window.typing);
+        // Ctrl+Shift+F で横断検索を開く（本を読んでいるときも、表紙サムネイルでも）
+        if !menu_in_use
+            && ctx
+                .input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::F))
+        {
+            self.open_cross_search();
+        }
+        // 背後の一覧やページより先に描き、入力欄の ↑↓ と Enter を使い切る
+        self.render_cross_search(ctx);
 
         self.render_settings_panel(ctx);
         self.render_toolbar(ctx);
@@ -418,7 +441,8 @@ impl eframe::App for MangaReader {
         // 読んでいるときの Ctrl+F で、本の中の検索を開く
         if self.thumbnails.is_none()
             && !ctx.wants_keyboard_input()
-            && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F))
+            && ctx
+                .input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::F))
         {
             self.open_book_search();
         }
@@ -1233,6 +1257,109 @@ mod tests {
         reader.tidy_closed_shelf();
         assert!(reader.shelf_texture_stash.is_empty());
         assert!(reader.shelf_filter.is_empty());
+    }
+
+    /// 横断検索: 名前はダウンロード先の下の本から、本文はためておいた文字から探し、
+    /// 本文の結果を Enter で開くと、その本のそのページへ移る
+    #[test]
+    fn cross_search_finds_names_and_text_and_opens_the_page() {
+        use crate::engine::book_text::{CacheFile, TEXT_DIR, version};
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
+        let library = pages.0.join("library");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(library.join("仇討ちの巻.zip"), b"x").unwrap();
+        // 本のフォルダの文字をためておく（2ページ目に語がある）
+        let (size, modified) = version(&pages.0).unwrap();
+        let cache = settings_store::cache_dir().join(TEXT_DIR);
+        fs::create_dir_all(&cache).unwrap();
+        let file = cache.join(format!(
+            "{}.json",
+            crate::engine::thumbnail::cover_cache_name(&pages.0.to_string_lossy())
+        ));
+        let text = CacheFile {
+            book: pages.0.to_string_lossy().into_owned(),
+            size,
+            modified,
+            source: "ocr:x".to_owned(),
+            pages_key: String::new(),
+            pages: vec![
+                String::new(),
+                "ヤーボよォ！仇を取る時が来た".to_owned(),
+                String::new(),
+            ],
+            failed: 0,
+        };
+        fs::write(&file, serde_json::to_string(&text).unwrap()).unwrap();
+
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                page_view_options: PageViewOptions::Single,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                library_dir: library.to_string_lossy().into_owned(),
+                ..AppSettings::default()
+            },
+            None,
+        );
+        let frame = |reader: &mut MangaReader, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| reader.render_cross_search(ctx));
+        };
+        let wait = |reader: &mut MangaReader, done: &dyn Fn(&MangaReader) -> bool| {
+            for _ in 0..300 {
+                frame(reader, Vec::new());
+                if done(reader) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("横断検索の結果が来ない");
+        };
+        reader.open_cross_search();
+        reader.cross_search.as_mut().unwrap().query = "仇討ち".to_owned();
+        wait(&mut reader, &|r| {
+            !r.cross_search.as_ref().unwrap().names.is_empty()
+        });
+        assert_eq!(
+            reader.cross_search.as_ref().unwrap().names[0].path,
+            library.join("仇討ちの巻.zip")
+        );
+        reader.cross_search.as_mut().unwrap().query = "仇を取る".to_owned();
+        wait(&mut reader, &|r| {
+            !r.cross_search.as_ref().unwrap().texts.is_empty()
+        });
+        let window = reader.cross_search.as_ref().unwrap();
+        assert!(window.names.is_empty());
+        assert_eq!(
+            (window.texts[0].book.clone(), window.texts[0].page),
+            (pages.0.clone(), 1)
+        );
+        // 入力欄で Enter を押すと、最初の結果を開く（窓は開いたまま）
+        reader.cross_search.as_mut().unwrap().typing = true;
+        frame(
+            &mut reader,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(reader.zip_path, Some(pages.0.clone()));
+        assert_eq!(reader.current_index, 1);
+        assert!(reader.cross_search.is_some());
+        reader.cross_search = None;
+        fs::remove_file(file).unwrap();
+        fs::remove_dir_all(library).unwrap();
     }
 
     /// 本を開いていなくても、表紙サムネイルではメニューの「上のフォルダへ」「戻る」が使える

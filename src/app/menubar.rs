@@ -48,6 +48,8 @@ pub(super) enum MenuCommand {
     ReadWithOcr,
     /// 表紙サムネイルで、一つ前に並べていたものに戻る
     ShelfBack,
+    /// すべての本から検索（横断検索）
+    CrossSearch,
 }
 
 /// 項目の左に付ける印
@@ -498,6 +500,7 @@ impl MangaReader {
             ),
             book(item(tr("menu.move.goto"), 'G', MenuCommand::GoToPage)),
             book(item(tr("menu.move.search"), 'S', MenuCommand::SearchInBook)),
+            item(tr("menu.move.cross_search"), 'A', MenuCommand::CrossSearch),
             MenuEntry::Separator,
             submenu(
                 tr("menu.move.repeat"),
@@ -764,6 +767,7 @@ impl MangaReader {
             MenuCommand::About => self.menu_dialog = Some(MenuDialog::About),
             MenuCommand::ReadWithOcr => self.menu_dialog = Some(MenuDialog::ConfirmOcr),
             MenuCommand::ShelfBack => self.go_back_in_shelf(),
+            MenuCommand::CrossSearch => self.open_cross_search(),
         }
     }
 
