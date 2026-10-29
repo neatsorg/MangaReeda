@@ -5,8 +5,9 @@
 //! 標準入力に {"credentials": {}, "images": [{"page": 0, "path": "…"}, …]} を受け取り、
 //! 読み終えたページから {"page": 0, "text": "…"} を1行ずつ書く。
 //!
-//! Tesseract は別に入れておく（Arch Linux なら `pacman -S tesseract tesseract-data-jpn_vert`）。
-//! 縦書き用の日本語のデータ（jpn_vert）があればそれを、無ければ横書き用（jpn）を使う。
+//! Tesseract は別に入れておく（Arch Linux なら `pacman -S tesseract tesseract-data-jpn tesseract-data-jpn_vert`）。
+//! 横書き用（jpn）と縦書き用（jpn_vert）の日本語のデータが両方あれば両方を使い、縦書きも横書きも読む
+//! （時間はおよそ2倍になるが、縦書きの読め具合はほぼ変わらず、横書きの本も読める）。片方しか無ければ、あるほうを使う。
 
 use serde::Deserialize;
 use serde_json::json;
@@ -21,7 +22,7 @@ const USAGE: &str = "使い方: mangareeda-ocr-tesseract ocr\n\
 
 /// 入っていないときの知らせ
 const NOT_INSTALLED: &str = "Tesseract と日本語のデータが見つかりません。\
-     Arch Linux なら `pacman -S tesseract tesseract-data-jpn_vert` で入れてください";
+     Arch Linux なら `pacman -S tesseract tesseract-data-jpn tesseract-data-jpn_vert` で入れてください";
 
 #[derive(Deserialize, Default)]
 struct Request {
@@ -79,15 +80,14 @@ fn find_tesseract() -> Option<(PathBuf, &'static str)> {
     })
 }
 
-/// `tesseract --list-langs` の答えから、使う言語を選ぶ（縦書き用が先）
+/// `tesseract --list-langs` の答えから、使う言語を選ぶ（横書き用と縦書き用の両方があれば両方）
 fn choose_language(languages: &str) -> Option<&'static str> {
     let has = |name: &str| languages.lines().any(|line| line.trim() == name);
-    if has("jpn_vert") {
-        Some("jpn_vert")
-    } else if has("jpn") {
-        Some("jpn")
-    } else {
-        None
+    match (has("jpn"), has("jpn_vert")) {
+        (true, true) => Some("jpn+jpn_vert"),
+        (false, true) => Some("jpn_vert"),
+        (true, false) => Some("jpn"),
+        (false, false) => None,
     }
 }
 
@@ -139,11 +139,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vertical_japanese_is_preferred() {
+    fn both_horizontal_and_vertical_japanese_are_used_when_present() {
         assert_eq!(
             choose_language("List of languages:\njpn\njpn_vert\nosd\n"),
-            Some("jpn_vert")
+            Some("jpn+jpn_vert")
         );
+        assert_eq!(choose_language("jpn_vert\neng\n"), Some("jpn_vert"));
         assert_eq!(choose_language("jpn\neng\n"), Some("jpn"));
         assert_eq!(choose_language("eng\nosd\n"), None);
     }
