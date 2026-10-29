@@ -215,9 +215,27 @@ const COVER_DOWNLOAD_LIMIT: u64 = 10 * 1024 * 1024;
 const MIN_COVER_SIDE: u32 = 16;
 
 /// 表紙の画像をサイトから取る間隔（サイトに負担をかけないよう、1枚ずつ間を空ける）
-const COVER_FETCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// （サイトの前の Cloudflare などにたまっていれば、すぐ返るので、間は短くてよい）
+const COVER_FETCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// 答えを待つ上限。BOOKSCAN は、表紙の無い本だと約 60 秒待たせてから 1×1 の画像を返すので、
+/// それより短く切る（表紙のある本は数秒で返る）
+const COVER_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// この長さ以上かかったか、時間切れになったら、元のサーバーが働いたとみて、終わってから長めに空ける
+const COVER_SLOW: std::time::Duration = std::time::Duration::from_secs(5);
+const COVER_SLOW_PAUSE: std::time::Duration = std::time::Duration::from_secs(10);
 /// 取れなかった表紙を、取りに行かずにおく時間（秒）
 const COVER_RETRY_AFTER: u64 = 24 * 60 * 60;
+/// 時間切れになった表紙を、取りに行かずにおく時間（秒）。表紙の無い本のことが多いので、長めにする
+const COVER_TIMEOUT_RETRY_AFTER: u64 = 7 * 24 * 60 * 60;
+/// 時間切れの記録の、名前の前に付ける印
+const TIMEOUT_MARK: &str = "timeout:";
+
+/// 表紙を取りに行った結果
+enum Fetched {
+    Ok(Vec<u8>),
+    TimedOut,
+    Failed,
+}
 
 /// 手元に置いた URL の表紙の画像。名前の計算を変える前（Rust 標準のハッシュ）の名前で置いたものがあれば、
 /// 名前を付け替えて使う（何百冊もの表紙を、サイトから取り直さないように）
@@ -254,23 +272,41 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// 最近（`COVER_RETRY_AFTER` 以内に）取れなかった表紙か
-fn recently_failed(cache: &Path, url: &str, now: u64) -> bool {
-    load_failures(cache)
-        .get(&cover_cache_name(url))
-        .is_some_and(|&at| now.saturating_sub(at) < COVER_RETRY_AFTER)
+/// 記録を覚えておく時間（時間切れの記録は長め）
+fn retry_after(key: &str) -> u64 {
+    if key.starts_with(TIMEOUT_MARK) {
+        COVER_TIMEOUT_RETRY_AFTER
+    } else {
+        COVER_RETRY_AFTER
+    }
 }
 
-/// 取れなかったことを覚える（古い記録は捨てる）。取れたら記録から外す
-fn note_fetch(cache: &Path, url: &str, ok: bool, now: u64) {
+/// 最近取れなかった表紙か（ふつうは1日、時間切れは7日以内）
+fn recently_failed(cache: &Path, url: &str, now: u64) -> bool {
+    let name = cover_cache_name(url);
+    let failures = load_failures(cache);
+    [name.clone(), format!("{TIMEOUT_MARK}{name}")]
+        .into_iter()
+        .any(|key| {
+            failures
+                .get(&key)
+                .is_some_and(|&at| now.saturating_sub(at) < retry_after(&key))
+        })
+}
+
+/// 取れなかったことを覚える（古い記録は捨てる）。取れたら記録から外す。
+/// `timed_out` なら、時間切れとして長めに覚える
+fn note_fetch(cache: &Path, url: &str, ok: bool, timed_out: bool, now: u64) {
     let mut failures = load_failures(cache);
     let before = failures.len();
-    failures.retain(|_, at| now.saturating_sub(*at) < COVER_RETRY_AFTER);
-    let key = cover_cache_name(url);
+    failures.retain(|key, at| now.saturating_sub(*at) < retry_after(key));
+    let name = cover_cache_name(url);
+    let timeout_key = format!("{TIMEOUT_MARK}{name}");
     let changed = if ok {
-        failures.remove(&key).is_some()
+        let removed = failures.remove(&name).is_some();
+        failures.remove(&timeout_key).is_some() || removed
     } else {
-        failures.insert(key, now);
+        failures.insert(if timed_out { timeout_key } else { name }, now);
         true
     };
     if changed || failures.len() != before {
@@ -279,12 +315,14 @@ fn note_fetch(cache: &Path, url: &str, ok: bool, now: u64) {
 }
 
 /// 表紙の画像をサイトから取って、手元に置く。サイトに負担をかけないよう、一度に1枚ずつ、
-/// 前に取ってから `COVER_FETCH_INTERVAL` 空けて取る。最近取れなかった表紙は取りに行かない。
+/// 前に取り始めてから `COVER_FETCH_INTERVAL` 空けて取る。遅かったり時間切れになったりしたら、
+/// 終わってから `COVER_SLOW_PAUSE` 空ける。最近取れなかった表紙は取りに行かない。
 /// 順番を待っているあいだに `stop()` が真になったら（一覧を離れた、スクロールしてほかの冊を先に取る）取りに行かない
 fn fetch_url_cover(url: &str, cache: &Path, stop: &dyn Fn() -> bool) -> Option<Vec<u8>> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return None;
     }
+    /// 次に取りに行ってよい時刻
     static LAST_FETCH: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
     // ほかのスレッドが取っているあいだも、止める印を見ながら待つ（遅いサイトでは1枚に1分かかることもある）
     let mut last = loop {
@@ -306,34 +344,52 @@ fn fetch_url_cover(url: &str, cache: &Path, stop: &dyn Fn() -> bool) -> Option<V
     if stop() || recently_failed(cache, url, unix_now()) {
         return None;
     }
-    while last.is_some_and(|at| at.elapsed() < COVER_FETCH_INTERVAL) {
+    while last.is_some_and(|at| std::time::Instant::now() < at) {
         if stop() {
             return None;
         }
         thread::sleep(std::time::Duration::from_millis(100));
     }
-    *last = Some(std::time::Instant::now());
-    // 答えないサーバーで、表紙を作るスレッドが止まり続けないように
+    let started = std::time::Instant::now();
+    let fetched = fetch_bytes(url);
+    // 遅かったら（元のサーバーが働いたとみて）、終わってから長めに空ける
+    let took = started.elapsed();
+    *last = Some(match fetched {
+        Fetched::TimedOut => std::time::Instant::now() + COVER_SLOW_PAUSE,
+        _ if took >= COVER_SLOW => std::time::Instant::now() + COVER_SLOW_PAUSE,
+        _ => started + COVER_FETCH_INTERVAL,
+    });
+    if let Some(parent) = cache.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let timed_out = matches!(fetched, Fetched::TimedOut);
+    let Fetched::Ok(bytes) = fetched else {
+        note_fetch(cache, url, false, timed_out, unix_now());
+        return None;
+    };
+    note_fetch(cache, url, true, false, unix_now());
+    let _ = crate::engine::settings_store::write_atomic(cache, &bytes);
+    Some(bytes)
+}
+
+/// 表紙の画像を取る。答えないサーバーで止まり続けないよう、`COVER_FETCH_TIMEOUT` で切る
+fn fetch_bytes(url: &str) -> Fetched {
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(std::time::Duration::from_secs(15)))
-        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .timeout_global(Some(COVER_FETCH_TIMEOUT))
         .build()
         .into();
-    let bytes = agent.get(url).call().ok().and_then(|mut response| {
+    let read = agent.get(url).call().and_then(|mut response| {
         response
             .body_mut()
             .with_config()
             .limit(COVER_DOWNLOAD_LIMIT)
             .read_to_vec()
-            .ok()
     });
-    if let Some(parent) = cache.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    match read {
+        Ok(bytes) => Fetched::Ok(bytes),
+        Err(ureq::Error::Timeout(_)) => Fetched::TimedOut,
+        Err(_) => Fetched::Failed,
     }
-    note_fetch(cache, url, bytes.is_some(), unix_now());
-    let bytes = bytes?;
-    let _ = crate::engine::settings_store::write_atomic(cache, &bytes);
-    Some(bytes)
 }
 
 /// 名前の計算を変える前の、表紙のためておきの名前（Rust 標準のハッシュ。前に置いたものを探すためだけに使う）
@@ -817,7 +873,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// 取れなかった表紙は1日覚えておき、そのあいだは取りに行かない
+    /// 取れなかった表紙は1日（時間切れは7日）覚えておき、そのあいだは取りに行かない
     #[test]
     fn failed_cover_fetches_are_not_retried_for_a_day() {
         let dir = std::env::temp_dir().join(format!("manga-cover-fail-{}", std::process::id()));
@@ -826,14 +882,38 @@ mod tests {
         let cache = dir.join("cover.jpg");
         let url = "https://example.invalid/a.jpg";
         assert!(!recently_failed(&cache, url, 1000));
-        note_fetch(&cache, url, false, 1000);
+        note_fetch(&cache, url, false, false, 1000);
         assert!(recently_failed(&cache, url, 1000 + COVER_RETRY_AFTER - 1));
         assert!(!recently_failed(&cache, url, 1000 + COVER_RETRY_AFTER));
         // 取れたら記録から外す
-        note_fetch(&cache, url, true, 2000);
+        note_fetch(&cache, url, true, false, 2000);
         assert!(!recently_failed(&cache, url, 2000));
+        // 時間切れは7日覚えておく。取れたら外す
+        note_fetch(&cache, url, false, true, 3000);
+        assert!(recently_failed(&cache, url, 3000 + COVER_RETRY_AFTER));
+        assert!(recently_failed(
+            &cache,
+            url,
+            3000 + COVER_TIMEOUT_RETRY_AFTER - 1
+        ));
+        assert!(!recently_failed(
+            &cache,
+            url,
+            3000 + COVER_TIMEOUT_RETRY_AFTER
+        ));
+        // 古い記録を捨てるときも、時間切れの記録は7日までは残す
+        note_fetch(
+            &cache,
+            "https://example.invalid/b.jpg",
+            false,
+            false,
+            3000 + COVER_RETRY_AFTER,
+        );
+        assert!(recently_failed(&cache, url, 3000 + COVER_RETRY_AFTER));
+        note_fetch(&cache, url, true, false, 4000);
+        assert!(!recently_failed(&cache, url, 4000));
         // 最近取れなかった表紙は、サイトに取りに行かない（ここでは通信しない）
-        note_fetch(&cache, url, false, unix_now());
+        note_fetch(&cache, url, false, false, unix_now());
         let started = std::time::Instant::now();
         assert_eq!(fetch_url_cover(url, &cache, &|| false), None);
         assert!(started.elapsed() < COVER_FETCH_INTERVAL);
