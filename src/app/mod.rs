@@ -1263,7 +1263,7 @@ mod tests {
     /// 本文の結果を Enter で開くと、その本のそのページへ移る
     #[test]
     fn cross_search_finds_names_and_text_and_opens_the_page() {
-        use crate::engine::book_text::{CacheFile, TEXT_DIR, version};
+        use crate::engine::book_text::{CacheFile, PageSource, TEXT_DIR, version};
         let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
         let library = pages.0.join("library");
         fs::create_dir_all(&library).unwrap();
@@ -1281,7 +1281,16 @@ mod tests {
             size,
             modified,
             source: "ocr:x".to_owned(),
-            pages_key: String::new(),
+            // フォルダの本は、ページの並び（各画像の版も）が合うものだけを使う
+            pages_key: {
+                let listing = crate::engine::source::list_images(&pages.0, false).unwrap();
+                PageSource {
+                    mode: listing.mode,
+                    root: listing.root,
+                    names: listing.images,
+                }
+                .key()
+            },
             pages: vec![
                 String::new(),
                 "ヤーボよォ！仇を取る時が来た".to_owned(),

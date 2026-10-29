@@ -4,13 +4,14 @@
 //! 画面を止めないよう、探すのは別のスレッドで行う。語が変わったら前の検索はやめ、打つ手が止まってから探し始める。
 //! 探すときに新しく文字を取り出したり OCR したりはせず、ためてあるものだけを読む。
 //! 本の文字は、探すたびにためておきのファイルから読む。最近読んだものは、決まった量まで手元に持っておく。
+//! 大きすぎるためておきは読まず、1冊ずつ探して、冊の切れ目ごとに語が変わっていないかを見る。
 
 use crate::engine::book_text::{
-    BookText, CacheFile, Hit, MAX_QUERY_CHARS, OCR_TEXT_DIR, SearchIndex, TEXT_DIR, fold_char,
-    version,
+    BookText, CacheFile, Hit, MAX_QUERY_CHARS, OCR_TEXT_DIR, PageSource, SearchIndex, TEXT_DIR,
+    fold_char, version,
 };
 use crate::engine::history::normalize;
-use crate::engine::source::IMAGE_EXTENSIONS;
+use crate::engine::source::{IMAGE_EXTENSIONS, list_images};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,6 +36,9 @@ pub const TEXT_MIN_CHARS: usize = 2;
 const DEBOUNCE: Duration = Duration::from_millis(200);
 /// 読んだ本の文字を手元に持っておく量（文字数。1文字あたり約 15 バイトなので、約 60MB）
 const INDEX_BUDGET: usize = 4_000_000;
+/// 読むためておきのファイルの大きさの上限（約 270 万字。索引にしても、持っておく量に収まる）。
+/// これより大きいものは横断検索では読まない
+const MAX_CACHE_FILE: u64 = 8 * 1024 * 1024;
 
 /// 名前で探す本がどこから来たか
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,30 +217,76 @@ fn search_names(books: &[NameHit], query: &str) -> Vec<NameHit> {
 /// 読んだ本の文字の索引を、決まった量まで持っておく（古く使ったものから捨てる）
 #[derive(Default)]
 struct IndexCache {
-    entries: HashMap<PathBuf, (SystemTime, Arc<SearchIndex>, PathBuf, usize)>,
+    entries: HashMap<PathBuf, IndexEntry>,
     order: VecDeque<PathBuf>,
     chars: usize,
 }
 
+struct IndexEntry {
+    /// ためておきのファイルの更新日時
+    modified: SystemTime,
+    book: PathBuf,
+    /// 読んだときの本の版。使い回すたびに確かめる（置き換えたり消したりした本の文字を出さないように）
+    version: (u64, u64),
+    index: Arc<SearchIndex>,
+    chars: usize,
+}
+
+/// ためておきの文字が、今の本のページの並びに合うか。PDF はファイルの版だけで決まる。
+/// 書庫とフォルダは、本の中の検索と同じくページの並び（フォルダは各画像の版も）を比べる
+/// （フォルダの画像を上書きしても、フォルダの版は変わらないため）。
+/// サブフォルダを読むかはここではわからないので、どちらかで合えばよい
+fn pages_match(book: &Path, pages_key: &str) -> bool {
+    if book
+        .extension()
+        .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("pdf"))
+    {
+        return true;
+    }
+    !pages_key.is_empty()
+        && [false, true].into_iter().any(|include_subfolders| {
+            list_images(book, include_subfolders).is_some_and(|listing| {
+                PageSource {
+                    mode: listing.mode,
+                    root: listing.root,
+                    names: listing.images,
+                }
+                .key()
+                    == pages_key
+            })
+        })
+}
+
 impl IndexCache {
-    /// ためておきのファイル `file` の (本, 索引)。ファイルが変わっていなければ持っているものを使う。
-    /// 本が無くなっていたり、変わっていたり（ためておきが古い）したら None
+    /// ためておきのファイル `file` の (本, 索引)。ファイルも本も変わっていなければ持っているものを使う。
+    /// 本が無くなっていたり、変わっていたり（ためておきが古い）、ファイルが大きすぎたりしたら None
     fn get(&mut self, file: &Path) -> Option<(PathBuf, Arc<SearchIndex>)> {
-        let modified = std::fs::metadata(file).ok()?.modified().ok()?;
-        if let Some((at, index, book, _)) = self.entries.get(file)
-            && *at == modified
+        let meta = std::fs::metadata(file).ok()?;
+        let modified = meta.modified().ok()?;
+        if let Some(entry) = self.entries.get(file)
+            && entry.modified == modified
         {
-            let (index, book) = (index.clone(), book.clone());
+            if version(&entry.book) != Some(entry.version) {
+                self.remove(file);
+                return None;
+            }
+            let found = (entry.book.clone(), entry.index.clone());
             self.order.retain(|path| path != file);
             self.order.push_back(file.to_path_buf());
-            return Some((book, index));
+            return Some(found);
+        }
+        self.remove(file);
+        // 大きすぎるものは読まない（1冊の読み込みと索引づくりが長くならないよう、また手元に持てる量に収まるように）
+        if meta.len() > MAX_CACHE_FILE {
+            return None;
         }
         let cache: CacheFile = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
         if cache.book.is_empty() {
             return None;
         }
         let book = PathBuf::from(&cache.book);
-        if version(&book)? != (cache.size, cache.modified) {
+        let book_version = version(&book)?;
+        if book_version != (cache.size, cache.modified) || !pages_match(&book, &cache.pages_key) {
             return None;
         }
         let chars = cache.pages.iter().map(|page| page.chars().count()).sum();
@@ -246,7 +296,6 @@ impl IndexCache {
             ocr: None,
         }));
         if chars <= INDEX_BUDGET {
-            self.remove(file);
             while self.chars + chars > INDEX_BUDGET {
                 let Some(oldest) = self.order.pop_front() else {
                     break;
@@ -255,7 +304,13 @@ impl IndexCache {
             }
             self.entries.insert(
                 file.to_path_buf(),
-                (modified, index.clone(), book.clone(), chars),
+                IndexEntry {
+                    modified,
+                    book: book.clone(),
+                    version: book_version,
+                    index: index.clone(),
+                    chars,
+                },
             );
             self.order.push_back(file.to_path_buf());
             self.chars += chars;
@@ -264,8 +319,8 @@ impl IndexCache {
     }
 
     fn remove(&mut self, file: &Path) {
-        if let Some((_, _, _, chars)) = self.entries.remove(file) {
-            self.chars -= chars;
+        if let Some(entry) = self.entries.remove(file) {
+            self.chars -= entry.chars;
             self.order.retain(|path| path != file);
         }
     }
@@ -554,6 +609,87 @@ mod tests {
         assert_eq!(collect(&search, generation).0[0].from, NameFrom::History);
         // 1文字では本文は探さない
         let generation = search.search("仇");
+        assert!(collect(&search, generation).1.is_empty());
+        drop(search);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// ためておきを書く（テスト用）
+    fn write_cache(cache: &Path, book: &Path, pages_key: String, pages: &[&str]) {
+        let (size, modified) = version(book).unwrap();
+        let file = CacheFile {
+            book: book.to_string_lossy().into_owned(),
+            size,
+            modified,
+            source: "ocr:x".to_owned(),
+            pages_key,
+            pages: pages.iter().map(|page| page.to_string()).collect(),
+            failed: 0,
+        };
+        let name = crate::engine::thumbnail::cover_cache_name(&book.to_string_lossy());
+        std::fs::create_dir_all(cache.join(OCR_TEXT_DIR)).unwrap();
+        std::fs::write(
+            cache.join(OCR_TEXT_DIR).join(format!("{name}.json")),
+            serde_json::to_string(&file).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// 窓を開いたまま本を置き換えたり消したりしたら、読んであった本文はもう出さない
+    #[test]
+    fn replaced_or_removed_books_drop_their_text() {
+        let root = temp_dir("replace");
+        let cache = root.join("cache");
+        let book = root.join("本.pdf");
+        std::fs::write(&book, b"x").unwrap();
+        write_cache(&cache, &book, String::new(), &["仇を取る"]);
+        let search = CrossSearch::start(Vec::new(), Vec::new(), cache.clone());
+        let generation = search.search("仇を取る");
+        assert_eq!(collect(&search, generation).1.len(), 1);
+        // 同じ場所に別の本を置く（大きさが変わる）
+        std::fs::write(&book, b"another book").unwrap();
+        let generation = search.search("仇を取る ");
+        assert!(collect(&search, generation).1.is_empty());
+        std::fs::remove_file(&book).unwrap();
+        let generation = search.search("仇を取る");
+        assert!(collect(&search, generation).1.is_empty());
+        drop(search);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// フォルダの本は、画像を上書きしたら（フォルダの版は変わらなくても）ためておきの本文を使わない
+    #[test]
+    fn folder_text_follows_the_images() {
+        let root = temp_dir("folder");
+        let cache = root.join("cache");
+        let book = root.join("画像の本");
+        std::fs::create_dir_all(&book).unwrap();
+        image::RgbaImage::new(4, 4)
+            .save(book.join("01.png"))
+            .unwrap();
+        let key = || {
+            let listing = list_images(&book, false).unwrap();
+            PageSource {
+                mode: listing.mode,
+                root: listing.root,
+                names: listing.images,
+            }
+            .key()
+        };
+        let first_key = key();
+        write_cache(&cache, &book, first_key.clone(), &["仇を取る"]);
+        let search = CrossSearch::start(Vec::new(), Vec::new(), cache.clone());
+        let generation = search.search("仇を取る");
+        assert_eq!(collect(&search, generation).1.len(), 1);
+        drop(search);
+        // 画像を上書きすると、ページの並び（各画像の版）が変わる
+        std::thread::sleep(Duration::from_millis(1100));
+        image::RgbaImage::new(8, 8)
+            .save(book.join("01.png"))
+            .unwrap();
+        assert_ne!(key(), first_key);
+        let search = CrossSearch::start(Vec::new(), Vec::new(), cache.clone());
+        let generation = search.search("仇を取る");
         assert!(collect(&search, generation).1.is_empty());
         drop(search);
         std::fs::remove_dir_all(root).unwrap();
