@@ -41,3 +41,8 @@ libc = "0.2.180"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_Packaging_Appx", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[dev-dependencies]
+# 画面に出す文字を描けるか確かめるテストで、ソースの文字列を取り出すのに使う（すでに依存関係にある版）
+proc-macro2 = { version = "1.0.106", default-features = false }
+syn = { version = "2.0.114", default-features = false, features = ["parsing"] }
