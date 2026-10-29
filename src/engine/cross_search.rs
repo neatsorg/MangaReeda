@@ -228,8 +228,17 @@ struct IndexEntry {
     book: PathBuf,
     /// 読んだときの本の版。使い回すたびに確かめる（置き換えたり消したりした本の文字を出さないように）
     version: (u64, u64),
+    /// ページの並び（`pages_match` で比べる）
+    pages_key: String,
     index: Arc<SearchIndex>,
     chars: usize,
+}
+
+/// 索引から見つけた本。使い回した索引なら `recheck` に、見つかったときに確かめ直すページの並びが入る
+struct Found {
+    book: PathBuf,
+    index: Arc<SearchIndex>,
+    recheck: Option<String>,
 }
 
 /// ためておきの文字が、今の本のページの並びに合うか。PDF はファイルの版だけで決まる。
@@ -260,7 +269,7 @@ fn pages_match(book: &Path, pages_key: &str) -> bool {
 impl IndexCache {
     /// ためておきのファイル `file` の (本, 索引)。ファイルも本も変わっていなければ持っているものを使う。
     /// 本が無くなっていたり、変わっていたり（ためておきが古い）、ファイルが大きすぎたりしたら None
-    fn get(&mut self, file: &Path) -> Option<(PathBuf, Arc<SearchIndex>)> {
+    fn get(&mut self, file: &Path) -> Option<Found> {
         let meta = std::fs::metadata(file).ok()?;
         let modified = meta.modified().ok()?;
         if let Some(entry) = self.entries.get(file)
@@ -270,7 +279,13 @@ impl IndexCache {
                 self.remove(file);
                 return None;
             }
-            let found = (entry.book.clone(), entry.index.clone());
+            // フォルダの画像の上書きは本の版に出ないので、ページの並びは、見つかったときに確かめ直す
+            // （毎回すべての本の画像を調べると重いため）
+            let found = Found {
+                book: entry.book.clone(),
+                index: entry.index.clone(),
+                recheck: Some(entry.pages_key.clone()),
+            };
             self.order.retain(|path| path != file);
             self.order.push_back(file.to_path_buf());
             return Some(found);
@@ -308,6 +323,7 @@ impl IndexCache {
                     modified,
                     book: book.clone(),
                     version: book_version,
+                    pages_key: cache.pages_key,
                     index: index.clone(),
                     chars,
                 },
@@ -315,7 +331,11 @@ impl IndexCache {
             self.order.push_back(file.to_path_buf());
             self.chars += chars;
         }
-        Some((book, index))
+        Some(Found {
+            book,
+            index,
+            recheck: None,
+        })
     }
 
     fn remove(&mut self, file: &Path) {
@@ -431,8 +451,13 @@ impl Worker {
                 if self.stale(generation) {
                     return;
                 }
-                if let Some((book, index)) = self.indexes.get(file) {
-                    let hits: Vec<TextHit> = index
+                if let Some(Found {
+                    book,
+                    index,
+                    recheck,
+                }) = self.indexes.get(file)
+                {
+                    let mut hits: Vec<TextHit> = index
                         .search(query, TEXT_PER_BOOK.min(TEXT_LIMIT - found))
                         .into_iter()
                         .map(|Hit { page, snippet }| TextHit {
@@ -441,6 +466,14 @@ impl Worker {
                             snippet,
                         })
                         .collect();
+                    // 使い回した索引で見つかったら、本のページの並びが今も合うか確かめ直す
+                    if !hits.is_empty()
+                        && let Some(key) = recheck
+                        && !pages_match(&book, &key)
+                    {
+                        self.indexes.remove(file);
+                        hits.clear();
+                    }
                     found += hits.len();
                     if !hits.is_empty() && !self.send(generation, Message::Text(hits)) {
                         return;
@@ -678,16 +711,20 @@ mod tests {
         };
         let first_key = key();
         write_cache(&cache, &book, first_key.clone(), &["仇を取る"]);
+        // 窓を開いたまま（索引を使い回して）、画像を上書きしても、前の本文は出さない
         let search = CrossSearch::start(Vec::new(), Vec::new(), cache.clone());
         let generation = search.search("仇を取る");
         assert_eq!(collect(&search, generation).1.len(), 1);
-        drop(search);
         // 画像を上書きすると、ページの並び（各画像の版）が変わる
         std::thread::sleep(Duration::from_millis(1100));
         image::RgbaImage::new(8, 8)
             .save(book.join("01.png"))
             .unwrap();
         assert_ne!(key(), first_key);
+        let generation = search.search("仇を取る");
+        assert!(collect(&search, generation).1.is_empty());
+        drop(search);
+        // 新しく開いた窓（初めて読むとき）でも出さない
         let search = CrossSearch::start(Vec::new(), Vec::new(), cache.clone());
         let generation = search.search("仇を取る");
         assert!(collect(&search, generation).1.is_empty());
