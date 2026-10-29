@@ -46,22 +46,25 @@ mod tests {
 
     fn literal_chars(tokens: proc_macro2::TokenStream, chars: &mut BTreeSet<char>) {
         use proc_macro2::{Delimiter, TokenTree};
-        let mut tokens = tokens.into_iter().peekable();
+        let all: Vec<TokenTree> = tokens.into_iter().collect();
+        let is_dot = |index: usize| matches!(all.get(index), Some(TokenTree::Punct(p)) if p.as_char() == '.');
+        let mut tokens = all.iter().cloned().enumerate().peekable();
         // 直前に続いた記号（範囲の `..` や `..=` を見分ける）
         let mut puncts = String::new();
-        while let Some(token) = tokens.next() {
+        while let Some((index, token)) = tokens.next() {
             match &token {
                 TokenTree::Punct(punct) if punct.as_char() == '#' => {
                     puncts.clear();
-                    if matches!(tokens.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '!') {
+                    if matches!(tokens.peek(), Some((_, TokenTree::Punct(p))) if p.as_char() == '!')
+                    {
                         tokens.next();
                     }
-                    let Some(TokenTree::Group(attribute)) = tokens.next() else {
+                    let Some((_, TokenTree::Group(attribute))) = tokens.next() else {
                         continue;
                     };
                     // テストのコードは、次の項目（`{…}` か `;` まで）ごと飛ばす
                     if attribute.stream().to_string().replace(' ', "") == "cfg(test)" {
-                        for item in tokens.by_ref() {
+                        for (_, item) in tokens.by_ref() {
                             match item {
                                 TokenTree::Group(group)
                                     if group.delimiter() == Delimiter::Brace =>
@@ -84,7 +87,8 @@ mod tests {
                     syn::Lit::Str(text) => chars.extend(text.value().chars()),
                     syn::Lit::Char(c) => {
                         let range_end = puncts.ends_with("..") || puncts.ends_with("..=");
-                        let range_start = matches!(tokens.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '.');
+                        // `.` が2つ続くときだけ範囲（`'…'.to_string()` のような呼び出しは範囲ではない）
+                        let range_start = is_dot(index + 1) && is_dot(index + 2);
                         if !range_end && !range_start {
                             chars.insert(c.value());
                         }
@@ -111,6 +115,7 @@ mod tests {
                 label("// ⑥ は文字列の中");
                 let quote = '"';
                 let mark = '⑦';
+                let shown = '⑭'.to_string();
                 let wide = matches!(c, '⑧'..='⑨');
                 let open = ('⑩'..'⑪').contains(&c);
             }
@@ -123,7 +128,7 @@ mod tests {
         let mut chars = BTreeSet::new();
         string_chars(source, &mut chars);
         // 文字列と文字のリテラルの中身は拾う
-        for c in "引用終わり④⑤⑥⑦⑬🦀".chars() {
+        for c in "引用終わり④⑤⑥⑦⑬⑭🦀".chars() {
             assert!(chars.contains(&c), "{c} を拾っていない");
         }
         // コメントの中、範囲の端、テストのコードは拾わない
