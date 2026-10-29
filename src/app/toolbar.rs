@@ -94,8 +94,9 @@ impl MangaReader {
                     if ui.button("—").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                     }
+                    // 全画面を解除する（🗗 は同梱のフォントにも egui の予備のフォントにも無く、四角になる）
                     if ui
-                        .button("🗗")
+                        .button("▣")
                         .on_hover_text(tr("toolbar.fullscreen"))
                         .clicked()
                     {
@@ -289,7 +290,7 @@ impl MangaReader {
                             }
 
                             if ui
-                                .button(if self.is_fullscreen { "🗗" } else { "⛶" })
+                                .button(if self.is_fullscreen { "▣" } else { "⛶" })
                                 .on_hover_text(tr("toolbar.fullscreen"))
                                 .clicked()
                             {
