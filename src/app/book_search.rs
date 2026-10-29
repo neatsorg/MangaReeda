@@ -195,6 +195,8 @@ impl MangaReader {
             search.focus = true;
             return;
         }
+        // 裏で同じ本の文字を下ごしらえしていれば止める（ここで取り出すので）
+        self.text_prefetch.leave_book(&book);
         let progress = Arc::new(TextProgress::default());
         let cancel = Arc::new(AtomicBool::new(false));
         // PDF は透明テキストを、ほかの本は前に OCR してためた文字を読む

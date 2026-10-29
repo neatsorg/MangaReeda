@@ -13,6 +13,7 @@ mod pageview;
 mod plugins;
 mod settings_panel;
 mod sized_cache;
+mod text_prefetch;
 mod thumbnails;
 mod toolbar;
 mod view;
@@ -95,6 +96,8 @@ pub struct MangaReader {
     book_search: Option<book_search::BookSearch>,
     /// このフレームでメニューやダイアログを使っている。表紙サムネイルはマウスとキーを受け取らない
     shelf_input_blocked: bool,
+    /// 本の文字の下ごしらえ（横断検索で探せるよう、PDF の文字を裏でためる）
+    text_prefetch: text_prefetch::TextPrefetch,
     /// 横断検索の窓（本を変えても開いたまま）
     cross_search: Option<cross_search::CrossSearchWindow>,
     /// 設定画面で書いている、横断検索でたどるフォルダ（書き終えたら設定に入れる）
@@ -221,6 +224,7 @@ impl MangaReader {
             book_search: None,
             book_ocr: None,
             cross_search: None,
+            text_prefetch: text_prefetch::TextPrefetch::default(),
             search_folders_text: None,
             shelf_input_blocked: false,
             active_animations: std::array::from_fn(|_| None),
@@ -447,6 +451,7 @@ impl eframe::App for MangaReader {
             self.open_book_search();
         }
         self.poll_book_ocr(ctx);
+        self.prepare_book_texts(ctx);
         if self.thumbnails.is_none() {
             self.render_book_search(ctx);
         }
@@ -1368,6 +1373,95 @@ mod tests {
         assert!(reader.cross_search.is_some());
         reader.cross_search = None;
         fs::remove_file(file).unwrap();
+        fs::remove_dir_all(library).unwrap();
+    }
+
+    /// 本を読んでいないときに1分操作が無ければ、ダウンロード先の PDF の文字を裏でためる。操作したら止める
+    #[test]
+    fn idle_time_prepares_pdf_text_for_cross_search() {
+        if crate::engine::pdf::pdfium().is_none() {
+            return;
+        }
+        let pages = TestPages::new(&[[10, 20]]);
+        let library = pages.0.join("library");
+        fs::create_dir_all(&library).unwrap();
+        // 埋め込まれた文字のある PDF（ページの文字のある、いちばん小さな PDF）
+        let book = library.join("idle.pdf");
+        let stream = "BT /F1 12 Tf 20 100 Td (Idle MangaReeda) Tj ET";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>"
+                .to_owned(),
+            format!(
+                "<< /Length {} >>\nstream\n{stream}\nendstream",
+                stream.len()
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        ];
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.push_str(&format!("{} 0 obj\n{object}\nendobj\n", i + 1));
+        }
+        let xref = pdf.len();
+        pdf.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in offsets {
+            pdf.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        pdf.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        fs::write(&book, pdf).unwrap();
+
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                library_dir: library.to_string_lossy().into_owned(),
+                ..AppSettings::default()
+            },
+            None,
+        );
+        let frame = |reader: &mut MangaReader, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| reader.prepare_book_texts(ctx));
+        };
+        // 操作してすぐは始めない
+        frame(&mut reader, Vec::new());
+        assert!(!reader.text_prefetch.idle_running());
+        // 1分操作が無ければ始め、ためておきに入る
+        reader.text_prefetch.pretend_idle();
+        frame(&mut reader, Vec::new());
+        assert!(reader.text_prefetch.idle_running());
+        let cache = settings_store::cache_dir();
+        for _ in 0..300 {
+            if crate::engine::book_text::has_cache(&book, &cache) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(crate::engine::book_text::has_cache(&book, &cache));
+        // 操作したら止める
+        frame(
+            &mut reader,
+            vec![egui::Event::PointerMoved(egui::pos2(5.0, 5.0))],
+        );
+        assert!(!reader.text_prefetch.idle_running());
+        for dir in ["text", "text-ocr"] {
+            let _ = fs::remove_file(cache.join(dir).join(format!(
+                "{}.json",
+                crate::engine::thumbnail::cover_cache_name(&book.to_string_lossy())
+            )));
+        }
         fs::remove_dir_all(library).unwrap();
     }
 

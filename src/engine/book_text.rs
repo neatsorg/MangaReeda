@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// 本の、ページごとの文字
 #[derive(Default, Debug, PartialEq)]
@@ -41,7 +41,7 @@ pub struct TextProgress {
 /// ためておく本の数の上限。超えたら、長く使っていないものから消す
 /// （消したり動かしたりした本のぶんが、たまり続けないように）。
 /// OCR の結果は、読み直すのに時間がかかるので、別のフォルダに置いて上限の外にする
-const CACHE_LIMIT: usize = 300;
+const CACHE_LIMIT: usize = 1000;
 
 /// PDF の埋め込まれた文字をためるフォルダ（上限まで）と、OCR の結果をためるフォルダ（上限なし）
 pub const TEXT_DIR: &str = "text";
@@ -184,6 +184,7 @@ fn pdf_text(
     progress: &TextProgress,
     cancel: &AtomicBool,
     use_cache: bool,
+    pace: Duration,
 ) -> Option<(BookText, bool)> {
     // PDF のページの並びは、ファイルの版で決まる
     if use_cache && let Some(text) = load_cache(book, cache_dir, "") {
@@ -227,6 +228,10 @@ fn pdf_text(
         }
         text.pages.push(page.unwrap_or_default());
         progress.done.store(index + 1, Ordering::Relaxed);
+        // 裏で下ごしらえするときは、ページを描く処理を待たせないよう、1ページごとに間を空ける
+        if !pace.is_zero() {
+            std::thread::sleep(pace);
+        }
     }
     // 読めないページがあれば、ためない。元に戻すときは、埋め込まれた文字があるときだけ置き換える
     // （そうでなければ、ためてある OCR の結果をそのまま残す）
@@ -235,6 +240,39 @@ fn pdf_text(
         save_cache(book, cache_dir, &text, "pdf", "");
     }
     Some((text, layer))
+}
+
+/// 裏で下ごしらえするときの、1ページごとの間
+const PREPARE_PACE: Duration = Duration::from_millis(20);
+
+/// この本の文字がためてあるか（PDF の埋め込まれた文字か OCR の結果。古いかどうかは見ない）
+pub fn has_cache(book: &Path, cache_dir: &Path) -> bool {
+    cache_path(book, cache_dir, true).is_file() || cache_path(book, cache_dir, false).is_file()
+}
+
+/// PDF の文字を取り出してためておく（横断検索で探せるよう、裏で下ごしらえする）。
+/// ためてあれば何もしない。読む邪魔をしないよう、1ページごとに間を空ける。
+/// 止められたら（`cancel`）false を返す（ためないので、あとでやり直す）
+pub fn prepare_pdf_text(
+    pdfium: SharedPdfium,
+    book: &Path,
+    cache_dir: &Path,
+    cancel: &AtomicBool,
+) -> bool {
+    if has_cache(book, cache_dir) {
+        return true;
+    }
+    let progress = TextProgress::default();
+    pdf_text(
+        pdfium,
+        book,
+        cache_dir,
+        &progress,
+        cancel,
+        true,
+        PREPARE_PACE,
+    );
+    !cancel.load(Ordering::Relaxed)
 }
 
 /// 取り出した本の文字
@@ -276,12 +314,19 @@ pub fn spawn_book_text(
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         let loaded = match pdfium {
-            Some(pdfium) => pdf_text(pdfium, &book, &cache_dir, &progress, &cancel, true).map(
-                |(text, layer)| LoadedText {
-                    pdf_layer: layer,
-                    ..LoadedText::new(&text)
-                },
-            ),
+            Some(pdfium) => pdf_text(
+                pdfium,
+                &book,
+                &cache_dir,
+                &progress,
+                &cancel,
+                true,
+                Duration::ZERO,
+            )
+            .map(|(text, layer)| LoadedText {
+                pdf_layer: layer,
+                ..LoadedText::new(&text)
+            }),
             None => Some(LoadedText::new(
                 &load_cache(&book, &cache_dir, &pages.key()).unwrap_or_default(),
             )),
@@ -302,12 +347,20 @@ pub fn spawn_pdf_layer(
 ) -> Receiver<Option<LoadedText>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let loaded = pdf_text(pdfium, &book, &cache_dir, &progress, &cancel, false)
-            .filter(|(text, layer)| text.failed == 0 && *layer)
-            .map(|(text, layer)| LoadedText {
-                pdf_layer: layer,
-                ..LoadedText::new(&text)
-            });
+        let loaded = pdf_text(
+            pdfium,
+            &book,
+            &cache_dir,
+            &progress,
+            &cancel,
+            false,
+            Duration::ZERO,
+        )
+        .filter(|(text, layer)| text.failed == 0 && *layer)
+        .map(|(text, layer)| LoadedText {
+            pdf_layer: layer,
+            ..LoadedText::new(&text)
+        });
         let _ = tx.send(loaded);
     });
     rx
@@ -919,6 +972,44 @@ mod tests {
         assert!(none.is_none());
         let kept = load_cache(&blank, &dir.join("cache"), "").unwrap();
         assert_eq!(kept.ocr.as_deref(), Some("fake"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 裏での下ごしらえ: PDF の文字をためる。ためてあれば何もしない。止めたら、ためない
+    #[test]
+    fn pdf_text_can_be_prepared_in_the_background() {
+        let Some(pdfium) = crate::engine::pdf::pdfium() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("manga-prepare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let book = dir.join("book.pdf");
+        std::fs::write(&book, pdf_with_text()).unwrap();
+        let cache = dir.join("cache");
+        // 止めたら、ためない（あとでやり直す）
+        assert!(!prepare_pdf_text(
+            pdfium,
+            &book,
+            &cache,
+            &AtomicBool::new(true)
+        ));
+        assert!(!has_cache(&book, &cache));
+        assert!(prepare_pdf_text(
+            pdfium,
+            &book,
+            &cache,
+            &AtomicBool::new(false)
+        ));
+        let text = load_cache(&book, &cache, "").unwrap();
+        assert!(text.pages[1].contains("MangaReeda"));
+        // ためてあれば、止める印が立っていても済んだことになる
+        assert!(prepare_pdf_text(
+            pdfium,
+            &book,
+            &cache,
+            &AtomicBool::new(true)
+        ));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
