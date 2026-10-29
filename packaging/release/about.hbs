@@ -12,6 +12,9 @@ pre { white-space: pre-wrap; background: #f4f4f4; padding: 1em; }
 <h1>Third-party licenses</h1>
 <p>MangaReeda and its plugins are built from the following Rust crates. Other bundled files
 (pdfium, dav1d, UnRAR and the Noto Sans JP font) are listed in THIRD_PARTY_NOTICES.md.</p>
+<p>The crates are used unmodified. The source code of each crate is available from crates.io
+(linked below), and the source code of MangaReeda and its plugins (mangareeda and the
+mangareeda-* crates) from <a href="https://github.com/neatsorg/MangaReeda">https://github.com/neatsorg/MangaReeda</a>.</p>
 <h2>Overview</h2>
 <ul>
 {{#each overview}}
@@ -24,7 +27,7 @@ pre { white-space: pre-wrap; background: #f4f4f4; padding: 1em; }
 <p>Used by:</p>
 <ul>
 {{#each used_by}}
-<li>{{crate.name}} {{crate.version}}</li>
+<li><a href="https://crates.io/crates/{{crate.name}}/{{crate.version}}">{{crate.name}} {{crate.version}}</a></li>
 {{/each}}
 </ul>
 <pre>{{text}}</pre>
