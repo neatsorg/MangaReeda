@@ -26,6 +26,8 @@ pub(super) struct BookSearch {
     pub(super) query: String,
     /// 次のフレームで入力欄に移る
     focus: bool,
+    /// 入力欄にいる（前のフレーム）。↑↓ で見つかったところを選ぶのに使う
+    typing: bool,
     index: Option<SearchIndex>,
     loading: Option<Receiver<Option<LoadedText>>>,
     /// この本の OCR が失敗した理由（埋め込まれた文字に戻せなかったときも）
@@ -218,6 +220,7 @@ impl MangaReader {
             book,
             query: String::new(),
             focus: true,
+            typing: false,
             index: None,
             no_text: false,
             failed: 0,
@@ -422,6 +425,24 @@ impl MangaReader {
             .resizable(true)
             .collapsible(false)
             .show(ctx, |ui| {
+                // 入力欄で ↓↑: 見つかったところを選び、そのページへ移る（入力欄より先に使い切る）
+                let (down, up) = if search.typing {
+                    ui.input_mut(|i| {
+                        (
+                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                        )
+                    })
+                } else {
+                    (false, false)
+                };
+                if let Some(last) = search.hits.len().checked_sub(1) {
+                    if down {
+                        go = Some(search.selected.map_or(0, |s| (s + 1).min(last)));
+                    } else if up {
+                        go = Some(search.selected.map_or(0, |s| s.saturating_sub(1)));
+                    }
+                }
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut search.query)
                         .hint_text(tr("search.hint"))
@@ -430,6 +451,7 @@ impl MangaReader {
                 if std::mem::take(&mut search.focus) {
                     field.request_focus();
                 }
+                search.typing = field.has_focus();
                 let (enter, back, escape) = ui.input(|i| {
                     (
                         i.key_pressed(egui::Key::Enter),

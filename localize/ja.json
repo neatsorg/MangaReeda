@@ -313,7 +313,7 @@
   "cross.missing": "その本が見つかりません（動かしたか消したかもしれません）",
   "settings.search_folders": "横断検索で本の名前を探すフォルダ（ダウンロード先のほかに。1行に1つ）",
   "search.title": "本の中を検索",
-  "search.hint": "探す語（Enter で次へ、Shift+Enter で前へ）",
+  "search.hint": "探す語（↓↑ で選ぶ。Enter で次へ、Shift+Enter で前へ）",
   "search.loading": "文字を読み込んでいます… {done}/{total}",
   "search.no_text": "この本には文字の情報がありません",
   "search.failed": "（{n} ページの文字を読めませんでした）",

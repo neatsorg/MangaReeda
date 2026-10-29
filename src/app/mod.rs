@@ -1601,6 +1601,30 @@ mod tests {
         let hits = &reader.book_search.as_ref().unwrap().hits;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].page, 1);
+        // 入力欄で ↓↑ を押すと、見つかったところを選び、そのページへ移る（端で止まる）
+        reader.book_search.as_mut().unwrap().query = "ページ".to_owned();
+        frame(&mut reader);
+        assert_eq!(reader.book_search.as_ref().unwrap().hits.len(), 3);
+        let press = |reader: &mut MangaReader, key| {
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| reader.render_book_search(ctx));
+            reader.current_index
+        };
+        assert_eq!(press(&mut reader, egui::Key::ArrowDown), 0);
+        assert_eq!(press(&mut reader, egui::Key::ArrowDown), 1);
+        assert_eq!(press(&mut reader, egui::Key::ArrowUp), 0);
+        assert_eq!(press(&mut reader, egui::Key::ArrowUp), 0);
+        // 入力した語は、矢印キーで変わらない
+        assert_eq!(reader.book_search.as_ref().unwrap().query, "ページ");
         fs::remove_dir_all(&plugin_dir).unwrap();
         let _ = fs::remove_dir_all(pages.0.join("cache"));
     }

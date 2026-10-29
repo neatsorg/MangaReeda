@@ -313,7 +313,7 @@
   "cross.missing": "That book was not found (it may have been moved or deleted)",
   "settings.search_folders": "Folders whose books are searched by name in Search All Books (besides the download folder; one per line)",
   "search.title": "Search in Book",
-  "search.hint": "Words to find (Enter for next, Shift+Enter for previous)",
+  "search.hint": "Words to find (↓↑ to choose, Enter for next, Shift+Enter for previous)",
   "search.loading": "Reading the text… {done}/{total}",
   "search.no_text": "This book has no text",
   "search.failed": "({n} pages could not be read)",
