@@ -32,20 +32,85 @@ pub fn setup_custom_fonts(ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
-    /// 画面に出す記号は、同梱のフォントか egui の予備のフォントで描けるものだけにする
-    /// （無いと四角になる。記号を足したら、ここにも足す）
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    /// ソースの文字列（"…" の中）にある文字。コメントは見ない
+    fn string_chars(source: &str, chars: &mut BTreeSet<char>) {
+        let mut text = source.chars().peekable();
+        let (mut in_string, mut in_comment) = (false, false);
+        while let Some(c) = text.next() {
+            if in_comment {
+                in_comment = c != '\n';
+            } else if in_string {
+                match c {
+                    '\\' => {
+                        text.next();
+                    }
+                    '"' => in_string = false,
+                    _ => {
+                        chars.insert(c);
+                    }
+                }
+            } else if c == '/' && text.peek() == Some(&'/') {
+                in_comment = true;
+            } else if c == '\'' {
+                // 文字のリテラル（'"' など）は飛ばす
+                if text.next() == Some('\\') {
+                    text.next();
+                }
+                if text.peek() == Some(&'\'') {
+                    text.next();
+                }
+            } else if c == '"' {
+                in_string = true;
+            }
+        }
+    }
+
+    fn rust_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rust_files(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// 画面に出る文字（文言のファイルの値と、ソースの文字列）は、同梱のフォントか egui の予備のフォントで
+    /// 描けるものだけにする（無いと四角になる）。ASCII 以外の文字を全部確かめる
     #[test]
-    fn symbols_used_on_screen_can_be_drawn() {
+    fn text_shown_on_screen_can_be_drawn() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut chars = BTreeSet::new();
+        for language in ["ja", "en"] {
+            let path = root.join("localize").join(format!("{language}.json"));
+            let texts: std::collections::HashMap<String, String> =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            chars.extend(texts.values().flat_map(|text| text.chars()));
+        }
+        let mut files = Vec::new();
+        rust_files(&root.join("src"), &mut files);
+        for file in files {
+            string_chars(&std::fs::read_to_string(file).unwrap(), &mut chars);
+        }
+        chars.retain(|c| !c.is_ascii());
+        // 文字を集め損ねていないか（見張りの見張り）
+        for c in "×▣⛶📁、［？".chars() {
+            assert!(chars.contains(&c), "{c} を集められていない");
+        }
         let ctx = egui::Context::default();
         super::setup_custom_fonts(&ctx);
         let _ = ctx.run(egui::RawInput::default(), |_| {});
-        let symbols = "×—…←↑→↓↻⏭⏮▶◀●☁⚙⛶▣✓⬅⬆「」『』〜﹃﹄📁📂📖📚📦🕘🖼";
         let missing: String = ctx.fonts_mut(|fonts| {
-            symbols
-                .chars()
+            chars
+                .iter()
+                .copied()
                 .filter(|&c| !fonts.has_glyph(&egui::FontId::proportional(14.0), c))
                 .collect()
         });
-        assert_eq!(missing, "", "描けない記号");
+        assert_eq!(missing, "", "描けない文字");
     }
 }
