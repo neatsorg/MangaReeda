@@ -93,15 +93,14 @@ impl TextPrefetch {
         self.stop_idle_job();
     }
 
-    /// 下ごしらえする本を集め直す（本がダウンロードされた、たどるフォルダを変えた）
+    /// 下ごしらえする本を集め直す（本がダウンロードされた、たどるフォルダを変えた）。
+    /// 止めた前の処理は、すぐには終わらないことがあるので、集めた本と番号と印は新しく作り直す
+    /// （前の処理があとから番号を進めたり、済んだと書いたりしても、新しく集めた分に響かないように）
     pub(super) fn rescan(&mut self) {
         self.stop_idle_job();
-        *self
-            .books
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        self.next.store(0, Ordering::Relaxed);
-        self.finished.store(false, Ordering::Relaxed);
+        self.books = Arc::default();
+        self.next = Arc::default();
+        self.finished = Arc::default();
         self.scanned_at = None;
     }
 
@@ -164,6 +163,10 @@ impl MangaReader {
             .is_some_and(|at| at.elapsed() >= RESCAN_AFTER)
         {
             self.text_prefetch.rescan();
+        }
+        // 何も操作しなくても、集め直す時刻には起こしてもらう
+        if let Some(at) = self.text_prefetch.scanned_at {
+            ctx.request_repaint_after(RESCAN_AFTER.saturating_sub(at.elapsed()));
         }
         let reading = self.thumbnails.is_none() && self.zip_path.is_some();
         let idle_for = self.text_prefetch.last_input.elapsed();
@@ -260,5 +263,22 @@ impl MangaReader {
             }
         });
         self.text_prefetch.idle_job = Some(stop);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 集め直したあとは、止めた前の処理が古い番号を進めたり済んだと書いたりしても、新しく集めた分に響かない
+    #[test]
+    fn a_stopped_worker_cannot_touch_the_new_scan() {
+        let mut prefetch = TextPrefetch::default();
+        let (old_next, old_finished) = (prefetch.next.clone(), prefetch.finished.clone());
+        prefetch.rescan();
+        old_next.fetch_add(1, Ordering::Relaxed);
+        old_finished.store(true, Ordering::Relaxed);
+        assert_eq!(prefetch.next.load(Ordering::Relaxed), 0);
+        assert!(!prefetch.finished.load(Ordering::Relaxed));
     }
 }
