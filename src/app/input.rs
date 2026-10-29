@@ -322,6 +322,8 @@ impl MangaReader {
         let now = Instant::now();
 
         while let Some(event) = gilrs.next_event() {
+            // ゲームパッドの操作も、操作したことにする（裏での下ごしらえを止める）
+            self.text_prefetch.touched();
             match event.event {
                 EventType::ButtonPressed(button, _) => {
                     if let Some(mapped_button) = map_gamepad_button(button) {

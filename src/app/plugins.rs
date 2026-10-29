@@ -777,6 +777,8 @@ impl MangaReader {
                 Ok(()) => {
                     let pending = active.pending;
                     self.record_owner(&pending.plugin, &pending.dest, &pending.owner);
+                    // ダウンロードした本も、下ごしらえの対象にする
+                    self.text_prefetch.rescan();
                     // 選んだ本の一覧をまだ見ていれば、そのまま開く（場所ではなく、どの本かで確かめる）
                     let selected = self.selected_shelf_entry().and_then(|entry| entry.remote);
                     let chosen = selected.is_some_and(|remote| {

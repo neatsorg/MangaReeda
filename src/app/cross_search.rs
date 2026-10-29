@@ -321,6 +321,8 @@ impl MangaReader {
             if folders != self.config.search_folders {
                 self.config.search_folders = folders;
                 self.save_settings();
+                // 下ごしらえする本も、新しいフォルダで集め直す
+                self.text_prefetch.rescan();
             }
         }
     }

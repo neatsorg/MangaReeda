@@ -317,6 +317,24 @@ impl eframe::App for MangaReader {
     /// 表紙サムネイルを開いているあいだは、Tab をタブの切り替えに使う。
     /// egui に渡すとメニューやツールバーにフォーカスが移ってしまうので、ここで取り除く
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // 操作した時刻は、ほかの処理が入力を使う前に記録する（裏での下ごしらえを止めるのに使う）
+        let user_input = raw_input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key { .. }
+                    | egui::Event::Text(_)
+                    | egui::Event::Ime(_)
+                    | egui::Event::PointerMoved(_)
+                    | egui::Event::PointerButton { .. }
+                    | egui::Event::MouseWheel { .. }
+                    | egui::Event::Touch { .. }
+                    | egui::Event::Zoom(_)
+                    | egui::Event::Paste(_)
+            )
+        });
+        if user_input {
+            self.text_prefetch.touched();
+        }
         fix_bare_ime_commits(&mut raw_input.events, &mut self.ime_had_preedit);
         // メニューやダイアログを使っているあいだの Tab は、そちらのもの（ボタンの間を移るなど）
         if self.shelf_source().is_none()
@@ -1428,12 +1446,21 @@ mod tests {
             },
             None,
         );
+        // 操作したかは、ほかの処理が入力を使う前（raw_input_hook）に記録する
         let frame = |reader: &mut MangaReader, events: Vec<egui::Event>| {
-            let input = egui::RawInput {
+            let mut input = egui::RawInput {
                 events,
                 ..Default::default()
             };
+            eframe::App::raw_input_hook(reader, &ctx, &mut input);
             let _ = ctx.run(input, |ctx| reader.prepare_book_texts(ctx));
+        };
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
         };
         // 操作してすぐは始めない
         frame(&mut reader, Vec::new());
@@ -1450,17 +1477,30 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(crate::engine::book_text::has_cache(&book, &cache));
-        // 操作したら止める
-        frame(
-            &mut reader,
-            vec![egui::Event::PointerMoved(egui::pos2(5.0, 5.0))],
-        );
+        // 操作したら止める。ほかの処理が使ってしまうキー（表紙サムネイルの Tab など）でも、操作したと記録する
+        frame(&mut reader, vec![key(egui::Key::Tab)]);
         assert!(!reader.text_prefetch.idle_running());
-        for dir in ["text", "text-ocr"] {
-            let _ = fs::remove_file(cache.join(dir).join(format!(
-                "{}.json",
-                crate::engine::thumbnail::cover_cache_name(&book.to_string_lossy())
-            )));
+        assert!(reader.text_prefetch.recently_touched());
+        // あとから置かれた本も、集め直せばためる（ダウンロードしたときなど）
+        let later = library.join("later.pdf");
+        fs::copy(&book, &later).unwrap();
+        reader.text_prefetch.rescan();
+        reader.text_prefetch.pretend_idle();
+        frame(&mut reader, Vec::new());
+        for _ in 0..300 {
+            if crate::engine::book_text::has_cache(&later, &cache) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(crate::engine::book_text::has_cache(&later, &cache));
+        for path in [&book, &later] {
+            for dir in ["text", "text-ocr"] {
+                let _ = fs::remove_file(cache.join(dir).join(format!(
+                    "{}.json",
+                    crate::engine::thumbnail::cover_cache_name(&path.to_string_lossy())
+                )));
+            }
         }
         fs::remove_dir_all(library).unwrap();
     }

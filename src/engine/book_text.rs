@@ -245,9 +245,24 @@ fn pdf_text(
 /// 裏で下ごしらえするときの、1ページごとの間
 const PREPARE_PACE: Duration = Duration::from_millis(20);
 
-/// この本の文字がためてあるか（PDF の埋め込まれた文字か OCR の結果。古いかどうかは見ない）
+/// この本の、今の版の文字がためてあるか（PDF の埋め込まれた文字か OCR の結果）。
+/// ためておきは本の場所・大きさ・更新日時の順で書き始めるので、先頭だけを読んで確かめる（軽く済むように）。
+/// 先頭が合わなければ（前の版の書き方など）全部を読んで確かめ、使えるなら本の場所を書き足す
 pub fn has_cache(book: &Path, cache_dir: &Path) -> bool {
-    cache_path(book, cache_dir, true).is_file() || cache_path(book, cache_dir, false).is_file()
+    let Some((size, modified)) = version(book) else {
+        return false;
+    };
+    let Ok(name) = serde_json::to_string(&book.to_string_lossy()) else {
+        return false;
+    };
+    let head = format!("{{\"book\":{name},\"size\":{size},\"modified\":{modified},");
+    let current = [true, false].into_iter().any(|ocr| {
+        let mut start = vec![0; head.len()];
+        std::fs::File::open(cache_path(book, cache_dir, ocr))
+            .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut start))
+            .is_ok_and(|()| start == head.as_bytes())
+    });
+    current || load_cache(book, cache_dir, "").is_some()
 }
 
 /// PDF の文字を取り出してためておく（横断検索で探せるよう、裏で下ごしらえする）。
@@ -1010,6 +1025,33 @@ mod tests {
             &cache,
             &AtomicBool::new(true)
         ));
+        // 前の版で書いたもの（本の場所が無い）は、取り出し直さずに本の場所を書き足す
+        let path = cache_path(&book, &cache, false);
+        let book_field = format!(
+            "\"book\":{},",
+            serde_json::to_string(&book.to_string_lossy()).unwrap()
+        );
+        let old = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace(&book_field, "");
+        std::fs::write(&path, old).unwrap();
+        assert!(has_cache(&book, &cache));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(&book_field)
+        );
+        // 本を上書きしたら（版が変わる）、ためてあっても取り出し直す
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&book, pdf_with_text()).unwrap();
+        assert!(!has_cache(&book, &cache));
+        assert!(prepare_pdf_text(
+            pdfium,
+            &book,
+            &cache,
+            &AtomicBool::new(false)
+        ));
+        assert!(has_cache(&book, &cache));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

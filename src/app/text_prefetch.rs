@@ -1,7 +1,8 @@
 //! 本の文字の下ごしらえ。横断検索で探せるよう、PDF の文字を裏で取り出してためておく。
 //! - 本を開いたとき: その PDF の文字を取り出す（1ページごとに間を空け、読む邪魔をしない）
 //! - 操作していないとき: 本を読んでいないあいだに1分操作が無ければ、まだためていない PDF を1冊ずつ取り出す。
-//!   キーやマウスを触ったらすぐ止め、また1分たったら続きから（途中の1冊は最初から）
+//!   キーやマウスを触ったらすぐ止め、また1分たったら続きから（途中の1冊は最初から）。
+//!   本がダウンロードされたとき、たどるフォルダを変えたとき、30 分たったときに、本を集め直す
 //!
 //! OCR はしない（時間がかかるので、利用者が頼んだときだけ）。
 
@@ -20,8 +21,11 @@ use std::time::{Duration, Instant};
 
 /// 操作が無くなってから、下ごしらえを始めるまで
 const IDLE_AFTER: Duration = Duration::from_secs(60);
-/// 操作していないときに下ごしらえする本の数の上限（ためておきの上限と同じ）
-const PREPARE_LIMIT: usize = 1000;
+/// 操作していないときに下ごしらえする本の数の上限。ためておきの上限（1000 冊）より少なくし、
+/// 読んだ本のためておきを下ごしらえが追い出し続けないようにする
+const PREPARE_LIMIT: usize = 800;
+/// 下ごしらえする本を集め直すまで（あとから置かれた本も対象にする）
+const RESCAN_AFTER: Duration = Duration::from_secs(30 * 60);
 
 pub(super) struct TextPrefetch {
     /// 開いている本の下ごしらえ（本, 止める印）
@@ -33,6 +37,9 @@ pub(super) struct TextPrefetch {
     next: Arc<AtomicUsize>,
     /// 全部済んだ
     finished: Arc<AtomicBool>,
+    /// 下ごしらえする本を集めた時刻
+    scanned_at: Option<Instant>,
+    /// 最後に操作した時刻（ほかの処理が入力を使う前に記録する）
     last_input: Instant,
 }
 
@@ -44,6 +51,7 @@ impl Default for TextPrefetch {
             books: Arc::default(),
             next: Arc::default(),
             finished: Arc::default(),
+            scanned_at: None,
             last_input: Instant::now(),
         }
     }
@@ -79,10 +87,34 @@ impl TextPrefetch {
         }
     }
 
+    /// 操作した（キー・マウス・ゲームパッド）。ほかの処理が入力を使う前に呼ぶ
+    pub(super) fn touched(&mut self) {
+        self.last_input = Instant::now();
+        self.stop_idle_job();
+    }
+
+    /// 下ごしらえする本を集め直す（本がダウンロードされた、たどるフォルダを変えた）
+    pub(super) fn rescan(&mut self) {
+        self.stop_idle_job();
+        *self
+            .books
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.next.store(0, Ordering::Relaxed);
+        self.finished.store(false, Ordering::Relaxed);
+        self.scanned_at = None;
+    }
+
     /// 操作していないときの下ごしらえをしているか
     #[cfg(test)]
     pub(super) fn idle_running(&self) -> bool {
         self.idle_job.is_some()
+    }
+
+    /// 少し前に操作したか
+    #[cfg(test)]
+    pub(super) fn recently_touched(&self) -> bool {
+        self.last_input.elapsed() < IDLE_AFTER
     }
 
     /// 1分前から操作していないことにする
@@ -123,10 +155,15 @@ impl MangaReader {
             }
         }
 
-        // 操作していないとき（本を読んでいない、OCR もしていない）だけ、残りの本を取り出す
-        let touched = ctx.input(|i| !i.events.is_empty() || i.pointer.delta() != egui::Vec2::ZERO);
-        if touched {
-            self.text_prefetch.last_input = Instant::now();
+        // 操作していないとき（本を読んでいない、OCR もしていない）だけ、残りの本を取り出す。
+        // 操作したかは、入力を受け取った時点（raw_input_hook）とゲームパッドで記録している。
+        // 前に集めてからしばらくたったら、あとから置かれた本も対象にするよう集め直す
+        if self
+            .text_prefetch
+            .scanned_at
+            .is_some_and(|at| at.elapsed() >= RESCAN_AFTER)
+        {
+            self.text_prefetch.rescan();
         }
         let reading = self.thumbnails.is_none() && self.zip_path.is_some();
         let idle_for = self.text_prefetch.last_input.elapsed();
@@ -141,6 +178,9 @@ impl MangaReader {
             return;
         }
         if self.text_prefetch.idle_job.is_none() {
+            if self.text_prefetch.scanned_at.is_none() {
+                self.text_prefetch.scanned_at = Some(Instant::now());
+            }
             self.start_idle_prefetch(pdfium);
         }
     }
