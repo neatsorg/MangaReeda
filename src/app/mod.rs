@@ -313,6 +313,21 @@ fn fix_bare_ime_commits(events: &mut [egui::Event], had_preedit: &mut bool) {
     }
 }
 
+/// 一覧を開いているあいだに受け付ける操作（一覧の切り替えと、冊を閉じること）。
+/// 冊を閉じると一覧も片付くので、メニューの「閉じる」と同じく受け付ける
+fn works_in_thumbnails(action: MangaAction) -> bool {
+    matches!(
+        action,
+        MangaAction::ThumbnailsFitAll
+            | MangaAction::ThumbnailsLarge
+            | MangaAction::CoverThumbnails
+            | MangaAction::UpperFolder
+            | MangaAction::ShowHistory
+            | MangaAction::ShowFavorites
+            | MangaAction::CloseBook
+    )
+}
+
 impl eframe::App for MangaReader {
     /// 表紙サムネイルを開いているあいだは、Tab をタブの切り替えに使う。
     /// egui に渡すとメニューやツールバーにフォーカスが移ってしまうので、ここで取り除く
@@ -444,16 +459,7 @@ impl eframe::App for MangaReader {
             action_to_run = MangaAction::None;
         }
         if self.thumbnails.is_some() {
-            // 一覧を開いているあいだは、一覧の切り替え以外の操作を受け付けない
-            if !matches!(
-                action_to_run,
-                MangaAction::ThumbnailsFitAll
-                    | MangaAction::ThumbnailsLarge
-                    | MangaAction::CoverThumbnails
-                    | MangaAction::UpperFolder
-                    | MangaAction::ShowHistory
-                    | MangaAction::ShowFavorites
-            ) {
+            if !works_in_thumbnails(action_to_run) {
                 action_to_run = MangaAction::None;
             }
             self.render_thumbnails(ctx);
@@ -1758,7 +1764,12 @@ mod tests {
             |ctx| action = reader.collect_input_action(ctx),
         );
         assert_eq!(action, MangaAction::CloseBook);
+        // 一覧を開いていても受け付ける（メニューの「閉じる」と同じ）
+        reader.open_thumbnails(crate::engine::thumbnail::ThumbnailMode::FitAll);
+        assert!(reader.thumbnails.is_some());
+        assert!(works_in_thumbnails(action));
         reader.execute_action(action, &ctx);
+        assert!(reader.thumbnails.is_none());
         assert!(reader.zip_path.is_none());
         assert!(reader.image_files.is_empty());
     }
