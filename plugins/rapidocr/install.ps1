@@ -60,8 +60,9 @@ try {
     Invoke-Checked uv venv --python 3.12 $venv
     $python = Join-Path $venv "Scripts\python.exe"
     # 設定の書き方が版で変わるので、確かめた 3 系に留める。
-    # 入れる先は環境変数（VIRTUAL_ENV）でなく引数で渡す（呼んだ PowerShell の環境を変えないように）
-    Invoke-Checked uv pip install --python $python "rapidocr>=3.10,<4" onnxruntime
+    # 入れる先は環境変数（VIRTUAL_ENV）でなく引数で渡す（呼んだ PowerShell の環境を変えないように）。
+    # Pillow は、入れるときの確かめで文字を大きく描くのに 10.1 以降が要る
+    Invoke-Checked uv pip install --python $python "rapidocr>=3.10,<4" onnxruntime "pillow>=10.1"
 
     Write-Host "文字を読めるか確かめます"
     Invoke-Checked $python (Join-Path $work "rapidocr_plugin.py") check

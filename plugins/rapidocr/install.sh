@@ -46,8 +46,9 @@ done
 chmod 755 "$work/run.sh"
 
 uv venv --python 3.12 "$work/venv"
-# 設定の書き方が版で変わるので、確かめた 3 系に留める
-VIRTUAL_ENV="$work/venv" uv pip install "rapidocr>=3.10,<4" onnxruntime
+# 設定の書き方が版で変わるので、確かめた 3 系に留める。
+# Pillow は、入れるときの確かめで文字を大きく描くのに 10.1 以降が要る
+VIRTUAL_ENV="$work/venv" uv pip install "rapidocr>=3.10,<4" onnxruntime "pillow>=10.1"
 
 echo "文字を読めるか確かめます"
 "$work/run.sh" check

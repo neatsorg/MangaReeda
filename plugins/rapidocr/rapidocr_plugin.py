@@ -31,8 +31,9 @@ def box_rect(box):
 def reading_order(boxes, texts):
     """行を読む順に並べる。縦書きの行が多いページは、縦の行を高さの重なる帯ごとに右から並べる
     （検索は行をまたいで探すので、段の順が逆だと段をまたぐ言葉が見つからない）。
-    横書きの行は帯に入れず、上からの順のまま、帯と一緒に上端の位置で並べる
-    （長い縦の行が帯を広げても、そばの横書きの行どうしの順が入れ替わらないように）"""
+    横書きの行は帯に入れず、段落ごとにまとめて上からの順のまま、帯と一緒に上端の位置で並べる
+    （長い縦の行が帯を広げても、そばの横書きの行の順が入れ替わったり、段落の途中に
+    縦の列が割り込んだりしないように）"""
     lines = [(box_rect(box), text) for box, text in zip(boxes, texts)]
 
     def is_vertical(rect):
@@ -42,12 +43,31 @@ def reading_order(boxes, texts):
     vertical = sum(len(text) for rect, text in lines if is_vertical(rect))
     if vertical * 2 <= sum(len(text) for _, text in lines):
         return [text for _, text in lines]  # 横書きは RapidOCR の順（上から）のまま
+
+    def is_horizontal(rect):
+        """縦書きのページで横書きとみなす行。正方形に近い枠（列の端で分かれた1文字など）は縦の列に入れる"""
+        left, top, right, bottom = rect
+        return right - left >= (bottom - top) * 1.5
+
     bands = []  # [上, 下, 縦の行の一覧]
-    units = []  # (上端, 行の一覧)。帯と横書きの行
+    paragraphs = []  # 横書きの行の一覧
+    units = []  # (上端, 縦か, 行の一覧)。帯と横書きの段落
     for rect, text in sorted(lines, key=lambda line: line[0][1]):
         left, top, right, bottom = rect
-        if not is_vertical(rect):
-            units.append((top, [(rect, text)]))
+        if is_horizontal(rect):
+            for paragraph in paragraphs:
+                # 左右が重なり、前の行の下から行の高さの 1.5 倍以内に続く行は同じ段落
+                last_left, last_top, last_right, last_bottom = paragraph[-1][0]
+                if (
+                    min(right, last_right) > max(left, last_left)
+                    and top - last_bottom <= (bottom - top) * 1.5
+                ):
+                    paragraph.append((rect, text))
+                    break
+            else:
+                paragraph = [(rect, text)]
+                paragraphs.append(paragraph)
+                units.append((top, False, paragraph))
             continue
         for band in bands:
             overlap = min(bottom, band[1]) - max(top, band[0])
@@ -59,11 +79,13 @@ def reading_order(boxes, texts):
         else:
             band = [top, bottom, [(rect, text)]]
             bands.append(band)
-            units.append((top, band[2]))
+            units.append((top, True, band[2]))
     order = []
-    # 上端の位置で並べる（同じなら先に見つけた順）。帯の中は右から、同じなら上から
-    for _, unit_lines in sorted(units, key=lambda unit: unit[0]):
-        unit_lines.sort(key=lambda line: (-line[0][2], line[0][1]))
+    # 上端の位置で並べる（同じなら先に見つけた順）。帯の中は右から、同じなら上から。
+    # 段落の中は見つけた順（上から）のまま
+    for _, in_band, unit_lines in sorted(units, key=lambda unit: unit[0]):
+        if in_band:
+            unit_lines.sort(key=lambda line: (-line[0][2], line[0][1]))
         order.extend(text for _, text in unit_lines)
     return order
 
