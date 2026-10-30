@@ -1,6 +1,6 @@
 ﻿# RapidOCR のプラグインを、MangaReeda に入れる（Windows）。
-# Python 3.12 の環境を作り、RapidOCR と ONNX Runtime を入れて、モデルも先に取ってくる。
-# 合わせて 300MB ほどになる。モデルはこの環境の中に置くので、外せば一緒に消える。
+# Python 3.12 の環境を作り、RapidOCR と ONNX Runtime を入れて、文字を読めるか確かめる。
+# 合わせて 350MB ほどになる。モデルは RapidOCR のパッケージに入っているので、外せば一緒に消える。
 #
 # 使い方（PowerShell で。<フォルダ> は mangareeda.exe のあるフォルダ）:
 #   powershell -ExecutionPolicy Bypass -File install.ps1 <フォルダ>              入れる
@@ -17,7 +17,7 @@ if (-not $MangaReeda -or -not (Test-Path (Join-Path $MangaReeda "mangareeda.exe"
     Write-Error "mangareeda.exe のあるフォルダを指定してください（例: install.ps1 C:\Tools\mangareeda）"
     exit 1
 }
-# Windows の MangaReeda は、mangareeda.exe の隣の plugins を見る
+# Windows の MangaReeda（zip 版）は、mangareeda.exe の隣の plugins を見る
 $plugins = Join-Path (Resolve-Path $MangaReeda) "plugins"
 $dest = Join-Path $plugins "rapidocr"
 
@@ -43,6 +43,8 @@ function Invoke-Checked {
 $here = $PSScriptRoot
 $work = Join-Path $plugins ".rapidocr.installing"
 $old = Join-Path $plugins ".rapidocr.old"
+# 前に入れ替えの途中で止まっていたら、前に入れたものを戻してから始める
+if ((Test-Path $old) -and -not (Test-Path $dest)) { Move-Item $old $dest }
 foreach ($dir in @($work, $old)) {
     if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
 }
@@ -56,17 +58,23 @@ try {
 
     $venv = Join-Path $work "venv"
     Invoke-Checked uv venv --python 3.12 $venv
-    # 設定の書き方が版で変わるので、確かめた 3 系に留める
-    $env:VIRTUAL_ENV = $venv
-    Invoke-Checked uv pip install "rapidocr>=3.10,<4" onnxruntime
-    Remove-Item Env:VIRTUAL_ENV
+    $python = Join-Path $venv "Scripts\python.exe"
+    # 設定の書き方が版で変わるので、確かめた 3 系に留める。
+    # 入れる先は環境変数（VIRTUAL_ENV）でなく引数で渡す（呼んだ PowerShell の環境を変えないように）
+    Invoke-Checked uv pip install --python $python "rapidocr>=3.10,<4" onnxruntime
 
-    Write-Host "モデルを取ってきます"
-    Invoke-Checked (Join-Path $venv "Scripts\python.exe") -c "from rapidocr import RapidOCR; RapidOCR(params={'Global.log_level': 'error'})"
+    Write-Host "文字を読めるか確かめます"
+    Invoke-Checked $python (Join-Path $work "rapidocr_plugin.py") check
 
     # 用意できたので入れ替える。前に入れたものは、入れ替え終えてから消す
     if (Test-Path $dest) { Move-Item $dest $old }
-    Move-Item $work $dest
+    try {
+        Move-Item $work $dest
+    } catch {
+        # 入れられなかったら、前に入れたものを戻す
+        if (Test-Path $old) { Move-Item $old $dest }
+        throw
+    }
     if (Test-Path $old) { Remove-Item -Recurse -Force $old }
 } finally {
     if (Test-Path $work) { Remove-Item -Recurse -Force $work }

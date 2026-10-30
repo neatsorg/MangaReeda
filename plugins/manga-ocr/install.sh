@@ -10,7 +10,11 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-config=${XDG_CONFIG_HOME:-$HOME/.config}
+# MangaReeda と同じく、XDG_CONFIG_HOME は絶対パスのときだけ使う
+case "${XDG_CONFIG_HOME:-}" in
+    /*) config=$XDG_CONFIG_HOME ;;
+    *) config=$HOME/.config ;;
+esac
 dest="$config/MangaReeda/plugins/manga-ocr"
 
 if [ "${1:-}" = "--uninstall" ]; then
@@ -30,6 +34,10 @@ fi
 plugins=$(dirname "$dest")
 work="$plugins/.manga-ocr.installing"
 old="$plugins/.manga-ocr.old"
+# 前に入れ替えの途中で止まっていたら、前に入れたものを戻してから始める
+if [ -e "$old" ] && [ ! -e "$dest" ]; then
+    mv "$old" "$dest"
+fi
 rm -rf "$work" "$old"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work"
@@ -55,7 +63,13 @@ echo "モデルを取ってきます（初めてのときは数分かかりま�
 if [ -e "$dest" ]; then
     mv "$dest" "$old"
 fi
-mv "$work" "$dest"
+if ! mv "$work" "$dest"; then
+    # 入れられなかったら、前に入れたものを戻す
+    if [ -e "$old" ]; then
+        mv "$old" "$dest"
+    fi
+    exit 1
+fi
 rm -rf "$old"
 
 echo "入れました: $dest"

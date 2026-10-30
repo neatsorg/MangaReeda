@@ -1,7 +1,7 @@
 #!/bin/sh
 # RapidOCR のプラグインを、この利用者の MangaReeda に入れる（Linux）。
-# Python 3.12 の環境を作り、RapidOCR と ONNX Runtime を入れて、モデルも先に取ってくる。
-# 合わせて 300MB ほどになる。モデルはこの環境の中に置くので、外せば一緒に消える。
+# Python 3.12 の環境を作り、RapidOCR と ONNX Runtime を入れて、文字を読めるか確かめる。
+# 合わせて 350MB ほどになる。モデルは RapidOCR のパッケージに入っているので、外せば一緒に消える。
 #
 # 使い方:
 #   plugins/rapidocr/install.sh              入れる
@@ -9,7 +9,11 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-config=${XDG_CONFIG_HOME:-$HOME/.config}
+# MangaReeda と同じく、XDG_CONFIG_HOME は絶対パスのときだけ使う
+case "${XDG_CONFIG_HOME:-}" in
+    /*) config=$XDG_CONFIG_HOME ;;
+    *) config=$HOME/.config ;;
+esac
 dest="$config/MangaReeda/plugins/rapidocr"
 
 if [ "${1:-}" = "--uninstall" ]; then
@@ -29,6 +33,10 @@ fi
 plugins=$(dirname "$dest")
 work="$plugins/.rapidocr.installing"
 old="$plugins/.rapidocr.old"
+# 前に入れ替えの途中で止まっていたら、前に入れたものを戻してから始める
+if [ -e "$old" ] && [ ! -e "$dest" ]; then
+    mv "$old" "$dest"
+fi
 rm -rf "$work" "$old"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work"
@@ -41,15 +49,20 @@ uv venv --python 3.12 "$work/venv"
 # 設定の書き方が版で変わるので、確かめた 3 系に留める
 VIRTUAL_ENV="$work/venv" uv pip install "rapidocr>=3.10,<4" onnxruntime
 
-echo "モデルを取ってきます"
-"$work/venv/bin/python" -c \
-    "from rapidocr import RapidOCR; RapidOCR(params={'Global.log_level': 'error'})"
+echo "文字を読めるか確かめます"
+"$work/run.sh" check
 
 # 用意できたので入れ替える。前に入れたものは、入れ替え終えてから消す
 if [ -e "$dest" ]; then
     mv "$dest" "$old"
 fi
-mv "$work" "$dest"
+if ! mv "$work" "$dest"; then
+    # 入れられなかったら、前に入れたものを戻す
+    if [ -e "$old" ]; then
+        mv "$old" "$dest"
+    fi
+    exit 1
+fi
 rm -rf "$old"
 
 echo "入れました: $dest"

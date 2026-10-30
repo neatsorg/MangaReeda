@@ -16,13 +16,13 @@ RapidOCR は、[PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) のモデ�
 plugins/rapidocr/install.sh
 ```
 
-モデル（約 30MB）は、入れるときにこのフォルダの中へ取ってきます。
+モデル（約 30MB）は RapidOCR のパッケージに入っているので、入れたあとはネットにつながなくても読めます。入れるときに、文字を読めるか確かめます。
 MangaReeda を起動し直し、設定画面の「プラグイン」の「本の中の検索で使う OCR」で RapidOCR を選んでください。
 外すときは `--uninstall` を付けます（モデルも一緒に消えます）。
 
 ## 入れ方（Windows）
 
-[uv](https://docs.astral.sh/uv/) が要ります。PowerShell で、`mangareeda.exe` のあるフォルダを指定して実行すると、その下の `plugins\rapidocr` に入ります。
+[uv](https://docs.astral.sh/uv/) が要ります。PowerShell で、`mangareeda.exe` のあるフォルダを指定して実行すると、その下の `plugins\rapidocr` に入ります（リリースの zip を展開して使う MangaReeda 向けです）。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File plugins\rapidocr\install.ps1 C:\Tools\mangareeda
@@ -36,4 +36,4 @@ Windows では、MangaReeda に同梱の OCR（Windows の OCR）のほうが速
 ## ライセンス
 
 このフォルダは、MangaReeda の本体と同じ Apache License 2.0 です。
-入れるときに取ってくる RapidOCR と PaddleOCR のモデルも Apache License 2.0 です。
+入れるときに取ってくる RapidOCR（PaddleOCR のモデルを含む）も Apache License 2.0 です。
