@@ -166,6 +166,7 @@ pub enum MangaAction {
     FullScreen,
     ViewMode,
     OpenFile,
+    CloseBook,
     QuitApp,
     CycleLastPageAction,
     ScrollNextPage,
@@ -189,7 +190,7 @@ pub enum MangaAction {
 }
 
 impl MangaAction {
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 41] = [
         Self::None,
         Self::SlideImageDown,
         Self::SlideImageUp,
@@ -210,6 +211,7 @@ impl MangaAction {
         Self::FullScreen,
         Self::ViewMode,
         Self::OpenFile,
+        Self::CloseBook,
         Self::QuitApp,
         Self::CycleLastPageAction,
         Self::ScrollNextPage,
@@ -327,6 +329,8 @@ pub struct KeyConfig {
     pub fullscreen: Option<Shortcut>,
     pub view_mode: Option<Shortcut>,
     pub open_file: Option<Shortcut>,
+    #[serde(default)]
+    pub close_book: Option<Shortcut>,
     pub quit_app: Option<Shortcut>,
     #[serde(default = "default_cycle_last_page_action_key")]
     pub cycle_last_page_action: Option<Shortcut>,
@@ -393,6 +397,7 @@ impl Default for KeyConfig {
             fullscreen: Some(Shortcut::new(egui::Key::Enter, true, false, false)),
             view_mode: Some(Shortcut::new(egui::Key::Enter, false, false, false)),
             open_file: Some(Shortcut::new(egui::Key::O, false, false, false)),
+            close_book: None,
             quit_app: Some(Shortcut::new(egui::Key::Escape, false, false, false)),
             cycle_last_page_action: default_cycle_last_page_action_key(),
             scroll_next_page: None,
@@ -440,6 +445,7 @@ impl KeyConfig {
             // ミーヤではテンキー0が「先頭ページ挿入」。いちばん近い「奇数／偶数」切り替えを当てる
             view_mode: Some(Shortcut::new(egui::Key::Num0, false, false, false)),
             open_file: Some(Shortcut::new(egui::Key::O, false, false, false)),
+            close_book: None,
             quit_app: Some(Shortcut::new(egui::Key::Escape, false, false, false)),
             cycle_last_page_action: default_cycle_last_page_action_key(),
             scroll_next_page: None,
@@ -494,6 +500,7 @@ impl KeyConfig {
             fullscreen: Some(Shortcut::new(egui::Key::Enter, true, false, false)),
             view_mode: Some(Shortcut::new(egui::Key::Enter, false, false, false)),
             open_file: Some(Shortcut::new(egui::Key::O, false, false, false)),
+            close_book: None,
             quit_app: Some(Shortcut::new(egui::Key::Escape, false, false, false)),
             cycle_last_page_action: default_cycle_last_page_action_key(),
             scroll_next_page: None,

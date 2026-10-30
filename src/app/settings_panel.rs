@@ -47,7 +47,7 @@ pub(super) fn render_binding_button(
     binding: &mut Option<BindingTarget>,
     profile: ControlProfile,
     listening_text: &str,
-) {
+) -> bool {
     let is_binding = matches!(
         binding,
         Some(BindingTarget::Keyboard { profile: binding_profile, action })
@@ -61,12 +61,54 @@ pub(super) fn render_binding_button(
             .unwrap_or_else(|| tr("common.unassigned").to_owned())
     };
 
-    if ui.button(text).clicked() {
-        *binding = Some(BindingTarget::Keyboard {
-            profile,
-            action: id.to_string(),
-        });
-    }
+    let mut changed = false;
+    // 下の行のボタンは、キーの表示より狭いので列を広げない
+    ui.vertical(|ui| {
+        if ui.button(text).clicked() {
+            // 入力待ちのボタンをもう一度押したら、何も変えずに待つのをやめる
+            *binding = if is_binding {
+                None
+            } else {
+                Some(BindingTarget::Keyboard {
+                    profile,
+                    action: id.to_string(),
+                })
+            };
+        }
+        // どのキーも割り当てられるように、解除と取りやめはキーではなくボタンで行う
+        if is_binding {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        shortcut.is_some(),
+                        egui::Button::new(tr("settings.key.unassign")),
+                    )
+                    .clicked()
+                {
+                    *shortcut = None;
+                    *binding = None;
+                    changed = true;
+                }
+                if ui.button(tr("settings.key.cancel_listening")).clicked() {
+                    *binding = None;
+                }
+            });
+        }
+    });
+    changed
+}
+
+/// スライダーの右に付く数値の欄の幅（数値が長くても収まる分）
+const SLIDER_VALUE_WIDTH: f32 = 70.0;
+
+/// 説明を上の行に置いたスライダー。説明が長くても、スライダーはパネルの幅に収まる
+fn labeled_slider(ui: &mut egui::Ui, label: &str, slider: egui::Slider) -> egui::Response {
+    ui.label(label);
+    let previous_slider_width = ui.spacing().slider_width;
+    ui.spacing_mut().slider_width = (ui.available_width() - SLIDER_VALUE_WIDTH).max(40.0);
+    let response = ui.add(slider);
+    ui.spacing_mut().slider_width = previous_slider_width;
+    response
 }
 
 pub(super) fn gamepad_action_mut(
@@ -240,6 +282,11 @@ pub(super) fn render_control_mapping_settings(
                         "Open File",
                         &mut keys.open_file,
                     ),
+                    (
+                        tr("settings.key.close_book"),
+                        "Close Book",
+                        &mut keys.close_book,
+                    ),
                     (tr("settings.key.quit_app"), "Quit App", &mut keys.quit_app),
                     (
                         tr("settings.key.cycle_last_page_action"),
@@ -338,7 +385,7 @@ pub(super) fn render_control_mapping_settings(
                     ),
                 ] {
                     ui.label(label);
-                    render_binding_button(
+                    changed |= render_binding_button(
                         ui,
                         id,
                         shortcut,
@@ -363,12 +410,12 @@ pub(super) fn render_control_mapping_settings(
         separator_pct(ui);
         ui.label(tr("settings.mouse_mapping.description"));
         ui.add_space(10.0);
-        changed |= ui
-            .add(
-                egui::Slider::new(double_click_threshold_ms, 100..=1000)
-                    .text(tr("settings.double_click_threshold")),
-            )
-            .changed();
+        changed |= labeled_slider(
+            ui,
+            tr("settings.double_click_threshold"),
+            egui::Slider::new(double_click_threshold_ms, 100..=1000),
+        )
+        .changed();
         ui.add_space(10.0);
         let action_options: Vec<(MangaAction, String)> = MangaAction::ALL
             .into_iter()
@@ -747,7 +794,7 @@ impl MangaReader {
                                             "settings.page_view.center_offset.tooltip",
                                         ))
                                         .changed();
-                                    ui.spacing_mut().slider_width = previous_slider_width - 40.0;
+                                    ui.spacing_mut().slider_width = previous_slider_width;
 
                                     if changed {
                                         self.set_page_view(chosen, ctx);
@@ -828,15 +875,12 @@ impl MangaReader {
                                 );
                                 separator_pct(ui);
 
-                                let previous_slider_width = ui.spacing().slider_width;
-                                ui.spacing_mut().slider_width =
-                                    self.config.settings_width * 0.9 - 160.0;
                                 let mut zoom_factor = self.zoom_factor;
-                                let zoom_slider = ui.add(
-                                    egui::Slider::new(&mut zoom_factor, ZOOM_MIN..=ZOOM_MAX)
-                                        .text(tr("settings.zoom.slider")),
+                                let zoom_slider = labeled_slider(
+                                    ui,
+                                    tr("settings.zoom.slider"),
+                                    egui::Slider::new(&mut zoom_factor, ZOOM_MIN..=ZOOM_MAX),
                                 );
-                                ui.spacing_mut().slider_width = previous_slider_width;
                                 if zoom_slider.changed() {
                                     self.apply_zoom_factor(zoom_factor, ctx, false);
                                 }
@@ -857,24 +901,21 @@ impl MangaReader {
                                     self.set_loupe_enabled(loupe_enabled, ctx);
                                 }
                                 let mut loupe_changed = false;
-                                loupe_changed |= ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.config.loupe_radius,
-                                            50.0..=400.0,
-                                        )
-                                        .text(tr("settings.loupe.radius")),
-                                    )
-                                    .changed();
-                                loupe_changed |= ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.config.loupe_magnification,
-                                            1.5..=6.0,
-                                        )
-                                        .text(tr("settings.loupe.magnification")),
-                                    )
-                                    .changed();
+                                loupe_changed |= labeled_slider(
+                                    ui,
+                                    tr("settings.loupe.radius"),
+                                    egui::Slider::new(&mut self.config.loupe_radius, 50.0..=400.0),
+                                )
+                                .changed();
+                                loupe_changed |= labeled_slider(
+                                    ui,
+                                    tr("settings.loupe.magnification"),
+                                    egui::Slider::new(
+                                        &mut self.config.loupe_magnification,
+                                        1.5..=6.0,
+                                    ),
+                                )
+                                .changed();
                                 if loupe_changed {
                                     self.save_settings();
                                 }
@@ -1026,19 +1067,16 @@ impl MangaReader {
                                     }
                                     self.save_settings();
                                 }
-                                let previous_slider_width = ui.spacing().slider_width;
-                                ui.spacing_mut().slider_width =
-                                    self.config.settings_width * 0.9 - 190.0;
-                                if ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.config.image_delay,
-                                            0..=AUTO_SCROLL_MAX_DELAY_MS,
-                                        )
-                                        .text(tr("settings.image_delay")),
-                                    )
-                                    .on_hover_text(tr("settings.image_delay.tooltip"))
-                                    .changed()
+                                if labeled_slider(
+                                    ui,
+                                    tr("settings.image_delay"),
+                                    egui::Slider::new(
+                                        &mut self.config.image_delay,
+                                        0..=AUTO_SCROLL_MAX_DELAY_MS,
+                                    ),
+                                )
+                                .on_hover_text(tr("settings.image_delay.tooltip"))
+                                .changed()
                                 {
                                     self.save_settings();
                                     // 自動ページ送りの間隔でもあるので、送っている途中なら次の時刻を決め直す
@@ -1046,64 +1084,51 @@ impl MangaReader {
                                         self.schedule_auto_scroll(ui.ctx());
                                     }
                                 }
-                                ui.spacing_mut().slider_width = previous_slider_width;
-                                let previous_slider_width = ui.spacing().slider_width;
-                                ui.spacing_mut().slider_width =
-                                    self.config.settings_width * 0.9 - 190.0;
                                 let mut slide_speed_slider =
                                     (self.config.top_down_image_slide_speed.max(0.005) / 0.05)
                                         .log10()
                                         * 10.0;
                                 slide_speed_slider = slide_speed_slider.clamp(-10.0, 10.0);
-                                if ui
-                                    .add(
-                                        egui::Slider::new(&mut slide_speed_slider, -10.0..=10.0)
-                                            .text(tr("settings.top_down_slide_speed")),
-                                    )
-                                    .on_hover_text(tr("settings.top_down_slide_speed.tooltip"))
-                                    .changed()
+                                if labeled_slider(
+                                    ui,
+                                    tr("settings.top_down_slide_speed"),
+                                    egui::Slider::new(&mut slide_speed_slider, -10.0..=10.0),
+                                )
+                                .on_hover_text(tr("settings.top_down_slide_speed.tooltip"))
+                                .changed()
                                 {
                                     self.config.top_down_image_slide_speed =
                                         0.05 * 10.0_f32.powf(slide_speed_slider / 10.0);
                                     self.save_settings();
                                 }
-                                ui.spacing_mut().slider_width = previous_slider_width;
-                                let previous_slider_width = ui.spacing().slider_width;
-                                ui.spacing_mut().slider_width =
-                                    self.config.settings_width * 0.9 - 190.0;
-                                if ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.config.top_down_image_drag_speed,
-                                            0.1..=5.0,
-                                        )
-                                        .text(tr("settings.top_down_drag_speed")),
-                                    )
-                                    .on_hover_text(tr("settings.top_down_drag_speed.tooltip"))
-                                    .changed()
+                                if labeled_slider(
+                                    ui,
+                                    tr("settings.top_down_drag_speed"),
+                                    egui::Slider::new(
+                                        &mut self.config.top_down_image_drag_speed,
+                                        0.1..=5.0,
+                                    ),
+                                )
+                                .on_hover_text(tr("settings.top_down_drag_speed.tooltip"))
+                                .changed()
                                 {
                                     self.save_settings();
                                 }
-                                ui.spacing_mut().slider_width = previous_slider_width;
-                                let previous_slider_width = ui.spacing().slider_width;
-                                ui.spacing_mut().slider_width =
-                                    self.config.settings_width * 0.9 - 190.0;
-                                if ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.config.top_toolbar_scale,
-                                            1.0..=3.0,
-                                        )
-                                        .text(tr("settings.top_toolbar_scale")),
-                                    )
-                                    .on_hover_text(tr("settings.top_toolbar_scale.tooltip"))
-                                    .changed()
+                                if labeled_slider(
+                                    ui,
+                                    tr("settings.top_toolbar_scale"),
+                                    egui::Slider::new(
+                                        &mut self.config.top_toolbar_scale,
+                                        1.0..=3.0,
+                                    ),
+                                )
+                                .on_hover_text(tr("settings.top_toolbar_scale.tooltip"))
+                                .changed()
                                 {
                                     self.config.top_toolbar_scale =
                                         self.config.top_toolbar_scale.clamp(1.0, 3.0);
                                     self.save_settings();
                                 }
-                                ui.spacing_mut().slider_width = previous_slider_width;
                                 ui.add_space(20.0);
                                 ui.horizontal(|ui| {
                                     ui.selectable_value(

@@ -24,7 +24,6 @@ const MARK_WIDTH: f32 = 22.0;
 pub(super) enum MenuCommand {
     Action(MangaAction),
     OpenFolder,
-    CloseBook,
     OpenRecent(PathBuf),
     PageView(PageViewOptions),
     ReadingDirection {
@@ -251,7 +250,11 @@ impl MangaReader {
             ),
             item(tr("menu.file.open_folder"), 'D', MenuCommand::OpenFolder),
             needs_book(
-                item(tr("menu.file.close"), 'C', MenuCommand::CloseBook),
+                item(
+                    tr("menu.file.close"),
+                    'C',
+                    MenuCommand::Action(MangaAction::CloseBook),
+                ),
                 self.zip_path.is_some(),
             ),
             MenuEntry::Separator,
@@ -714,7 +717,6 @@ impl MangaReader {
         match command {
             MenuCommand::Action(action) => self.execute_action(action, ctx),
             MenuCommand::OpenFolder => self.open_folder_dialog(),
-            MenuCommand::CloseBook => self.close_book(),
             MenuCommand::ChooseCover => self.choose_current_page_as_cover(),
             MenuCommand::SearchInBook => self.open_book_search(),
             MenuCommand::OpenRecent(path) => {
@@ -1280,7 +1282,7 @@ mod tests {
                     MenuEntry::Item {
                         label: "Close".into(),
                         mnemonic: Some('C'),
-                        command: MenuCommand::CloseBook,
+                        command: MenuCommand::Action(MangaAction::CloseBook),
                         mark: Mark::None,
                         enabled: false,
                     },

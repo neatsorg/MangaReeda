@@ -61,6 +61,7 @@ impl MangaReader {
                                     "Toggle Fullscreen" => keys.fullscreen = Some(new_shortcut),
                                     "View Mode" => keys.view_mode = Some(new_shortcut),
                                     "Open File" => keys.open_file = Some(new_shortcut),
+                                    "Close Book" => keys.close_book = Some(new_shortcut),
                                     "Quit App" => keys.quit_app = Some(new_shortcut),
                                     "Cycle Last Page Action" => {
                                         keys.cycle_last_page_action = Some(new_shortcut)
@@ -176,6 +177,9 @@ impl MangaReader {
                 }
                 if is_triggered(&keys.open_file) {
                     action_to_run = MangaAction::OpenFile;
+                }
+                if is_triggered(&keys.close_book) {
+                    action_to_run = MangaAction::CloseBook;
                 }
                 if is_triggered(&keys.quit_app) {
                     action_to_run = MangaAction::QuitApp;
@@ -650,6 +654,7 @@ impl MangaReader {
             }
             MangaAction::ViewMode => self.change_shifted_mode(ctx),
             MangaAction::OpenFile => self.open_file_dialog(),
+            MangaAction::CloseBook => self.close_book(),
             MangaAction::QuitApp => {
                 self.save_settings();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);

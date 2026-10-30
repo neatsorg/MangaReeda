@@ -1724,6 +1724,46 @@ mod tests {
     }
 
     #[test]
+    fn close_book_can_be_assigned_to_a_key() {
+        let ctx = egui::Context::default();
+        let pages = TestPages::new(&[[10, 20]; 2]);
+        let mut config = AppSettings {
+            resize_method: ResizeMethod::None,
+            ..AppSettings::default()
+        };
+        // 既定では未割り当て（マンガミーヤにも既定のキーは無い）
+        assert!(config.keys.close_book.is_none());
+        assert!(config.top_down_keys.close_book.is_none());
+        config.keys.close_book = Some(Shortcut {
+            key: egui::Key::W,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        });
+        let mut reader = pages.reader(config, &ctx);
+        assert!(reader.zip_path.is_some());
+
+        let mut action = MangaAction::None;
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::W,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ctx| action = reader.collect_input_action(ctx),
+        );
+        assert_eq!(action, MangaAction::CloseBook);
+        reader.execute_action(action, &ctx);
+        assert!(reader.zip_path.is_none());
+        assert!(reader.image_files.is_empty());
+    }
+
+    #[test]
     fn folders_with_books_open_as_lists_and_back_returns() {
         use super::thumbnails::ShelfSource;
         use std::io::Write;
@@ -3679,6 +3719,7 @@ esac
             keys.fullscreen,
             keys.view_mode,
             keys.open_file,
+            keys.close_book,
             keys.quit_app,
             keys.cycle_last_page_action,
             keys.scroll_next_page,

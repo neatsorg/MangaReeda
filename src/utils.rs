@@ -91,6 +91,7 @@ pub fn action_label(action: MangaAction) -> &'static str {
         MangaAction::FullScreen => tr("action.fullscreen"),
         MangaAction::ViewMode => tr("action.view_mode"),
         MangaAction::OpenFile => tr("action.open_file"),
+        MangaAction::CloseBook => tr("action.close_book"),
         MangaAction::QuitApp => tr("action.quit_app"),
         MangaAction::CycleLastPageAction => tr("action.cycle_last_page_action"),
         MangaAction::ScrollNextPage => tr("action.scroll_next_page"),
