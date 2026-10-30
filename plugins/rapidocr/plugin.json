@@ -1,0 +1,7 @@
+{
+  "id": "rapidocr",
+  "name": "RapidOCR",
+  "command": ["./run.sh"],
+  "kind": "ocr",
+  "ocr_batch": 32
+}

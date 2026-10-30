@@ -5,7 +5,7 @@ MangaReeda のプラグイン機能は、ブックリストの拡張にまつわ
 ブックリスト用のプラグインでは、標準機能であるローカルフォルダ、履歴、お気に入りのほかに、クラウドサービス上の本の一覧をタブとして並べられます。  
 サンプルとなる本体同梱のプラグインとして、Dropbox のフォルダを読む `mangareeda-dropbox`（[下記](#dropbox)）、Google Drive のフォルダを読む `mangareeda-gdrive`（[下記](#google-drive)）があります。BOOKSCAN の本棚を読む `mangareeda-bookscan`（[下記](#bookscan)）は、本体とは別のファイルで配っています。
 
-また OCR エンジン用のプラグイン（[下記](#ocr-用のプラグイン)）では、標準機能である Windows.Media.Ocr（Windows の場合）または Tesseract（Linux の場合。要追加インストール）以外に、manga-ocr などのエンジンを使えるようにできます。
+また OCR エンジン用のプラグイン（[下記](#ocr-用のプラグイン)）では、標準機能である Windows.Media.Ocr（Windows の場合）または Tesseract（Linux の場合。要追加インストール）以外に、manga-ocr や RapidOCR などのエンジンを使えるようにできます。
 
 MangaReedaとプラグインは標準出力を使ってやり取りします。
 プラグインはどの言語で書いても構いません。
@@ -141,6 +141,8 @@ MangaReeda はまず次のどちらかの引数を付けて `command` を起動�
 OCR のプラグインが複数あるときは、設定画面の「プラグイン」で使うものを選べます。
 
 マンガ向けの [manga-ocr のプラグイン](../plugins/manga-ocr/README.md)（GPL-3.0）も用意しています。しかし重いため、本体には同梱していません。使いたい人は `plugins/manga-ocr/install.sh` から入れてください。
+
+軽めのものとして、[RapidOCR のプラグイン](../plugins/rapidocr/README.md)（Apache-2.0）もあります。CPU でも1ページ1秒ほどで、マンガも縦書きの本も読めます。Linux は `plugins/rapidocr/install.sh`、Windows は `plugins/rapidocr/install.ps1` から入れてください。
 
 ### `ocr`
 
