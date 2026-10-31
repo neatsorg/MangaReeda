@@ -185,6 +185,7 @@ impl MangaReader {
         reader.history = History::load(&history_path);
         reader.history_path = Some(history_path);
         reader.plugins = plugins::PluginHost::discover();
+        crate::engine::book_text::spawn_ocr_index(settings_store::cache_dir());
         reader
     }
 
@@ -1320,6 +1321,7 @@ mod tests {
                 }
                 .key()
             },
+            fingerprint: String::new(),
             pages: vec![
                 String::new(),
                 "ヤーボよォ！仇を取る時が来た".to_owned(),
