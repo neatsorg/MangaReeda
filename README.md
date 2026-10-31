@@ -2,13 +2,13 @@
 
 # MangaReeda
 
-LinuxとWindowsで動く、オフラインのマンガ・コミックビューアです。Rustで書かれています。Macでは検証していませんが環境を整えればビルドや移植ができる可能性は高いです。
+Linux と Windows で動く、オフラインのマンガ・コミックビューアです。Rust で書かれています。Mac では検証していませんが環境を整えればビルドや移植ができる可能性は高いです。
 
 見開き表示、書庫を展開せずに読む、キー・マウス・ゲームパッドでの操作などができます。
 
 かつての人気ソフト「マンガミーヤ」（MangaMeeya）にインスパイアされて作りました。マンガミーヤのコードは含まず、マンガミーヤの作者とも関係ありません。
 
-プラグイン形式でDropbox、GoogleDriveなどのクラウドと連携したり、ブックリストのファイル名インクリメンタル検索、ファイル内のOCRテキスト検索、OCR透明テキストのないPDF等に対してはOCRエンジンを利用してテキスト補完を行う、所有しているファイルの全文検索など、今日的な機能を多数搭載しました。
+プラグイン形式で Dropbox、Google Drive などのクラウドと連携できるほか、ブックリストのファイル名インクリメンタル検索、ファイル内の OCR 透明テキストを利用した本文検索、透明テキストのない PDF に対しては OCR エンジンを利用して独自にテキスト生成、所有しているファイルの全文検索、など、今日的な機能を多数搭載しました。
 
 Localized in Japanese and English.
 
@@ -20,14 +20,18 @@ Localized in Japanese and English.
 - ページのサムネイル一覧と、同じフォルダの冊を表紙で並べる表紙サムネイル
 - 冊ごとに読んでいた位置を覚えるしおりと履歴
 - 履歴とお気に入りを表紙で並べるブックリスト（表紙サムネイルの画面で Tab で切り替え）
-- プラグインで本の一覧を足せるブックリスト。Dropbox・Google Driveのフォルダ、そしてBOOKSCAN の本棚を表示できるプラグインを同梱（[docs/plugins.md](docs/plugins.md)）
-- 本の中の検索（Ctrl+F）。PDF の透明テキストを探し、文字の層の無い本は OCR のプラグインで読んでから探す（Windows は OS 標準の高性能な OCRを使います。Linux は Tesseract のプラグインを同梱）。マンガ向けに [manga-ocr のプラグイン](plugins/manga-ocr/README.md)も入れられます
-- ファイルを横断した全文検索（Shift+Ctrl+F）。名前は履歴・お気に入り・ダウンロード先と設定で足したフォルダの本から、本文は一度読み込んだ PDF の文字（開いた本や、使っていないあいだに裏で下ごしらえした本。最大1000冊）と OCR の結果から探します
-- ルーペ、縮小・拡大の表示と、そのフィルタ（最近傍、線形補間、Catmull-Rom、Lanczos3）
+- プラグインで本の一覧を足せるブックリスト。Dropbox、Google Drive についてはプラグイン同梱。BOOKSCAN の本棚表示ができるプラグインも試作（[docs/plugins.md](docs/plugins.md)）
+- 本の本文を検索（Ctrl+F）。PDF に埋め込まれた透明テキストが対象。埋め込みテキストのない本は OCR のプラグインで読んでから探す（Windows は OS 標準搭載の高性能な OCR を使います。Linux は Tesseract のプラグインを同梱）。マンガ向けには [manga-ocr のプラグイン](plugins/manga-ocr/README.md)も試作しました
+- ファイルを横断した全文検索（Shift+Ctrl+F）。ファイル名については履歴・お気に入り・ダウンロード済みファイル、およびユーザーが設定したフォルダが対象。本文については、一度でも開いたことのある PDF（ソフト上でいま開いている本や、ソフトがアイドル状態の際にバックグラウンドで処理した本。最大 1000 冊）内の文字列と、独自の OCR 機能の結果を対象にできます。
+- ルーペ、表示の縮小拡大、およびそのフィルタ（最近傍、線形補間、Catmull-Rom、Lanczos3）
 - 書庫を展開せずに直接読む。サブフォルダの画像も読める
 - 同じフォルダの前後の冊、隣のフォルダへの移動
 - キーボード・マウス（クリック、ダブルクリック、長押し、ボタンの同時押し）・ゲームパッドの割り当てを自由に変えられる。マンガミーヤ風の割り当ても選べる
-- 動く WebP・GIF・APNG の再生、自動ページ送り
+- 動く WebP、GIF、APNG の再生や自動ページ送り
+
+## その他の特筆すべき機能
+
+- 表紙が表示されないファイルについては、メニューバーの「ブックリスト」から「このページを表紙にする」を選ぶと、表紙として使用できます。
 
 ## 対応形式
 
@@ -91,10 +95,6 @@ packaging/linux/install.sh /path/to/mangareeda   # ほかの場所の実行フ�
 
 ソフトの設定は `~/.config/MangaReeda/settings.json`（`XDG_CONFIG_HOME` があるならその下）に保存されます。
 
-## その他の機能
-
-- 表紙が表示されないファイルについては、メニューバーの「ブックリスト」から「このページを表紙にする」を選ぶと、表紙として使用できます。
-
 ## 注意事項
 
 このソフトは閲覧するための道具です。
@@ -123,7 +123,7 @@ It shows double-page spreads, reads archives without extracting them, and is con
 
 Inspired by MangaMeeya (マンガミーヤ), a once-popular Japanese viewer. It contains no MangaMeeya code and is not affiliated with MangaMeeya's author.
 
-It brings many up-to-date features: cloud services such as Dropbox and Google Drive through plugins, incremental search of file names in the book list, searching the OCR text in a book, reading PDFs and other books without a text layer with an OCR engine to fill in their text, and full-text search across the books you have.
+It brings many up-to-date features: links to cloud services such as Dropbox and Google Drive through plugins, incremental search of file names in the book list, searching the text of a book through its embedded OCR text layer, generating text with an OCR engine for PDFs without one, and full-text search across the files you own.
 
 Localized in Japanese and English.
 
@@ -135,14 +135,18 @@ Localized in Japanese and English.
 - Page thumbnails, and cover thumbnails of the books in the same folder
 - Per-book bookmarks and history
 - A book list of history and favorites shown as covers (Tab switches lists in the cover thumbnails)
-- Plugins that add book lists; plugins for Dropbox and Google Drive folders and the BOOKSCAN bookshelf are included ([docs/plugins.md](docs/plugins.md), in Japanese)
-- Search in a book (Ctrl+F): the text layer of PDFs, or text read by an OCR plugin for books without one (on Windows, the capable OCR built into the OS; on Linux, a Tesseract plugin is included). A [manga-ocr plugin](plugins/manga-ocr/README.md) for manga can be installed as well
-- Search across books (Ctrl+Shift+F): names from the history, favorites and the books under the download folder and folders added in the settings; text from the PDF text read so far (books you opened and books prepared in the background while idle, up to 1000) and from OCR results
-- Loupe, zoom, and resampling filters for shrinking and enlarging (nearest, bilinear, Catmull-Rom, Lanczos3)
+- Plugins that add book lists; plugins for Dropbox and Google Drive are included, and an experimental plugin shows the BOOKSCAN bookshelf ([docs/plugins.md](docs/plugins.md), in Japanese)
+- Search the text of a book (Ctrl+F): the transparent text embedded in PDFs. Books without embedded text are read by an OCR plugin first (on Windows, the capable OCR built into the OS; on Linux, a Tesseract plugin is included). There is also an experimental [manga-ocr plugin](plugins/manga-ocr/README.md) for manga
+- Full-text search across files (Ctrl+Shift+F): file names from the history, favorites, downloaded files and folders you set; text from every PDF opened at least once (the book open now and books processed in the background while the app is idle, up to 1000) and from the results of the built-in OCR
+- Loupe, zooming out and in, and their resampling filters (nearest, bilinear, Catmull-Rom, Lanczos3)
 - Reads archives directly without extracting them, optionally including images in subfolders
 - Moves to the previous / next book in the folder and to neighbouring folders
 - Fully remappable keyboard, mouse (click, double click, long press, button chords) and gamepad controls, with a MangaMeeya-style preset
-- Animated WebP / GIF / APNG playback and automatic page turning
+- Animated WebP, GIF and APNG playback, and automatic page turning
+
+## Other notable features
+
+- For a book whose cover is not shown, choose "Use This Page as the Cover" from the Book List menu to use the current page as its cover.
 
 ## Supported formats
 
@@ -205,10 +209,6 @@ packaging/linux/install.sh /path/to/mangareeda   # registers an executable elsew
 ```
 
 Settings are stored in `~/.config/MangaReeda/settings.json` (under `XDG_CONFIG_HOME` when set).
-
-## Other features
-
-- For a book whose cover is not shown, choose "Use This Page as the Cover" from the Book List menu to use the current page as its cover.
 
 ## Disclaimer
 
