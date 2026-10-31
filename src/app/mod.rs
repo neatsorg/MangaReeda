@@ -1322,6 +1322,7 @@ mod tests {
                 .key()
             },
             fingerprint: String::new(),
+            digest: String::new(),
             pages: vec![
                 String::new(),
                 "ヤーボよォ！仇を取る時が来た".to_owned(),

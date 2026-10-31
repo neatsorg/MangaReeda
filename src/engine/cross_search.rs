@@ -586,6 +586,7 @@ mod tests {
                 source: if dir == OCR_TEXT_DIR { "ocr:x" } else { "pdf" }.to_owned(),
                 pages_key: String::new(),
                 fingerprint: String::new(),
+                digest: String::new(),
                 pages: pages.iter().map(|page| page.to_string()).collect(),
                 failed: 0,
             };
@@ -658,6 +659,7 @@ mod tests {
             source: "ocr:x".to_owned(),
             pages_key,
             fingerprint: String::new(),
+            digest: String::new(),
             pages: pages.iter().map(|page| page.to_string()).collect(),
             failed: 0,
         };
