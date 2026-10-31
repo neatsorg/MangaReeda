@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// 本の、ページごとの文字
 #[derive(Default, Debug, PartialEq)]
@@ -168,75 +168,142 @@ fn legacy_key((size, modified): (u64, u64)) -> String {
     format!("{size}:{modified}")
 }
 
-/// OCR の結果の一覧の1つ（読んだときのファイルの版と、引くのに使うもの）
+/// OCR の結果の一覧の1つ（読んだときのファイルの版と、引く鍵）
 struct IndexEntry {
     stamp: (SystemTime, u64),
-    fingerprint: String,
-    book: String,
-    version: (u64, u64),
+    key: Option<String>,
 }
 
-impl IndexEntry {
-    /// 引く鍵。値があればそれを、無ければ（前の版で書き、値を書き足す前に本を動かしたもの）本の版を使う。
-    /// 本が元の場所にあれば、動かしたものではないので引かない（本の有る無しは、引くたびに見る）
-    fn key(&self) -> Option<String> {
-        if !self.fingerprint.is_empty() {
-            return Some(self.fingerprint.clone());
+/// OCR の結果の一覧（本を動かしたとき、前の場所の結果を探すのに使う）。鍵からファイルを直接引ける
+#[derive(Default)]
+struct OcrIndex {
+    entries: HashMap<PathBuf, IndexEntry>,
+    by_key: HashMap<String, HashSet<PathBuf>>,
+    /// フォルダごとの、最後に全体を見直した時刻
+    scanned: HashMap<PathBuf, Instant>,
+}
+
+impl OcrIndex {
+    fn insert(&mut self, path: PathBuf, entry: IndexEntry) {
+        self.remove(&path);
+        if let Some(key) = &entry.key {
+            self.by_key
+                .entry(key.clone())
+                .or_default()
+                .insert(path.clone());
         }
-        (!self.book.is_empty() && !Path::new(&self.book).exists()).then(|| legacy_key(self.version))
+        self.entries.insert(path, entry);
+    }
+
+    fn remove(&mut self, path: &Path) {
+        let Some(entry) = self.entries.remove(path) else {
+            return;
+        };
+        if let Some(key) = entry.key
+            && let Some(paths) = self.by_key.get_mut(&key)
+        {
+            paths.remove(path);
+            if paths.is_empty() {
+                self.by_key.remove(&key);
+            }
+        }
     }
 }
 
-/// OCR の結果の一覧（本を動かしたとき、前の場所の結果を探すのに使う）。
-/// 引くたびにファイルの版を見て、変わったものだけを読み直す
-static OCR_INDEX: LazyLock<Mutex<HashMap<PathBuf, IndexEntry>>> = LazyLock::new(Default::default);
+static OCR_INDEX: LazyLock<Mutex<OcrIndex>> = LazyLock::new(Default::default);
 
-/// 一覧で `keys`（中身の目安の値か `legacy_key`）に当たる、OCR の結果のファイル
+/// フォルダ全体を見直す間隔（自分で書いたり消したりしたものは、そのたびに一覧に入れる。
+/// 見直すのは、ほかの機械から写した結果など、外で置かれたものを拾うため）
+const OCR_INDEX_RESCAN: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_secs(10)
+};
+
+fn ocr_index() -> MutexGuard<'static, OcrIndex> {
+    OCR_INDEX.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// 引く鍵。値があればそれを、無ければ（前の版で書いたもの）本の版を使う
+/// （元の本が元の場所にあるかは、当たったものについて付け替えるときに見る）
+fn read_index_entry(path: &Path, stamp: (SystemTime, u64)) -> Option<IndexEntry> {
+    let cache = read_cache_file(path)?;
+    let key = if !cache.fingerprint.is_empty() {
+        Some(cache.fingerprint)
+    } else {
+        (!cache.book.is_empty()).then(|| legacy_key((cache.size, cache.modified)))
+    };
+    Some(IndexEntry { stamp, key })
+}
+
+fn index_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// 自分で書いたり消したりした OCR の結果を、一覧に入れ直す
+/// （一覧の鍵を取ってから読む。遅れて読んだ古い中身で、新しく入れたものを戻さないよう）
+fn note_ocr_file(path: &Path) {
+    let mut index = ocr_index();
+    let entry = index_stamp(path).and_then(|stamp| read_index_entry(path, stamp));
+    match entry {
+        Some(entry) => index.insert(path.to_path_buf(), entry),
+        None => index.remove(path),
+    }
+}
+
+/// 一覧で `keys`（中身の目安の値か `legacy_key`）に当たる、OCR の結果のファイル。
+/// しばらく見直していなければ、フォルダ全体を見て、変わったファイルだけを読み直す
 fn ocr_results_for(cache_dir: &Path, keys: &[&str]) -> Vec<PathBuf> {
     let dir = cache_dir.join(OCR_TEXT_DIR);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .collect();
-    paths.sort();
-    let present: HashSet<&PathBuf> = paths.iter().collect();
-    let mut index = OCR_INDEX.lock().unwrap_or_else(PoisonError::into_inner);
-    index.retain(|path, _| path.parent() != Some(dir.as_path()) || present.contains(path));
-    let mut found = Vec::new();
-    for path in &paths {
-        let Ok(meta) = std::fs::metadata(path) else {
-            continue;
-        };
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        let stamp = (modified, meta.len());
-        if index.get(path).is_none_or(|entry| entry.stamp != stamp) {
-            let Some(cache) = read_cache_file(path) else {
-                index.remove(path);
+    let mut index = ocr_index();
+    let due = index
+        .scanned
+        .get(&dir)
+        .is_none_or(|time| time.elapsed() >= OCR_INDEX_RESCAN);
+    if due {
+        let paths: HashSet<PathBuf> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        let gone: Vec<PathBuf> = index
+            .entries
+            .keys()
+            .filter(|path| path.parent() == Some(dir.as_path()) && !paths.contains(*path))
+            .cloned()
+            .collect();
+        for path in gone {
+            index.remove(&path);
+        }
+        for path in paths {
+            let Some(stamp) = index_stamp(&path) else {
                 continue;
             };
-            index.insert(
-                path.clone(),
-                IndexEntry {
-                    stamp,
-                    fingerprint: cache.fingerprint,
-                    book: cache.book,
-                    version: (cache.size, cache.modified),
-                },
-            );
+            if index
+                .entries
+                .get(&path)
+                .is_none_or(|entry| entry.stamp != stamp)
+            {
+                match read_index_entry(&path, stamp) {
+                    Some(entry) => index.insert(path, entry),
+                    None => index.remove(&path),
+                }
+            }
         }
-        if index[path]
-            .key()
-            .is_some_and(|key| keys.contains(&key.as_str()))
-        {
-            found.push(path.clone());
-        }
+        index.scanned.insert(dir.clone(), Instant::now());
     }
+    let mut found: Vec<PathBuf> = keys
+        .iter()
+        .filter_map(|key| index.by_key.get(*key))
+        .flatten()
+        .filter(|path| path.parent() == Some(dir.as_path()))
+        .cloned()
+        .collect();
+    found.sort();
+    found.dedup();
     found
 }
 
@@ -273,7 +340,9 @@ fn backfill_ocr_results(cache_dir: &Path) {
         }
         cache.fingerprint = value;
         cache.digest = whole;
-        rewrite_unchanged(&path, &raw, &cache);
+        if rewrite_unchanged(&path, &raw, &cache) {
+            note_ocr_file(&path);
+        }
     }
 }
 
@@ -286,7 +355,8 @@ pub fn spawn_ocr_index(cache_dir: PathBuf) {
 }
 
 /// ためておいたものが、今の本（版が `current`、ページの並びが `pages_key`）のものか。
-/// 大きさと更新日時が同じか、OCR の結果なら中身が同じなら使う（別の機械から写して、更新日時が違うときなど）
+/// 大きさと更新日時が同じか、OCR の結果なら中身全体のハッシュが同じなら使う（別の機械から写して、
+/// 更新日時が違うときなど）
 fn matches_book(cache: &CacheFile, book: &Path, current: (u64, u64), pages_key: &str) -> bool {
     if cache.pages_key != pages_key {
         return false;
@@ -294,16 +364,17 @@ fn matches_book(cache: &CacheFile, book: &Path, current: (u64, u64), pages_key: 
     if (cache.size, cache.modified) == current {
         return true;
     }
-    !cache.fingerprint.is_empty()
+    !cache.digest.is_empty()
         && cache.size == current.0
         && fingerprint(book).as_ref() == Some(&cache.fingerprint)
-        && (cache.digest.is_empty() || digest(book).as_ref() == Some(&cache.digest))
+        && digest(book).as_ref() == Some(&cache.digest)
 }
 
 /// この本の場所に使えるものが無いとき、中身の同じ本の OCR の結果を探して、この場所のものにする
 /// （本を動かしたり、写したりしたとき）。元の本が元の場所に無ければ（動かしたとき）、元の結果は消す。
-/// 中身全体のハッシュ（`digest`）で確かめ、書く結果にも入れる。ハッシュの無い結果は、元の本が残っていれば
-/// その本のハッシュと比べ、無ければ目安の値で（前の版で書き、値を書き足す前に動かしたものは大きさと更新日時で）見分ける。
+/// 中身全体のハッシュ（`digest`）で確かめ、書く結果にも入れる。ハッシュの無い結果（前の版で書いたもの）は、
+/// 元の本が元の場所にあればその本のハッシュと比べ、元の本が無ければ大きさと更新日時で見分ける。
+/// 元の本が変わっていて確かめられないものは使わない。
 /// `seen` は、探すと決めたときのこの場所のためておきの中身（OCR の結果, 埋め込まれた文字）。
 /// 探しているあいだにほかで書かれていたらやめる
 fn adopt_ocr_result(
@@ -339,12 +410,16 @@ fn adopt_ocr_result(
         let old_in_place = version(old_book) == Some((cache.size, cache.modified));
         let same_book = if !cache.digest.is_empty() {
             cache.fingerprint == value && cache.digest == whole
-        } else if cache.fingerprint.is_empty() {
-            !cache.book.is_empty() && !old_book.exists() && (cache.size, cache.modified) == current
         } else if old_in_place {
-            cache.fingerprint == value && digest(old_book).as_ref() == Some(&whole)
+            // 元の本のハッシュを作っているあいだに置き換えられていたら使わない
+            (cache.fingerprint.is_empty() || cache.fingerprint == value)
+                && digest(old_book).as_ref() == Some(&whole)
+                && version(old_book) == Some((cache.size, cache.modified))
         } else {
-            cache.fingerprint == value
+            (cache.fingerprint.is_empty() || cache.fingerprint == value)
+                && !cache.book.is_empty()
+                && !old_book.exists()
+                && (cache.size, cache.modified) == current
         };
         if !same_book {
             continue;
@@ -358,8 +433,10 @@ fn adopt_ocr_result(
         (cache.size, cache.modified) = current;
         cache.fingerprint = value;
         cache.digest = whole;
+        // ハッシュを作っているあいだに、この本が置き換えられたり、どちらかのためておきが書かれたりしていたらやめる
         let _lock = cache_lock();
-        if (&read_raw(&ocr_path), &read_raw(&text_path)) != seen
+        if version(book) != Some(current)
+            || (&read_raw(&ocr_path), &read_raw(&text_path)) != seen
             || read_raw(&file).as_deref() != Some(raw.as_str())
             || !write_cache_file(&ocr_path, &cache)
         {
@@ -369,6 +446,8 @@ fn adopt_ocr_result(
         if !copied {
             let _ = std::fs::remove_file(&file);
         }
+        note_ocr_file(&ocr_path);
+        note_ocr_file(&file);
         return true;
     }
     false
@@ -427,6 +506,7 @@ fn load_cache(book: &Path, cache_dir: &Path, pages_key: &str) -> Option<BookText
         if read_raw(&path).as_deref() == Some(raw.as_str())
             && std::fs::rename(&path, &ocr_path).is_ok()
         {
+            note_ocr_file(&ocr_path);
             ocr_path
         } else {
             path
@@ -434,8 +514,8 @@ fn load_cache(book: &Path, cache_dir: &Path, pages_key: &str) -> Option<BookText
     } else {
         path
     };
-    // 前の版で書いたものには、本の場所（横断検索で引くのに使う）や本の中身の目安の値が無い。
-    // 書き足す（書き直すので時刻も新しくなる）。写した本なら、今の更新日時にする
+    // 前の版で書いたものには、本の場所（横断検索で引くのに使う）が無い。書き足す（書き直すので時刻も新しくなる）。
+    // 写した本なら、今の更新日時にする（本の中身の値は、起動したときに書き足す）
     let book_name = book.to_string_lossy();
     let mut changed = (cache.size, cache.modified) != current;
     (cache.size, cache.modified) = current;
@@ -443,14 +523,10 @@ fn load_cache(book: &Path, cache_dir: &Path, pages_key: &str) -> Option<BookText
         cache.book = book_name.into_owned();
         changed = true;
     }
-    if cache.source.starts_with("ocr:")
-        && cache.fingerprint.is_empty()
-        && let Some(value) = fingerprint(book)
-    {
-        cache.fingerprint = value;
-        changed = true;
-    }
     let rewritten = changed && rewrite_unchanged(&path, &raw, &cache);
+    if rewritten && cache.source.starts_with("ocr:") {
+        note_ocr_file(&path);
+    }
     if !rewritten && let Ok(file) = std::fs::File::options().write(true).open(&path) {
         let _ = file.set_modified(SystemTime::now());
     }
@@ -463,17 +539,33 @@ fn load_cache(book: &Path, cache_dir: &Path, pages_key: &str) -> Option<BookText
 
 /// 取り出した文字をためておき、上限を超えたら古いものから消す
 fn save_cache(book: &Path, cache_dir: &Path, text: &BookText, source: &str, pages_key: &str) {
-    let Some((size, modified)) = version(book) else {
+    let Some(read_as) = version(book) else {
         return;
     };
+    save_cache_as(book, cache_dir, text, source, pages_key, read_as);
+}
+
+/// 文字をためておく。`read_as` は文字を読んだときの本の版。本がその版のままのときだけ書く
+/// （読んでいるあいだや書くまでに置き換えられた本に、ほかの本の文字や値を付けないよう）
+fn save_cache_as(
+    book: &Path,
+    cache_dir: &Path,
+    text: &BookText,
+    source: &str,
+    pages_key: &str,
+    read_as: (u64, u64),
+) {
+    let (size, modified) = read_as;
+    let unchanged = || version(book) == Some(read_as);
+    if !unchanged() {
+        return;
+    }
     let ocr = source.starts_with("ocr:");
     let path = cache_path(book, cache_dir, ocr);
-    // OCR の結果には本の中身の値を書く。作っているあいだに本が書き換えられていたら書かない
-    // （ほかの本の値を付けないよう。版も古いので、この結果はもう使われない）
+    // OCR の結果には本の中身の値を書く
     let (fingerprint, digest) = if ocr {
-        let values = (fingerprint(book), digest(book));
-        match values {
-            (Some(value), Some(whole)) if version(book) == Some((size, modified)) => (value, whole),
+        match (fingerprint(book), digest(book)) {
+            (Some(value), Some(whole)) => (value, whole),
             _ => Default::default(),
         }
     } else {
@@ -494,10 +586,12 @@ fn save_cache(book: &Path, cache_dir: &Path, text: &BookText, source: &str, page
         && std::fs::create_dir_all(parent).is_ok()
     {
         let _lock = cache_lock();
-        if write_cache_file(&path, &cache) {
+        // 値を作っているあいだに本が書き換えられていたら書かない
+        if unchanged() && write_cache_file(&path, &cache) {
             // もう片方のフォルダの古い結果は消す（OCR の結果をやめて埋め込まれた文字に戻したときなど）
             let _ = std::fs::remove_file(cache_path(book, cache_dir, !ocr));
         }
+        note_ocr_file(&cache_path(book, cache_dir, true));
     }
     prune_cache(&cache_dir.join(TEXT_DIR), CACHE_LIMIT);
 }
@@ -826,6 +920,8 @@ fn ocr_text(
     progress: &TextProgress,
     cancel: &Arc<AtomicBool>,
 ) -> Result<BookText, PluginError> {
+    // 読んでいるあいだに本が置き換えられたら、ためない（ほかの本の版や値を、この文字に付けないよう）
+    let started = version(book);
     let pdf = match (source.mode, pdfium) {
         (SourceMode::Pdf, Some(pdfium)) => Some(
             pdfium
@@ -915,13 +1011,16 @@ fn ocr_text(
         ocr: Some(manifest.id.clone()),
     };
     // 読めなかったページがあっても、読めたページは使えるようにためる（長い時間をかけた結果を捨てない）
-    save_cache(
-        book,
-        cache_dir,
-        &text,
-        &format!("ocr:{}", manifest.id),
-        &source.key(),
-    );
+    if let Some(started) = started {
+        save_cache_as(
+            book,
+            cache_dir,
+            &text,
+            &format!("ocr:{}", manifest.id),
+            &source.key(),
+            started,
+        );
+    }
     Ok(text)
 }
 
@@ -1962,6 +2061,142 @@ mod tests {
         let moved = dir.join("moved.pdf");
         std::fs::rename(&book, &moved).unwrap();
         assert_eq!(load_cache(&moved, &cache, ""), Some(text_like(&text)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 中身全体のハッシュで確かめられないものは使わない。元の本の更新日時だけが変わった、ハッシュの無い結果は、
+    /// 中ほどだけ違う別の本にも、更新日時だけが違う同じ場所の本にも使わない
+    #[test]
+    fn results_that_cannot_be_confirmed_are_not_used() {
+        let dir = std::env::temp_dir().join(format!("manga-ocr-confirm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("cache");
+        let text = BookText {
+            ocr: Some("x".to_owned()),
+            ..book_text(vec!["一".to_owned()])
+        };
+        let content: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let book = dir.join("book.pdf");
+        std::fs::write(&book, &content).unwrap();
+        save_cache(&book, &cache, &text, "ocr:x", "");
+        let path = cache_path(&book, &cache, true);
+        let mut file = read_cache_file(&path).unwrap();
+        file.digest.clear();
+        assert!(write_cache_file(&path, &file));
+        let later = SystemTime::now() + Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&book)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let mut middle = content.clone();
+        middle[150_000] ^= 1;
+        let other = dir.join("other.pdf");
+        std::fs::write(&other, &middle).unwrap();
+        assert_eq!(load_cache(&other, &cache, ""), None);
+        assert!(path.exists());
+        assert_eq!(load_cache(&book, &cache, ""), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 付け替えるあいだに本が置き換えられていたら（版が探し始めたときと違えば）書かない
+    #[test]
+    fn replaced_books_are_not_given_results() {
+        let dir = std::env::temp_dir().join(format!("manga-ocr-replaced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("cache");
+        let text = BookText {
+            ocr: Some("x".to_owned()),
+            ..book_text(vec!["一".to_owned()])
+        };
+        let book = dir.join("book.pdf");
+        std::fs::write(&book, b"the book").unwrap();
+        save_cache(&book, &cache, &text, "ocr:x", "");
+        let moved = dir.join("moved.pdf");
+        std::fs::rename(&book, &moved).unwrap();
+        let (size, modified) = version(&moved).unwrap();
+        let stale = (size, modified + 1);
+        assert!(!adopt_ocr_result(&moved, &cache, "", stale, (&None, &None)));
+        assert!(!cache_path(&moved, &cache, true).exists());
+        assert!(cache_path(&book, &cache, true).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// OCR のプラグインが読んでいるあいだに本が変わったら、読んだ文字は返すが、ためない
+    #[cfg(unix)]
+    #[test]
+    fn ocr_results_are_not_kept_when_the_book_changes_meanwhile() {
+        let dir = std::env::temp_dir().join(format!("manga-ocr-changed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let book = dir.join("book.zip");
+        let mut png = Vec::new();
+        image::RgbaImage::new(20, 30)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&book).unwrap());
+        for name in ["01.png", "02.png"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, &png).unwrap();
+        }
+        zip.finish().unwrap();
+        let listing = crate::engine::source::list_images(&book, false).unwrap();
+        let source = || PageSource {
+            mode: listing.mode,
+            root: listing.root.clone(),
+            names: listing.images.clone(),
+        };
+        // 文字を返す前に、本に書き足す（大きさが変わる）
+        let manifest = script_ocr(&dir);
+        std::fs::write(
+            dir.join("ocr.sh"),
+            format!(
+                "#!/bin/sh\nread request\nprintf x >> '{}'\n",
+                book.display()
+            ) + "for page in $(echo \"$request\" | grep -o '\"page\":[0-9]*' | cut -d: -f2); do\n\
+             echo \"{\\\"page\\\": $page, \\\"text\\\": \\\"ページ$page\\\"}\"\n\
+             done\n",
+        )
+        .unwrap();
+        let rx = spawn_book_ocr(
+            manifest,
+            HashMap::new(),
+            book.clone(),
+            source(),
+            None,
+            dir.join("cache"),
+            Arc::new(TextProgress::default()),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let loaded = rx.recv().unwrap().unwrap();
+        assert_eq!(loaded.index.search("ページ1", 10)[0].page, 1);
+        assert!(!cache_path(&book, &dir.join("cache"), true).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 文字を読んだあと、ためるまでに本が置き換えられていたら（読んだときの版と違えば）ためない
+    #[test]
+    fn text_is_not_kept_for_a_book_replaced_before_saving() {
+        let dir = std::env::temp_dir().join(format!("manga-ocr-handoff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("cache");
+        let book = dir.join("book.pdf");
+        std::fs::write(&book, b"the book that was read").unwrap();
+        let read_as = version(&book).unwrap();
+        std::fs::write(&book, b"another book").unwrap();
+        let text = BookText {
+            ocr: Some("x".to_owned()),
+            ..book_text(vec!["一".to_owned()])
+        };
+        save_cache_as(&book, &cache, &text, "ocr:x", "", read_as);
+        assert!(!cache_path(&book, &cache, true).exists());
+        save_cache_as(&book, &cache, &text, "ocr:x", "", version(&book).unwrap());
+        assert!(cache_path(&book, &cache, true).exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
