@@ -860,14 +860,24 @@ impl MangaReader {
     }
 
     /// 設定画面の、プラグインのログイン情報とダウンロード先
+    /// 設定画面の下の欄。横断検索（プラグインが無くても使える）と、プラグイン（クラウドと OCR）
     pub(super) fn render_plugin_settings(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(20.0);
-        ui.label(
-            egui::RichText::new(tr("settings.plugins"))
-                .size(20.0)
-                .strong(),
-        );
-        crate::utils::separator_pct(ui);
+        let heading = |ui: &mut egui::Ui, text: &str| {
+            ui.add_space(20.0);
+            ui.label(egui::RichText::new(text).size(20.0).strong());
+            crate::utils::separator_pct(ui);
+        };
+        let subheading = |ui: &mut egui::Ui, text: &str| {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new(text).size(17.0).strong());
+        };
+
+        heading(ui, tr("settings.cross_search"));
+        self.render_cross_search_settings(ui);
+
+        heading(ui, tr("settings.plugins"));
+        // クラウド: ダウンロードした本の置き場所と、本の一覧のプラグイン
+        subheading(ui, tr("settings.plugins.cloud"));
         ui.label(tr("settings.library_dir"));
         let placeholder = settings_store::default_library_dir()
             .to_string_lossy()
@@ -882,15 +892,19 @@ impl MangaReader {
         {
             self.save_settings();
         }
-        self.render_cross_search_settings(ui);
-        if self.plugins.manifests.is_empty() && self.plugins.ocr_engines.is_empty() {
+        if self.plugins.manifests.is_empty() {
             ui.add_space(6.0);
-            ui.label(tr("settings.no_plugins"));
-            return;
+            ui.label(tr("settings.no_cloud_plugins"));
         }
-        // 本の中の検索で使う OCR のエンジン
-        if !self.plugins.ocr_engines.is_empty() {
-            ui.add_space(6.0);
+        for manifest in self.plugins.manifests.clone() {
+            self.render_plugin_entry(ui, manifest);
+        }
+
+        // OCR: 本の中の検索で使うエンジンと、OCR のプラグインの設定
+        subheading(ui, tr("settings.plugins.ocr"));
+        if self.plugins.ocr_engines.is_empty() {
+            ui.label(tr("settings.no_ocr_plugins"));
+        } else {
             let current = self
                 .ocr_engine()
                 .map(|engine| engine.name.clone())
@@ -910,131 +924,143 @@ impl MangaReader {
                 self.save_settings();
             }
         }
-        // ログイン情報の欄は、本の一覧のプラグインと OCR のプラグインの両方に出す
-        let manifests: Vec<PluginManifest> = self
-            .plugins
-            .manifests
-            .iter()
-            .chain(&self.plugins.ocr_engines)
-            .cloned()
-            .collect();
-        for manifest in manifests {
-            let mut changed = false;
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new(&manifest.name).strong());
-            for field in manifest.credentials.iter().filter(|field| !field.hidden) {
-                let index = (manifest.id.clone(), field.key.clone());
-                let label = match (field.key.as_str(), &field.label) {
-                    (_, Some(label)) => label.clone(),
-                    ("email", None) => tr("plugin.field.email").to_owned(),
-                    ("password", None) => tr("plugin.field.password").to_owned(),
-                    ("app_key", None) => tr("plugin.field.app_key").to_owned(),
-                    ("auth_code", None) => tr("plugin.field.auth_code").to_owned(),
-                    ("client_id", None) => tr("plugin.field.client_id").to_owned(),
-                    ("client_secret", None) => tr("plugin.field.client_secret").to_owned(),
-                    ("auth_response", None) => tr("plugin.field.auth_response").to_owned(),
-                    (key, None) => key.to_owned(),
-                };
-                let stored = self.plugins.stored(&manifest.id, &field.key);
-                let hint = match stored {
-                    Some(Stored::Keyring) => tr("plugin.stored_keyring"),
-                    Some(Stored::Memory) => tr("plugin.stored_memory"),
-                    Some(Stored::DeleteFailed) => tr("plugin.delete_failed"),
-                    None => "",
-                };
-                ui.label(label);
-                ui.horizontal(|ui| {
-                    let input = self.plugins.inputs.entry(index.clone()).or_default();
-                    let response = ui.add(
-                        egui::TextEdit::singleline(input)
-                            .password(field.secret)
-                            .hint_text(hint)
-                            .desired_width(ui.available_width() - 70.0),
-                    );
-                    let enter =
-                        response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    let save = ui.button(tr("plugin.save")).clicked() || enter;
-                    // 貼り付けたときの前後の空白や改行は取る
-                    if save && !input.trim().is_empty() {
-                        let value = std::mem::take(input).trim().to_owned();
-                        let stored = self
-                            .plugins
-                            .credentials
-                            .set(&manifest.id, &field.key, &value);
-                        self.plugins.stored.insert(index.clone(), Some(stored));
-                        changed = true;
-                    }
-                    if stored.is_some()
-                        && ui
-                            .small_button("×")
-                            .on_hover_text(tr("plugin.forget"))
-                            .clicked()
-                    {
-                        let stored = self.plugins.delete_credential(&manifest.id, &field.key);
-                        self.plugins.stored.insert(index.clone(), stored);
-                        changed = true;
-                    }
-                });
-            }
-            // 設定画面に出さない値で、消せなかったものは、もう一度消せるようにする
-            let undeleted: Vec<String> = manifest
-                .credentials
-                .iter()
-                .filter(|field| field.hidden)
-                .filter(|field| {
-                    self.plugins.stored(&manifest.id, &field.key) == Some(Stored::DeleteFailed)
-                })
-                .map(|field| field.key.clone())
-                .collect();
-            if !undeleted.is_empty() && ui.button(tr("plugin.retry_delete")).clicked() {
-                for key in undeleted {
-                    let stored = self.plugins.delete_credential(&manifest.id, &key);
-                    self.plugins
-                        .stored
-                        .insert((manifest.id.clone(), key), stored);
-                }
-            }
-            if changed {
-                // 別のアカウントになったかもしれないので、一覧を取り直す
-                self.plugins.forget_account(&manifest.id);
-                if matches!(self.shelf_source(), Some(ShelfSource::Plugin(id, _)) if id == manifest.id)
-                {
-                    self.reshow_shelf();
-                }
-            }
-            if manifest.auth {
-                // 許可の状態は、更新用のトークンを保存しているかで見る
-                let connected = matches!(
-                    self.plugins.stored(&manifest.id, "refresh_token"),
-                    Some(Stored::Keyring | Stored::Memory)
+        for manifest in self.plugins.ocr_engines.clone() {
+            self.render_plugin_entry(ui, manifest);
+        }
+    }
+
+    /// 設定画面に出すものがあるプラグインか。ログイン情報の欄、許可の操作、知らせのどれも無いものは名前も出さない
+    fn plugin_has_settings(&mut self, manifest: &PluginManifest) -> bool {
+        manifest.auth
+            || self.plugins.auth_message.contains_key(&manifest.id)
+            || manifest.credentials.iter().any(|field| {
+                !field.hidden
+                    || matches!(
+                        self.plugins.stored(&manifest.id, &field.key),
+                        Some(Stored::DeleteFailed | Stored::Memory)
+                    )
+            })
+    }
+
+    /// プラグイン1つ分の欄（名前、ログイン情報、許可の操作）
+    fn render_plugin_entry(&mut self, ui: &mut egui::Ui, manifest: PluginManifest) {
+        if !self.plugin_has_settings(&manifest) {
+            return;
+        }
+        let mut changed = false;
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new(&manifest.name).strong());
+        for field in manifest.credentials.iter().filter(|field| !field.hidden) {
+            let index = (manifest.id.clone(), field.key.clone());
+            let label = match (field.key.as_str(), &field.label) {
+                (_, Some(label)) => label.clone(),
+                ("email", None) => tr("plugin.field.email").to_owned(),
+                ("password", None) => tr("plugin.field.password").to_owned(),
+                ("app_key", None) => tr("plugin.field.app_key").to_owned(),
+                ("auth_code", None) => tr("plugin.field.auth_code").to_owned(),
+                ("client_id", None) => tr("plugin.field.client_id").to_owned(),
+                ("client_secret", None) => tr("plugin.field.client_secret").to_owned(),
+                ("auth_response", None) => tr("plugin.field.auth_response").to_owned(),
+                (key, None) => key.to_owned(),
+            };
+            let stored = self.plugins.stored(&manifest.id, &field.key);
+            let hint = match stored {
+                Some(Stored::Keyring) => tr("plugin.stored_keyring"),
+                Some(Stored::Memory) => tr("plugin.stored_memory"),
+                Some(Stored::DeleteFailed) => tr("plugin.delete_failed"),
+                None => "",
+            };
+            ui.label(label);
+            ui.horizontal(|ui| {
+                let input = self.plugins.inputs.entry(index.clone()).or_default();
+                let response = ui.add(
+                    egui::TextEdit::singleline(input)
+                        .password(field.secret)
+                        .hint_text(hint)
+                        .desired_width(ui.available_width() - 70.0),
                 );
-                ui.horizontal(|ui| {
-                    if ui.button(tr("plugin.auth_start")).clicked() {
-                        self.start_plugin_auth(&manifest);
-                    }
-                    ui.label(if connected {
-                        tr("plugin.connected")
-                    } else {
-                        tr("plugin.not_connected")
-                    });
-                });
-            }
-            if let Some(message) = self.plugins.auth_message.get(&manifest.id) {
-                ui.label(egui::RichText::new(message).small());
-            }
-            let in_memory = manifest.credentials.iter().any(|field| {
+                let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let save = ui.button(tr("plugin.save")).clicked() || enter;
+                // 貼り付けたときの前後の空白や改行は取る
+                if save && !input.trim().is_empty() {
+                    let value = std::mem::take(input).trim().to_owned();
+                    let stored = self
+                        .plugins
+                        .credentials
+                        .set(&manifest.id, &field.key, &value);
+                    self.plugins.stored.insert(index.clone(), Some(stored));
+                    changed = true;
+                }
+                if stored.is_some()
+                    && ui
+                        .small_button("×")
+                        .on_hover_text(tr("plugin.forget"))
+                        .clicked()
+                {
+                    let stored = self.plugins.delete_credential(&manifest.id, &field.key);
+                    self.plugins.stored.insert(index.clone(), stored);
+                    changed = true;
+                }
+            });
+        }
+        // 設定画面に出さない値で、消せなかったものは、もう一度消せるようにする
+        let undeleted: Vec<String> = manifest
+            .credentials
+            .iter()
+            .filter(|field| field.hidden)
+            .filter(|field| {
+                self.plugins.stored(&manifest.id, &field.key) == Some(Stored::DeleteFailed)
+            })
+            .map(|field| field.key.clone())
+            .collect();
+        if !undeleted.is_empty() && ui.button(tr("plugin.retry_delete")).clicked() {
+            for key in undeleted {
+                let stored = self.plugins.delete_credential(&manifest.id, &key);
                 self.plugins
                     .stored
-                    .get(&(manifest.id.clone(), field.key.clone()))
-                    == Some(&Some(Stored::Memory))
-            });
-            if in_memory {
-                ui.label(
-                    egui::RichText::new(tr("plugin.no_keyring"))
-                        .small()
-                        .color(ui.visuals().warn_fg_color),
-                );
+                    .insert((manifest.id.clone(), key), stored);
             }
+        }
+        if changed {
+            // 別のアカウントになったかもしれないので、一覧を取り直す
+            self.plugins.forget_account(&manifest.id);
+            if matches!(self.shelf_source(), Some(ShelfSource::Plugin(id, _)) if id == manifest.id)
+            {
+                self.reshow_shelf();
+            }
+        }
+        if manifest.auth {
+            // 許可の状態は、更新用のトークンを保存しているかで見る
+            let connected = matches!(
+                self.plugins.stored(&manifest.id, "refresh_token"),
+                Some(Stored::Keyring | Stored::Memory)
+            );
+            ui.horizontal(|ui| {
+                if ui.button(tr("plugin.auth_start")).clicked() {
+                    self.start_plugin_auth(&manifest);
+                }
+                ui.label(if connected {
+                    tr("plugin.connected")
+                } else {
+                    tr("plugin.not_connected")
+                });
+            });
+        }
+        if let Some(message) = self.plugins.auth_message.get(&manifest.id) {
+            ui.label(egui::RichText::new(message).small());
+        }
+        let in_memory = manifest.credentials.iter().any(|field| {
+            self.plugins
+                .stored
+                .get(&(manifest.id.clone(), field.key.clone()))
+                == Some(&Some(Stored::Memory))
+        });
+        if in_memory {
+            ui.label(
+                egui::RichText::new(tr("plugin.no_keyring"))
+                    .small()
+                    .color(ui.visuals().warn_fg_color),
+            );
         }
     }
 }
@@ -1100,5 +1126,43 @@ mod tests {
             host.credentials.get("d", "refresh_token").as_deref(),
             Some("token-a")
         );
+    }
+
+    /// 設定する項目の無いプラグイン（OCR のエンジンなど）は、設定画面に名前だけを並べない
+    #[test]
+    fn plugins_without_settings_are_not_listed() {
+        let manifest = |json: &str| serde_json::from_str::<PluginManifest>(json).unwrap();
+        let ocr = manifest(r#"{"id": "o", "name": "OCR", "command": ["o"], "kind": "ocr"}"#);
+        let login = manifest(
+            r#"{"id": "b", "name": "B", "command": ["b"], "credentials": [{"key": "email"}]}"#,
+        );
+        let auth = manifest(r#"{"id": "a", "name": "A", "command": ["a"], "auth": true}"#);
+        let hidden = manifest(
+            r#"{"id": "d", "name": "D", "command": ["d"],
+                "credentials": [{"key": "auth_code", "hidden": true}]}"#,
+        );
+        let store = FakeStore::default();
+        let mut reader = MangaReader::with_settings(crate::config::AppSettings::default(), None);
+        reader.plugins = PluginHost::with(
+            vec![ocr.clone(), login.clone(), auth.clone(), hidden.clone()],
+            Credentials::with_store(Box::new(store.clone())),
+            std::env::temp_dir(),
+        );
+        assert!(!reader.plugin_has_settings(&ocr));
+        assert!(reader.plugin_has_settings(&login));
+        assert!(reader.plugin_has_settings(&auth));
+        // 隠した値だけのものは、消せなかった値があるときだけ出す（もう一度消すボタンのため）
+        assert!(!reader.plugin_has_settings(&hidden));
+        let value = Store::from([("auth_code".to_owned(), "code".to_owned())]);
+        reader.plugins.apply_store("d", value);
+        store.fail_delete.set(true);
+        reader
+            .plugins
+            .apply_store("d", Store::from([("auth_code".to_owned(), String::new())]));
+        assert_eq!(
+            reader.plugins.stored("d", "auth_code"),
+            Some(Stored::DeleteFailed)
+        );
+        assert!(reader.plugin_has_settings(&hidden));
     }
 }
