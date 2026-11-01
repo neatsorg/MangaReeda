@@ -741,6 +741,18 @@ impl MangaReader {
         self.is_shifted = !self.is_shifted;
         self.config.odd_page_start = self.is_shifted;
         self.save_settings();
+        let msg = if self.is_shifted {
+            tr("mode.odd_page")
+        } else {
+            tr("mode.even_page")
+        };
+
+        // 自動見開きでない1ページ表示と縦スクロールでは、奇数／偶数で見え方が変わらない。
+        // 設定だけ切り替え、読んでいる位置とスクロール位置はそのままにする
+        if self.is_single_page() && self.automatic_page_direction().is_none() {
+            self.show_fading_error(msg);
+            return;
+        }
 
         // Adjust current_index to keep the view consistent
         if self.is_shifted {
@@ -761,11 +773,6 @@ impl MangaReader {
         self.texture_cache.clear();
         self.reset_pan();
         self.load_current_pair(ctx);
-        let msg = if self.is_shifted {
-            tr("mode.odd_page")
-        } else {
-            tr("mode.even_page")
-        };
         self.show_fading_error(msg);
     }
 

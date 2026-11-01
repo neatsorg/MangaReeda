@@ -3347,6 +3347,37 @@ esac
         assert!(reader.config.odd_page_start);
     }
 
+    /// 1ページ表示と縦スクロールでは、奇数／偶数を切り替えても読んでいる位置が動かない
+    #[test]
+    fn odd_page_toggle_keeps_position_in_single_page_and_top_down() {
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
+        let ctx = egui::Context::default();
+        for mode in [PageViewOptions::Single, PageViewOptions::TopDown] {
+            let mut reader = pages.reader(
+                AppSettings {
+                    page_view_options: mode,
+                    enable_animated_images: false,
+                    resize_method: ResizeMethod::None,
+                    ..AppSettings::default()
+                },
+                &ctx,
+            );
+            // 最後の3枚目を表示中（以前は奇数にすると、無い4枚目に移って何も表示されなかった）
+            reader.current_index = 2;
+            reader.load_current_pair(&ctx);
+            reader.top_down_scroll_offset = 100.0;
+            for odd in [true, false] {
+                reader.change_shifted_mode(&ctx);
+                assert_eq!(reader.config.odd_page_start, odd, "{mode:?}");
+                assert_eq!(reader.current_index, 2, "{mode:?}");
+                assert_eq!(reader.top_down_scroll_offset, 100.0, "{mode:?}");
+                if mode == PageViewOptions::Single {
+                    assert_eq!(reader.textures.iter().flatten().count(), 1);
+                }
+            }
+        }
+    }
+
     #[test]
     fn cover_blank_page_is_not_used_for_single_page_or_even_mode() {
         let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20]]);
