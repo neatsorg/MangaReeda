@@ -46,6 +46,8 @@
   "settings.page_view.double_rl": "見開き (右から左)",
   "settings.page_view.double_lr": "見開き (左から右)",
   "settings.page_view.top_down": "縦スクロール (Webマンガ)",
+  "settings.odd_page_start": "奇数ページ開始",
+  "settings.odd_page_start.tooltip": "見開きの組み合わせを1ページずらします（マンガミーヤの「扉絵用に先頭ページに白紙ページ追加」）。テンキー0やツールバーで切り替えたときもここが変わり、次の起動でも続きます。",
   "settings.cover_blank_page": "奇数ページ開始で1枚目を白紙と並べる",
   "settings.cover_blank_page.tooltip": "奇数ページ開始のとき、1枚目の前に白紙を置いて見開きで表示します（マンガミーヤの「先頭ページ挿入」）。オフのときは1枚目を単独で中央に表示します。",
   "settings.split_landscape_pages": "自動単ページ表示（横長のページを左右に分ける）",

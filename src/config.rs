@@ -777,6 +777,9 @@ pub struct AppSettings {
     /// オフなら1枚目を単独で中央に見せる
     #[serde(default)]
     pub cover_blank_page: bool,
+    /// 奇数ページ開始か。ミーヤと同じく、切り替えると設定として残り、次の起動でも続く
+    #[serde(default)]
+    pub odd_page_start: bool,
     /// ルーペの半径（ピクセル）と倍率
     #[serde(default = "default_loupe_radius")]
     pub loupe_radius: f32,
@@ -962,6 +965,7 @@ impl Default for AppSettings {
             image_sizing_mode: ImageSizingMode::FitHeight,
             spread_center_offset: 0.0,
             cover_blank_page: false,
+            odd_page_start: false,
             loupe_radius: default_loupe_radius(),
             loupe_magnification: default_loupe_magnification(),
             image_panel_background: default_image_panel_background(),

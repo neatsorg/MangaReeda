@@ -212,7 +212,7 @@ impl MangaReader {
             last_dialog_time: Instant::now(),
             is_dialog_open: false,
             zip_name_display: None,
-            is_shifted: false,
+            is_shifted: config.odd_page_start,
             config, // Store the loaded config here
             binding_action: None,
             texture_cache: sized_cache::SizedCache::new(TEXTURE_CACHE_BYTES),
@@ -3319,6 +3319,32 @@ esac
             assert_eq!(reader.textures[0].as_ref().unwrap().name(), first_page);
             assert!(reader.cover_shown_alone());
         }
+    }
+
+    /// ミーヤと同じく、奇数／偶数の切り替えは設定に残り、次に起動したときもそのまま始まる
+    #[test]
+    fn odd_page_start_is_kept_in_the_settings() {
+        let pages = TestPages::new(&[[10, 20], [10, 20], [10, 20], [10, 20]]);
+        let ctx = egui::Context::default();
+        let mut reader = pages.reader(
+            AppSettings {
+                page_view_options: PageViewOptions::DoubleRL,
+                cover_blank_page: true,
+                odd_page_start: true,
+                enable_animated_images: false,
+                resize_method: ResizeMethod::None,
+                ..AppSettings::default()
+            },
+            &ctx,
+        );
+        // 起動したときから白紙と1枚目が並ぶ
+        assert!(reader.is_shifted);
+        assert!(reader.is_cover_blank(&reader.textures[0]));
+
+        reader.change_shifted_mode(&ctx);
+        assert!(!reader.config.odd_page_start);
+        reader.change_shifted_mode(&ctx);
+        assert!(reader.config.odd_page_start);
     }
 
     #[test]

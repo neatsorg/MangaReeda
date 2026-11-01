@@ -757,6 +757,17 @@ impl MangaReader {
                                             egui::RichText::new(tr("settings.page_view.top_down")),
                                         )
                                         .clicked();
+                                    let mut odd_page_start = self.is_shifted;
+                                    if ui
+                                        .checkbox(
+                                            &mut odd_page_start,
+                                            tr("settings.odd_page_start"),
+                                        )
+                                        .on_hover_text(tr("settings.odd_page_start.tooltip"))
+                                        .changed()
+                                    {
+                                        self.change_shifted_mode(ctx);
+                                    }
                                     let mut cover_blank = self.config.cover_blank_page;
                                     if ui
                                         .checkbox(&mut cover_blank, tr("settings.cover_blank_page"))

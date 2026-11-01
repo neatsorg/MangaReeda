@@ -739,6 +739,8 @@ impl MangaReader {
 
     pub(super) fn change_shifted_mode(&mut self, ctx: &egui::Context) {
         self.is_shifted = !self.is_shifted;
+        self.config.odd_page_start = self.is_shifted;
+        self.save_settings();
 
         // Adjust current_index to keep the view consistent
         if self.is_shifted {

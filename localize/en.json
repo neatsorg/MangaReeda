@@ -46,6 +46,8 @@
   "settings.page_view.double_rl": "Double Page (Right to Left)",
   "settings.page_view.double_lr": "Double Page (Left to Right)",
   "settings.page_view.top_down": "Top Down (Web Manga)",
+  "settings.odd_page_start": "Odd page mode",
+  "settings.odd_page_start.tooltip": "Shift the spread pairing by one page (MangaMeeya's \"add blank page before the first page\"). Toggling it with Numpad 0 or the toolbar changes this too, and it stays on the next launch.",
   "settings.cover_blank_page": "Pair the first page with a blank page in odd mode",
   "settings.cover_blank_page.tooltip": "In odd page mode, show a blank page before the first page so it appears as a spread (MangaMeeya's \"insert first page\"). When off, the first page is shown alone in the center.",
   "settings.split_landscape_pages": "Split wide pages into halves",
