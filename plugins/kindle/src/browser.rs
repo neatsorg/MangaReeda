@@ -145,6 +145,10 @@ pub fn launch(browser: &Browser, launch: &Launch) -> Result<String, String> {
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
     ];
+    // 試すための起動の指定（空白で区切る）。GPU の使い方を変えるときなどに使う
+    if let Ok(extra) = env::var("MANGAREEDA_BROWSER_ARGS") {
+        args.extend(extra.split_whitespace().map(str::to_owned));
+    }
     if launch.headless {
         args.push("--headless=new".to_owned());
         args.push(launch.url.to_owned());

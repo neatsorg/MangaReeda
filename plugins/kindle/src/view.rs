@@ -25,6 +25,16 @@ use std::time::{Duration, Instant};
 /// 本体へ画面を送る間隔の下限（毎秒 30 枚まで）。Cloud Reader は変わらなくても描き直し続けるので抑える
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
+/// 画面の中継を続ける時間。Cloud Reader のページは、変わらなくても描き直し続け、中継していると
+/// そのたびに JPEG に圧縮するので CPU を 1 コア以上使う。そこで、操作や新しい画面があってから
+/// この時間だけ中継し、あとは止める
+const WAKE: Duration = Duration::from_millis(1500);
+/// 止めているあいだに、遅れて変わった画面（本の画像の読み込みなど）を拾うために、ときどき少しだけ中継する
+const PEEK_INTERVAL: Duration = Duration::from_secs(4);
+const PEEK: Duration = Duration::from_millis(300);
+/// 開いた直後は、読み込みが落ち着くまで長めに中継する
+const FIRST_WAKE: Duration = Duration::from_secs(10);
+
 /// 単ページのときの幅と高さの比（Cloud Reader は縦長の画面だと1ページずつ表示する）
 const SINGLE_RATIO: f64 = 0.7;
 
@@ -218,6 +228,9 @@ fn run(
     let started = Instant::now();
     let mut casting = false;
     let mut last_try: Option<Instant> = None;
+    // この時刻まで中継する。操作や新しい画面のたびに延ばす
+    let mut wake_until = Instant::now() + FIRST_WAKE;
+    let mut last_peek = Instant::now();
     // まだ送っていない最新の画面と、最後に送った画面
     let mut pending: Option<Value> = None;
     let mut last_sent = String::new();
@@ -230,7 +243,17 @@ fn run(
             last_emit = Some(Instant::now());
             emit(&frame);
         }
-        if !casting && last_try.is_none_or(|at| at.elapsed() > Duration::from_millis(500)) {
+        let now = Instant::now();
+        if now >= wake_until && now.duration_since(last_peek) >= PEEK_INTERVAL {
+            last_peek = now;
+            wake_until = now + PEEK;
+        }
+        let wanted = now < wake_until;
+        if casting && !wanted {
+            cdp.call("Page.stopScreencast", json!({}), Some(session))?;
+            casting = false;
+        }
+        if wanted && !casting && last_try.is_none_or(|at| at.elapsed() > Duration::from_millis(500)) {
             last_try = Some(Instant::now());
             match cdp.call(
                 "Page.startScreencast",
@@ -253,6 +276,8 @@ fn run(
             if command["quit"].as_bool() == Some(true) {
                 return Ok(());
             }
+            // 操作があったら、変わった画面を受け取るために中継する
+            wake_until = wake_until.max(Instant::now() + WAKE);
             if let Some(action) = command["action"].as_str()
                 && let Err(e) = perform(cdp, session, operations, action)
             {
@@ -291,6 +316,8 @@ fn run(
                 )?;
                 // 前に送ったものと同じ画面は送らない。間引くときは最新のものだけを残す
                 if params["data"].as_str() != Some(last_sent.as_str()) {
+                    // 画面が変わっているあいだは中継を続ける
+                    wake_until = wake_until.max(Instant::now() + WAKE);
                     pending = Some(json!({
                         "frame": params["data"],
                         "width": params["metadata"]["deviceWidth"],
@@ -301,6 +328,7 @@ fn run(
                 }
             }
             "Page.frameNavigated" if event.params["frame"]["parentId"].is_null() => {
+                wake_until = wake_until.max(Instant::now() + FIRST_WAKE);
                 let url = event.params["frame"]["url"].as_str().unwrap_or_default();
                 if is_sign_in_page(url) {
                     return Err(NOT_SIGNED_IN.into());

@@ -27,6 +27,9 @@ target/debug/mangareeda-kindle eval --expr 'location.href'   # リーダーで�
 | `--fullscreen` | 全画面で開く |
 | `--headless` | ウィンドウを出さずに開く（調べもの用） |
 
+環境変数 `MANGAREEDA_BROWSER_ARGS` に書いた起動の指定（空白で区切る）は、ブラウザにそのまま渡します（GPU の使い方を試すときなど）。
+`mangareeda-kindle gpu` は、動いているブラウザの GPU の状態を書き出します（調査用）。
+
 MangaReeda から呼ばれたときは、キー設定と単ページか見開きかを標準入力で受け取ります。端末から動かしたときは `settings.json` を読みます。
 すでに Kindle の窓が開いているときの `open` は、その窓で本を開くよう頼むだけで終わります（キーは最初の `open` が受け持つ）。
 ログインしていないときの `list` は、終了コード 2（ログインが必要）で終わります。
@@ -42,6 +45,8 @@ MangaReeda から呼ばれたときは、キー設定と単ページか見開き
 - 画面を出さない headless のブラウザで本を開く。headless のブラウザは名乗り（User-Agent）に `HeadlessChrome` が入り、Cloud Reader に「このブラウザでは読めません」と断られるので、ブラウザ自身が答える名乗りのその文字だけを `Chrome` に直す（版はそのまま）
 - 本体の表示場所の大きさと画素の倍率を、見せかけの画面（`Emulation.setDeviceMetricsOverride`）にする。単ページは幅を「高さ × 0.7」までにした縦長の画面
 - `Page.startScreencast` で受け取った JPEG を、base64 のまま1行ずつ本体に送る。Cloud Reader は変わらなくても描き直し続ける（20 秒で 1000 枚を超えた）ので、前に送ったものと同じ画面は送らず、多くても毎秒 30 枚にする。ページ送り1回で届くのは1枚（1600×900、倍率 1.5 で約 400KB）
+- Cloud Reader のページは、変わらなくても描き直し続け、中継しているとそのたびにブラウザが JPEG に圧縮して CPU を 1 コア以上使う（ページの JavaScript はほとんど動いていない。アニメーション・SVG・GIF・canvas は無い）。そこで、操作・ページの移動・新しい画面があってから 1.5 秒だけ中継し、あとは止める。止めているあいだも、遅れて変わる画面を拾うために 4 秒おきに 0.3 秒だけ中継する。手元（Ryzen + RTX 2070 SUPER）で、何もしないときの CPU は 117% から 14% になり、ページ送りの反応（50〜180ms）は変わらなかった
+- headless の Chrome は自分で `--use-angle=swiftshader-webgl` を付けて CPU で描く。`MANGAREEDA_BROWSER_ARGS="--use-angle=vulkan --enable-features=Vulkan --ignore-gpu-blocklist"` で GPU に描かせると、ページを送り続けているときの CPU が 2 割ほど減る（137% → 107%）。ドライバに不具合のある環境もあるので既定にはしていない
 - 画面の中継は読み込みの途中だと断られるので、始められるまで 0.5 秒おきにやり直す
 - ライブラリのページに移ったら `{"closed": true}` を送って終わる。`/kindle-library/manga-wr/…` はリーダーへの入口なので、閉じたとはみなさない
 

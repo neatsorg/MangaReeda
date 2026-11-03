@@ -9,6 +9,7 @@
 //!   mangareeda-kindle list             ライブラリの本を書き出す（library も同じ）
 //!   mangareeda-kindle view ASIN        本体の窓の中で読むために、画面を標準出力に流す（view.rs）
 //!   mangareeda-kindle probe            開いているページのボタンなどを JSON で書き出す（調査用）
+//!   mangareeda-kindle gpu              動いているブラウザの GPU の状態を書き出す（調査用）
 //!   mangareeda-kindle eval --expr JS [--url 部分]  開いているリーダー（または URL に部分を含むページ）で式を評価する（調査用）
 //! 共通: [--browser PATH|flatpak:ID] [--settings settings.json] [--site co.jp|com]
 
@@ -487,6 +488,25 @@ const PROBE: &str = r#"(() => {
 })()"#;
 
 /// 調査用: リーダーのページで式を評価する
+/// 調査用: 動いているブラウザの GPU の状態（描き方ごとの使える・使えない、GPU の名前）を書き出す
+fn gpu() -> Result<(), String> {
+    let profile = data_dir().join("profile");
+    let ws = browser::devtools_url(&profile).ok_or("先に open か view でブラウザを開いてください")?;
+    let mut cdp = Cdp::connect(&ws)?;
+    let info = cdp.call("SystemInfo.getInfo", json!({}), None)?;
+    let gpu = &info["gpu"];
+    let summary = json!({
+        "featureStatus": gpu["featureStatus"],
+        "devices": gpu["devices"].as_array().map(|devices| devices.iter().map(|d| json!({
+            "vendor": d["vendorString"], "device": d["deviceString"], "driver": d["driverVersion"],
+        })).collect::<Vec<_>>()),
+        "gl_renderer": gpu["auxAttributes"]["glRenderer"],
+        "gl_implementation": gpu["auxAttributes"]["glImplementationParts"],
+    });
+    println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+    Ok(())
+}
+
 fn eval(options: &Options) -> Result<(), String> {
     let expr = options.expr.as_deref().ok_or("--expr で式を指定してください")?;
     let profile = data_dir().join("profile");
@@ -671,6 +691,7 @@ fn main() -> ExitCode {
         "view" => view::view(&options),
         "probe" => probe(&options),
         "eval" => eval(&options),
+        "gpu" => gpu(),
         "list" | "library" => library(&options),
         other => Err(format!("知らない命令です: {other}")),
     });
