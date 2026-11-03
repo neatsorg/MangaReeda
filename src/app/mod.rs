@@ -17,6 +17,7 @@ mod text_prefetch;
 mod thumbnails;
 mod toolbar;
 mod view;
+mod web_view;
 
 use crate::config::{AppSettings, MangaAction, SourceMode};
 use crate::engine::history::History;
@@ -167,6 +168,8 @@ pub struct MangaReader {
     going_back: bool,
     /// ブックリストのプラグイン
     plugins: plugins::PluginHost,
+    /// 読むプラグインの本を、この窓の中で読んでいるとき
+    web_view: Option<web_view::WebView>,
     /// 次に表示し直すとき、見開きの組を合わせ直さない（サムネイルで選んだページから見開きにする）
     keep_spread_start: bool,
     /// 開いているメニューと、メニューから開いたダイアログ
@@ -278,6 +281,7 @@ impl MangaReader {
                 crate::engine::credentials::Credentials::memory_only(),
                 std::env::temp_dir().join("mangareeda-test-cache"),
             ),
+            web_view: None,
             thumbnail_cache: Default::default(),
             keep_spread_start: false,
             menu_state: Default::default(),
@@ -459,7 +463,13 @@ impl eframe::App for MangaReader {
         if ctx.wants_keyboard_input() {
             action_to_run = MangaAction::None;
         }
+        // 窓の中で読んでいるときに表紙サムネイルを開いたら、読むのをやめる
         if self.thumbnails.is_some() {
+            self.web_view = None;
+        }
+        if self.web_view.is_some() {
+            self.render_web_view(ctx, &mut action_to_run);
+        } else if self.thumbnails.is_some() {
             if !works_in_thumbnails(action_to_run) {
                 action_to_run = MangaAction::None;
             }
@@ -469,6 +479,7 @@ impl eframe::App for MangaReader {
         }
         // 読んでいるときの Ctrl+F で、本の中の検索を開く
         if self.thumbnails.is_none()
+            && self.web_view.is_none()
             && !ctx.wants_keyboard_input()
             && ctx
                 .input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::F))
@@ -477,7 +488,7 @@ impl eframe::App for MangaReader {
         }
         self.poll_book_ocr(ctx);
         self.prepare_book_texts(ctx);
-        if self.thumbnails.is_none() {
+        if self.thumbnails.is_none() && self.web_view.is_none() {
             self.render_book_search(ctx);
         }
         self.render_subfolder_question(ctx);
@@ -507,6 +518,8 @@ impl eframe::App for MangaReader {
         }
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // 窓の中で読んでいる本のプラグイン（とブラウザ）を終わらせる
+        self.web_view = None;
         self.remember_current_book();
         self.save_settings();
         // OCR のプラグインを止め、作業用の画像を消し終えるのを待つ

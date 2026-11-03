@@ -7,6 +7,7 @@
 //!                                      本（無ければライブラリ）を開く。標準入力に MangaReeda の
 //!                                      キー設定などの JSON があれば使い、無ければ settings.json を読む
 //!   mangareeda-kindle list             ライブラリの本を書き出す（library も同じ）
+//!   mangareeda-kindle view ASIN        本体の窓の中で読むために、画面を標準出力に流す（view.rs）
 //!   mangareeda-kindle probe            開いているページのボタンなどを JSON で書き出す（調査用）
 //!   mangareeda-kindle eval --expr JS [--url 部分]  開いているリーダー（または URL に部分を含むページ）で式を評価する（調査用）
 //! 共通: [--browser PATH|flatpak:ID] [--settings settings.json] [--site co.jp|com]
@@ -14,6 +15,7 @@
 mod browser;
 mod cdp;
 mod keys;
+mod view;
 
 use cdp::Cdp;
 use keys::Operation;
@@ -83,7 +85,7 @@ fn parse_args() -> Result<Options, String> {
                 ));
             }
             // open の本（ASIN）。list のフォルダは無いので読み捨てる
-            other if !other.starts_with("--") && options.command == "open" => {
+            other if !other.starts_with("--") && matches!(options.command.as_str(), "open" | "view") => {
                 options.asin = Some(other.to_owned());
             }
             other if !other.starts_with("--") && matches!(options.command.as_str(), "list" | "library") => {}
@@ -658,6 +660,7 @@ fn library(options: &Options) -> Result<(), String> {
 fn main() -> ExitCode {
     let result = parse_args().and_then(|options| match options.command.as_str() {
         "open" => open(&options),
+        "view" => view::view(&options),
         "probe" => probe(&options),
         "eval" => eval(&options),
         "list" | "library" => library(&options),

@@ -1,6 +1,6 @@
 # mangareeda-kindle
 
-Kindle Cloud Reader を Chromium 系のブラウザで開き、MangaReeda のキー設定で操作できるようにする読むプラグイン（`kind: "reader"`）です。
+Kindle Cloud Reader を Chromium 系のブラウザで開き、MangaReeda の窓の中で、MangaReeda のキー設定で読めるようにする読むプラグイン（`kind: "reader"`）です。
 本はブラウザで表示するだけで、ページの画像を取り出したり保存したりはしません。
 
 MangaReeda からの使い方は [docs/plugins.md](../../docs/plugins.md#kindle) にあります。ここには、単独で動かすときの使い方と、作りのメモを書きます。
@@ -10,7 +10,8 @@ MangaReeda からの使い方は [docs/plugins.md](../../docs/plugins.md#kindle)
 ```sh
 cargo build -p mangareeda-kindle
 target/debug/mangareeda-kindle open            # ライブラリを開く（最初はここで Amazon にログインする）
-target/debug/mangareeda-kindle open B0XXXXXXXX # 本を開く（--asin でも可）
+target/debug/mangareeda-kindle open B0XXXXXXXX # 本をプラグインの窓で開く（--asin でも可）
+target/debug/mangareeda-kindle view B0XXXXXXXX # 本体の窓の中で読むための画面を流す（標準入出力でやり取り）
 target/debug/mangareeda-kindle list            # ライブラリの本を書き出す（library も同じ）
 target/debug/mangareeda-kindle probe > probe.json   # 開いているページのボタンなどを書き出す（調査用）
 target/debug/mangareeda-kindle eval --expr 'location.href'   # リーダーで式を評価する（調査用）
@@ -33,6 +34,18 @@ MangaReeda から呼ばれたときは、キー設定と単ページか見開き
 `list` は、ライブラリのページが続きを読み込むときと同じ `/kindle-library/search`（`querySize=50`）を1回だけ呼び、50 冊と続きの印（`next`）を返します。
 続きを頼まれたら（標準入力の `"next"`）、その印を `paginationToken` にして次の 50 冊を返します。
 本を開く URL（`webReaderUrl`。マンガは `/kindle-library/manga-wr/<ASIN>`）は `reader-urls.json` に覚えておき、`open` で使います。
+
+## 窓の中で読む（view）
+
+`view <ASIN>` は、MangaReeda の窓の中で読むための命令です（取り決めは [docs/plugins.md](../../docs/plugins.md#view-id)）。
+
+- 画面を出さない headless のブラウザで本を開く。headless のブラウザは名乗り（User-Agent）に `HeadlessChrome` が入り、Cloud Reader に「このブラウザでは読めません」と断られるので、ブラウザ自身が答える名乗りのその文字だけを `Chrome` に直す（版はそのまま）
+- 本体の表示場所の大きさと画素の倍率を、見せかけの画面（`Emulation.setDeviceMetricsOverride`）にする。単ページは幅を「高さ × 0.7」までにした縦長の画面
+- `Page.startScreencast` で受け取った JPEG を、base64 のまま1行ずつ本体に送る。Cloud Reader は変わらなくても描き直し続ける（20 秒で 1000 枚を超えた）ので、前に送ったものと同じ画面は送らず、多くても毎秒 30 枚にする。ページ送り1回で届くのは1枚（1600×900、倍率 1.5 で約 400KB）
+- 画面の中継は読み込みの途中だと断られるので、始められるまで 0.5 秒おきにやり直す
+- ライブラリのページに移ったら `{"closed": true}` を送って終わる。`/kindle-library/manga-wr/…` はリーダーへの入口なので、閉じたとはみなさない
+
+本体は画面を映すだけで、保存も OCR もしない。本体の JPEG の展開は、デバッグ版だと1枚 0.9 秒ほどかかって重いので、試すときはリリース版を使う（リリース版は 20ms ほど）。
 
 ## ブラウザの探し方
 
@@ -91,6 +104,7 @@ DevTools のデバイスエミュレーションでも単ページにはなり�
 - 「本を閉じる」を Ctrl+W にしていても、窓は閉じずにライブラリに戻る
 - 単ページ: 中央に1ページ出て、見開きに戻せる。全画面・窓の大きさの変更に追従し、1ページずつ進む。
   単ページか見開きかはプラグインが1つだけ持ち（本ごとではない）、別の本を開いてもそのまま
+- `view`: 本体の窓の中に映せる。ページ送り、ホイール、単ページ（中央）と見開き、窓の大きさの変更と全画面、本を閉じて一覧に戻る、を確かめた。ぼやけない。リリース版なら軽い
 - `list` はログイン済みなら headless でも一覧を返す。最初の 50 冊と続きの 50 冊を確認（続きの印が 45 なので 5 冊重なる。本体が同じ id を足さない）
 
 ## まだ確かめていないこと

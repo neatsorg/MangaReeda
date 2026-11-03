@@ -776,6 +776,30 @@ pub fn spawn_open(
     Ok(())
 }
 
+/// 読むプラグインに、本 `id` を本体の窓の中で読ませる（`view <id>`）。`request` は標準入力の1行目。
+/// プラグインは画面を標準出力に流し続け、本体は標準入力で操作を送るので、両方を返す
+pub fn spawn_view(
+    manifest: &PluginManifest,
+    request: &serde_json::Value,
+    id: &str,
+) -> Result<(std::process::Child, std::process::ChildStdin, std::process::ChildStdout), PluginError>
+{
+    let mut command = manifest
+        .command(&["view", id])
+        .ok_or_else(|| PluginError::Other("プラグインの命令がありません".to_owned()))?;
+    command.stderr(Stdio::null());
+    let mut child = spawn(&mut command).map_err(|e| PluginError::Other(e.to_string()))?;
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = child.kill();
+        return Err(PluginError::Other("プラグインとやり取りできません".to_owned()));
+    };
+    if writeln!(stdin, "{request}").is_err() {
+        let _ = child.kill();
+        return Err(PluginError::Other("プラグインに書き込めません".to_owned()));
+    }
+    Ok((child, stdin, stdout))
+}
+
 /// プラグインに渡す1行目
 fn request_line(credentials: &HashMap<String, String>) -> String {
     serde_json::json!({ "credentials": credentials }).to_string()

@@ -913,12 +913,12 @@ impl MangaReader {
             self.show_shelf(source, None);
             return;
         }
-        // 読むプラグインの本は、プラグインに開かせる（一覧はそのまま出しておく）
+        // 読むプラグインの本は、プラグインが描く画面をこの窓の中に映して読む
         if let Some(remote) = &entry.remote
             && self.plugins.is_reader(&remote.plugin)
         {
             let (plugin, id) = (remote.plugin.clone(), remote.id.clone());
-            self.open_in_reader(&plugin, Some(&id));
+            self.open_web_view(&plugin, &id, ctx);
             return;
         }
         // プラグインの本は、ダウンロードしてあれば開き、無ければダウンロードする（終わったら開く）。

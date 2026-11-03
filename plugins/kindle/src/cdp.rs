@@ -3,7 +3,9 @@
 
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+use std::io::ErrorKind;
 use std::net::TcpStream;
+use std::time::Duration;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
@@ -89,6 +91,36 @@ impl Cdp {
                     .and_then(Value::as_str)
                     .map(str::to_owned),
             });
+        }
+    }
+
+    /// イベントを `timeout` まで待つ。届かなければ None（ほかの仕事をしながら待つときに使う）
+    pub fn poll_event(&mut self, timeout: Duration) -> Result<Option<Event>, String> {
+        if !self.pending.is_empty() {
+            return self.next_event().map(Some);
+        }
+        self.set_read_timeout(Some(timeout));
+        let read = self.socket.read();
+        self.set_read_timeout(None);
+        let message = match read {
+            Ok(Message::Text(text)) => serde_json::from_str::<Value>(text.as_str())
+                .map_err(|e| format!("DevTools の答えを読めません: {e}"))?,
+            Ok(Message::Close(_)) => return Err("ブラウザとの接続が閉じました".into()),
+            Ok(_) => return Ok(None),
+            Err(tungstenite::Error::Io(e))
+                if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(format!("ブラウザとの接続が切れました: {e}")),
+        };
+        self.pending.push_back(message);
+        self.next_event().map(Some)
+    }
+
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) {
+        if let MaybeTlsStream::Plain(stream) = self.socket.get_mut() {
+            let _ = stream.set_read_timeout(timeout);
         }
     }
 

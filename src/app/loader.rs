@@ -330,6 +330,8 @@ impl MangaReader {
     /// 冊を開く。サブフォルダを含むフォルダで、読み方が決まっていなければ
     /// ダイアログで聞き、答えが出てから開く
     pub(super) fn open_book(&mut self, path: PathBuf, open_at: OpenAt, ctx: &egui::Context) {
+        // 窓の中で読んでいた本（読むプラグイン）は閉じる
+        self.web_view = None;
         let include_subfolders = match book_folder(&path) {
             Some(folder) if has_image_subfolders(&folder) => {
                 match self.history.subfolder_choice(&folder) {
