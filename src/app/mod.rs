@@ -2090,6 +2090,97 @@ mod tests {
         fs::remove_dir_all(library).unwrap();
     }
 
+    /// 一覧を何回かに分けて返すプラグインは、続きを頼むと今の一覧の下に足す。
+    /// 重なった本は足さず、選んでいる冊はそのまま。続きもためておく一覧に残す
+    #[cfg(unix)]
+    #[test]
+    fn plugin_lists_given_in_pages_are_appended() {
+        use super::thumbnails::{ShelfSource, ShelfTab};
+        use crate::engine::plugin::{ListCache, PluginManifest};
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("manga-pages-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("run.sh");
+        // 続きの印 p2 を受け取ったら、2回目（b は1回目と重なる）を返し、続きは無し
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+read request
+case "$request" in
+*'"next":"p2"'*) echo '{"books": [{"id": "b", "title": "B", "file_name": "b.zip"}, {"id": "c", "title": "C", "file_name": "c.zip"}]}';;
+*) echo '{"books": [{"id": "a", "title": "A", "file_name": "a.zip"}, {"id": "b", "title": "B", "file_name": "b.zip"}], "next": "p2"}';;
+esac
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let ctx = egui::Context::default();
+        let mut reader = MangaReader::with_settings(
+            AppSettings {
+                library_dir: root.join("library").to_string_lossy().into_owned(),
+                ..AppSettings::default()
+            },
+            None,
+        );
+        reader.plugins = super::plugins::PluginHost::with(
+            vec![PluginManifest {
+                id: "paged".to_owned(),
+                name: "Paged".to_owned(),
+                command: vec!["./run.sh".to_owned()],
+                credentials: Vec::new(),
+                auth: false,
+                kind: crate::engine::plugin::PluginKind::Reader,
+                ocr_batch: None,
+                dir: root.clone(),
+            }],
+            crate::engine::credentials::Credentials::memory_only(),
+            root.join("cache"),
+        );
+        let wait = |reader: &mut MangaReader, done: &dyn Fn(&MangaReader) -> bool| {
+            for _ in 0..300 {
+                reader.poll_plugins(&ctx);
+                if done(reader) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("プラグインの答えが来ない");
+        };
+        let shown = |reader: &MangaReader| {
+            reader
+                .thumbnails
+                .as_ref()
+                .map_or(0, |view| view.cover_paths().len())
+        };
+        let key = ("paged".to_owned(), String::new());
+
+        reader.toggle_book_list(ShelfSource::History);
+        reader.switch_shelf_tab(ShelfTab::Plugin(0));
+        wait(&mut reader, &|r| shown(r) == 2);
+        assert!(reader.plugins.shelves[&key].can_load_more());
+        reader.thumbnails.as_mut().unwrap().select(1);
+
+        reader.load_more_plugin_list(&key);
+        wait(&mut reader, &|r| shown(r) == 3);
+        let ids: Vec<_> = reader.plugins.shelves[&key]
+            .books
+            .iter()
+            .map(|book| book.id.as_str())
+            .collect();
+        assert_eq!(ids, ["a", "b", "c"]);
+        assert_eq!(reader.thumbnails.as_ref().unwrap().selected(), 1);
+        // 続きが無くなったので、もう頼まない
+        assert!(!reader.plugins.shelves[&key].can_load_more());
+        reader.load_more_plugin_list(&key);
+        assert!(!reader.plugins.shelves[&key].is_loading());
+        // ためておく一覧にも、足したぶんと続きの状態が入る
+        let cache = ListCache::load(&root.join("cache").join("plugins").join("paged.json")).unwrap();
+        assert_eq!(cache.books.len(), 3);
+        assert_eq!(cache.next, None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     /// シェルスクリプトで作ったプラグインで、一覧・ダウンロード・開くまでを通す
     #[cfg(unix)]
     #[test]

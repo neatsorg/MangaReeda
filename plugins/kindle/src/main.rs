@@ -1,11 +1,14 @@
-//! Kindle Cloud Reader を Chromium 系ブラウザで開き、MangaReeda のキー設定で操作できるようにする試作。
+//! Kindle Cloud Reader を Chromium 系ブラウザで開き、MangaReeda のキー設定で操作できるようにする。
 //! 本は表示するだけで、ページの画像を取り出したり保存したりはしない。
+//! MangaReeda からは読むプラグイン（kind: "reader"）として、list と open で呼ばれる。
 //!
 //! 使い方:
-//!   mangareeda-kindle open [--url URL | --asin ASIN] [--fullscreen]
+//!   mangareeda-kindle open [ASIN] [--url URL] [--fullscreen]
+//!                                      本（無ければライブラリ）を開く。標準入力に MangaReeda の
+//!                                      キー設定などの JSON があれば使い、無ければ settings.json を読む
+//!   mangareeda-kindle list             ライブラリの本を書き出す（library も同じ）
 //!   mangareeda-kindle probe            開いているページのボタンなどを JSON で書き出す（調査用）
-//!   mangareeda-kindle eval --expr JS   開いているリーダーで式を評価して書き出す（調査用）
-//!   mangareeda-kindle library          ライブラリの本を list と同じ形の JSON で書き出す
+//!   mangareeda-kindle eval --expr JS [--url 部分]  開いているリーダー（または URL に部分を含むページ）で式を評価する（調査用）
 //! 共通: [--browser PATH|flatpak:ID] [--settings settings.json] [--site co.jp|com]
 
 mod browser;
@@ -24,6 +27,10 @@ use std::time::{Duration, Instant};
 
 const INJECT: &str = include_str!("inject.js");
 const BINDING: &str = "__mangareedaAction";
+/// ログインしていないときの知らせ。MangaReeda には終了コード 2（ログインが必要）で返す
+const NOT_SIGNED_IN: &str =
+    "Kindle にログインしていません。設定画面の「ブラウザを開く」から Amazon にログインしてください";
+const EXIT_AUTH: u8 = 2;
 
 struct Options {
     command: String,
@@ -43,7 +50,7 @@ struct Options {
 
 fn parse_args() -> Result<Options, String> {
     let mut args = env::args().skip(1);
-    let command = args.next().ok_or("命令（open / probe / library）を指定してください")?;
+    let command = args.next().ok_or("命令（open / list / probe / eval）を指定してください")?;
     let mut options = Options {
         command,
         url: None,
@@ -75,6 +82,11 @@ fn parse_args() -> Result<Options, String> {
                     h.parse().map_err(|_| "--viewport の高さが数ではありません")?,
                 ));
             }
+            // open の本（ASIN）。list のフォルダは無いので読み捨てる
+            other if !other.starts_with("--") && options.command == "open" => {
+                options.asin = Some(other.to_owned());
+            }
+            other if !other.starts_with("--") && matches!(options.command.as_str(), "list" | "library") => {}
             other => return Err(format!("知らない引数です: {other}")),
         }
     }
@@ -369,15 +381,35 @@ impl Reader {
     }
 }
 
+/// MangaReeda が標準入力に書いた1行（キー設定など）。端末から動かしたときは読まない
+fn read_request() -> Option<Value> {
+    use std::io::{BufRead, IsTerminal};
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return None;
+    }
+    let mut line = String::new();
+    stdin.lock().read_line(&mut line).ok()?;
+    serde_json::from_str(line.trim()).ok()
+}
+
 fn open(options: &Options) -> Result<(), String> {
-    let settings_file = settings_path(options.settings.clone());
-    let settings: Value = std::fs::read_to_string(&settings_file)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| {
-            eprintln!("キー設定を読めません（{}）。キーは置き換えません", settings_file.display());
-            json!({})
-        });
+    let request = read_request().unwrap_or(Value::Null);
+    // キー設定は MangaReeda から受け取る。無ければ（手で動かしたとき）設定ファイルを読む
+    let settings: Value = if request.get("keys").is_some() {
+        request.clone()
+    } else {
+        let settings_file = settings_path(options.settings.clone());
+        std::fs::read_to_string(&settings_file)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| {
+                eprintln!("キー設定を読めません（{}）。キーは置き換えません", settings_file.display());
+                json!({})
+            })
+    };
+    // MangaReeda が単ページなら単ページで始める
+    let single = settings.get("page_view_options").and_then(Value::as_str) == Some("Single");
     let actions_file = data_dir().join("actions.json");
     let operations = keys::load_operations(&actions_file)?;
     let matchers = keys::matchers(&settings, &operations);
@@ -388,14 +420,14 @@ fn open(options: &Options) -> Result<(), String> {
 
     let url = match (&options.url, &options.asin) {
         (Some(url), _) => url.clone(),
-        // マンガのリーダーは /manga/<ASIN>（文字の本は未確認）
-        (None, Some(asin)) => format!("https://read.amazon.{}/manga/{asin}", options.site),
+        (None, Some(asin)) => reader_url(&options.site, asin),
         (None, None) => library_url(&options.site),
     };
     let (mut cdp, launched) = connect(options, &url, options.headless)?;
     if !launched {
-        // すでに開いているので、新しいウィンドウで開く
-        cdp.call("Target.createTarget", json!({"url": url, "newWindow": true}), None)?;
+        // すでに開いている。キーは最初に開いた open が受け持っているので、その窓で開くよう頼んで終わる
+        // （ここでもキーを横取りすると、1回押しただけで2回動いてしまう）
+        return show_in_running(&mut cdp, &url);
     }
     Reader {
         cdp,
@@ -404,9 +436,27 @@ fn open(options: &Options) -> Result<(), String> {
         sessions: HashMap::new(),
         site: options.site.clone(),
         suppress: None,
-        single: false,
+        single,
     }
     .run()
+}
+
+/// 動いているブラウザの窓で `url` を開き、その窓を前に出す。窓が無ければ新しく開く
+fn show_in_running(cdp: &mut Cdp, url: &str) -> Result<(), String> {
+    let pages = page_targets(cdp)?;
+    let Some((target, _)) = pages
+        .iter()
+        .find(|(_, u)| u.contains("read.amazon."))
+        .or(pages.first())
+    else {
+        cdp.call("Target.createTarget", json!({"url": url, "newWindow": true}), None)?;
+        return Ok(());
+    };
+    let session = attach(cdp, target)?;
+    cdp.call("Page.navigate", json!({"url": url}), Some(&session))?;
+    cdp.call("Target.activateTarget", json!({"targetId": target}), None)?;
+    cdp.call("Target.detachFromTarget", json!({"sessionId": session}), None)?;
+    Ok(())
 }
 
 /// 調査用: ボタンや aria-label を持つ要素、iframe、ASIN らしい id を書き出す
@@ -440,8 +490,13 @@ fn eval(options: &Options) -> Result<(), String> {
     let profile = data_dir().join("profile");
     let ws = browser::devtools_url(&profile).ok_or("先に open でブラウザを開いてください")?;
     let mut cdp = Cdp::connect(&ws)?;
+    // --url を付ければ、その文字を含むページ（ライブラリなど）で評価する
     for (target, url) in page_targets(&mut cdp)? {
-        if !is_reader_url(&url) {
+        let wanted = match &options.url {
+            Some(part) => url.contains(part.as_str()),
+            None => is_reader_url(&url),
+        };
+        if !wanted {
             continue;
         }
         let session = attach(&mut cdp, &target)?;
@@ -476,43 +531,64 @@ fn probe(options: &Options) -> Result<(), String> {
 }
 
 /// ライブラリの本を集める。作りに頼らないよう、ASIN を含む id や href から拾う
-const LIBRARY: &str = r#"(async () => {
-  const asinRe = /\b(B0[0-9A-Z]{8}|\d{9}[\dX])\b/;
-  const seen = new Map();
-  const collect = () => {
-    for (const e of document.querySelectorAll('[id], a[href]')) {
-      const src = (e.id || '') + ' ' + (e.getAttribute('href') || '');
-      const m = src.match(asinRe);
-      if (!m) continue;
-      const asin = m[1];
-      const box = e.closest('li, [role=listitem], [role=gridcell]') || e;
-      const img = box.querySelector('img');
-      const title = (img && img.alt) || box.getAttribute('aria-label') ||
-        (box.querySelector('[id^=title], [class*=title]') || {}).innerText || '';
-      const old = seen.get(asin) || {};
-      seen.set(asin, {
-        asin,
-        title: old.title || title.trim(),
-        cover_url: old.cover_url || (img && img.src) || undefined,
-        url: old.url || (e.tagName === 'A' ? e.href : undefined),
-      });
-    }
-  };
-  // 下まで送りながら、増えなくなるまで集める
-  let last = -1, still = 0;
-  while (still < 3) {
-    collect();
-    if (seen.size === last) still++; else still = 0;
-    last = seen.size;
-    const scroller = [...document.querySelectorAll('*')].find(
-      (e) => e.scrollHeight > e.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(e).overflowY)) || document.scrollingElement;
-    scroller.scrollTop = scroller.scrollHeight;
-    await new Promise((r) => setTimeout(r, 1200));
-  }
-  return { url: location.href, books: [...seen.values()] };
-})()"#;
+/// 一度に取る冊数。ライブラリのページが下へ送られたときに取るのと同じ数にする（サイトに負担をかけないように）
+const PAGE_SIZE: u32 = 50;
 
+/// ライブラリの本を `PAGE_SIZE` 冊だけ取る。`token` は続きの印（無ければ最初から）。
+/// ページ自身が続きを読み込むときと同じ呼び方をする
+fn library_page_script(token: Option<&str>) -> String {
+    let mut query = format!("libraryType=BOOKS&sortType=recency&querySize={PAGE_SIZE}");
+    if let Some(token) = token {
+        query.push_str("&paginationToken=");
+        query.push_str(&token.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', ""));
+    }
+    format!(
+        r#"(async () => {{
+  const r = await fetch("/kindle-library/search?{query}", {{ credentials: "include" }});
+  if (!r.ok) return {{ status: r.status, url: location.href }};
+  const j = await r.json();
+  return {{ status: r.status, url: location.href, items: j.itemsList || [], next: j.paginationToken || null }};
+}})()"#
+    )
+}
+
+/// 本を開く URL を覚えておくファイル（ASIN → リーダーの URL）。文字の本とマンガで URL が違うため
+fn reader_urls_path() -> PathBuf {
+    data_dir().join("reader-urls.json")
+}
+
+fn remember_reader_urls(items: &[Value]) {
+    let path = reader_urls_path();
+    let mut urls: BTreeMap<String, String> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    for item in items {
+        if let (Some(asin), Some(url)) = (item["asin"].as_str(), item["webReaderUrl"].as_str()) {
+            urls.insert(asin.to_owned(), url.to_owned());
+        }
+    }
+    let _ = std::fs::create_dir_all(data_dir());
+    if let Ok(text) = serde_json::to_string(&urls) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
+/// 本を開く URL。list で覚えたものが無ければ、マンガのリーダーの URL にする
+fn reader_url(site: &str, asin: &str) -> String {
+    std::fs::read_to_string(reader_urls_path())
+        .ok()
+        .and_then(|t| serde_json::from_str::<BTreeMap<String, String>>(&t).ok())
+        .and_then(|urls| urls.get(asin).cloned())
+        .filter(|url| url.starts_with(&format!("https://read.amazon.{site}/")))
+        .unwrap_or_else(|| format!("https://read.amazon.{site}/manga/{asin}"))
+}
+
+/// 本の一覧を `PAGE_SIZE` 冊ずつ返す。続きがあれば "next" を付ける。
+/// 本体は続きを頼むとき、標準入力の1行に "next" を入れてくる
 fn library(options: &Options) -> Result<(), String> {
+    let token = read_request()
+        .and_then(|request| request.get("next").and_then(Value::as_str).map(str::to_owned));
     let url = library_url(&options.site);
     let (mut cdp, launched) = connect(options, &url, true)?;
     let target = if launched {
@@ -528,7 +604,7 @@ fn library(options: &Options) -> Result<(), String> {
             .to_owned()
     };
     let session = attach(&mut cdp, &target)?;
-    // 読み込みが落ち着くまで待つ
+    // 読み込みが落ち着くまで待つ（ログインしていなければ、この間に別のページへ移される）
     let start = Instant::now();
     loop {
         let state = cdp.evaluate(&session, "document.readyState")?;
@@ -537,32 +613,45 @@ fn library(options: &Options) -> Result<(), String> {
         }
         thread::sleep(Duration::from_millis(300));
     }
-    thread::sleep(Duration::from_secs(3));
-    let result = cdp.evaluate(&session, LIBRARY)?;
-    let page_url = result["url"].as_str().unwrap_or_default().to_owned();
+    thread::sleep(Duration::from_secs(2));
+    let result = cdp.evaluate(&session, &library_page_script(token.as_deref()));
     if launched {
         let _ = cdp.call("Browser.close", json!({}), None);
     } else {
         let _ = cdp.call("Target.closeTarget", json!({"targetId": target}), None);
     }
-    // ログインしていないと /landing やサインインのページへ移される
-    if !page_url.contains("kindle-library") {
-        return Err("ログインしていません。先に open でブラウザを開いてログインしてください".into());
+    let result = result?;
+    let page_url = result["url"].as_str().unwrap_or_default();
+    let status = result["status"].as_u64().unwrap_or(0);
+    // ログインしていないと /landing やサインインのページへ移され、一覧も取れない
+    if !page_url.contains("kindle-library") || status == 401 || status == 403 {
+        return Err(NOT_SIGNED_IN.into());
     }
-    let books: Vec<Value> = result["books"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|b| {
-            let title = b["title"].as_str().filter(|t| !t.is_empty()).unwrap_or(b["asin"].as_str().unwrap_or(""));
-            json!({
-                "id": b["asin"], "title": title, "file_name": title,
-                "cover_url": b["cover_url"], "url": b["url"],
-            })
+    if status != 200 {
+        return Err(format!("ライブラリの一覧を取れませんでした（{status}）"));
+    }
+    let items = result["items"].as_array().cloned().unwrap_or_default();
+    remember_reader_urls(&items);
+    let books: Vec<Value> = items
+        .iter()
+        .filter_map(|item| {
+            let asin = item["asin"].as_str()?;
+            let title = item["title"].as_str().filter(|t| !t.is_empty()).unwrap_or(asin);
+            Some(json!({
+                "id": asin, "title": title, "file_name": title,
+                "cover_url": item["productUrl"],
+            }))
         })
         .collect();
-    eprintln!("{} 冊（{page_url}）", books.len());
-    println!("{}", json!({"books": books}));
+    let mut reply = json!({"books": books});
+    // 続きの印。届いた冊数が1回分に足りなければ、もう続きは無い
+    if let Some(next) = result["next"].as_str().filter(|n| !n.is_empty())
+        && items.len() as u32 >= PAGE_SIZE
+    {
+        reply["next"] = json!(next);
+    }
+    eprintln!("{} 冊（続き {}）", books.len(), reply["next"]);
+    println!("{reply}");
     Ok(())
 }
 
@@ -571,14 +660,18 @@ fn main() -> ExitCode {
         "open" => open(&options),
         "probe" => probe(&options),
         "eval" => eval(&options),
-        "library" => library(&options),
+        "list" | "library" => library(&options),
         other => Err(format!("知らない命令です: {other}")),
     });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e}");
-            ExitCode::FAILURE
+            if e == NOT_SIGNED_IN {
+                ExitCode::from(EXIT_AUTH)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }

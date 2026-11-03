@@ -7,7 +7,7 @@ use super::thumbnails::ShelfSource;
 use crate::engine::credentials::{Credentials, Stored};
 use crate::engine::plugin::{
     DownloadEvent, ListCache, ListProgress, Listing, PluginError, PluginKind, PluginManifest,
-    RemoteBook, Store, auth_url, local_path, spawn_download, spawn_list,
+    RemoteBook, Store, auth_url, local_path, spawn_download, spawn_list, spawn_open,
 };
 use crate::engine::settings_store;
 use crate::engine::thumbnail::{CoverEntry, RemoteRef, cover_cache_name};
@@ -39,11 +39,20 @@ pub(super) struct PluginShelf {
     pub(super) error: Option<PluginError>,
     /// プラグインが一覧と一緒に返した一言
     pub(super) message: Option<String>,
+    /// 続きの印。あれば、一番下近くまで送られたときに続きを取って足す
+    pub(super) next: Option<String>,
+    /// いま取っているのが続きか（届いたら、今の一覧の下に足す）
+    loading_more: bool,
 }
 
 impl PluginShelf {
     pub(super) fn is_loading(&self) -> bool {
         self.loading.is_some()
+    }
+
+    /// 続きを取れるか（続きがあり、何も取っていない）
+    pub(super) fn can_load_more(&self) -> bool {
+        self.next.is_some() && self.loading.is_none()
     }
 
     /// 取っているあいだの進み具合（「12/60」）。プラグインが知らせていなければ None
@@ -185,6 +194,12 @@ impl PluginHost {
 
     pub(super) fn manifest(&self, id: &str) -> Option<&PluginManifest> {
         self.manifests.iter().find(|m| m.id == id)
+    }
+
+    /// 本をダウンロードせず、プラグインが自分で開いて読ませるプラグインか
+    pub(super) fn is_reader(&self, id: &str) -> bool {
+        self.manifest(id)
+            .is_some_and(|manifest| manifest.kind == PluginKind::Reader)
     }
 
     /// 一覧をためておくファイル。一番上は `<id>.json`、フォルダは `<id>/<名前から作った値>.json`
@@ -555,6 +570,7 @@ impl MangaReader {
                 books: cache.books,
                 parent: cache.parent,
                 fetched_at: cache.fetched_at,
+                next: cache.next,
                 ..PluginShelf::default()
             })
             .unwrap_or_default();
@@ -584,9 +600,34 @@ impl MangaReader {
         let covers = self.plugins.cover_cache_dir();
         let shelf = self.plugins.shelves.entry(key.clone()).or_default();
         shelf.error = None;
-        let (loading, progress) = spawn_list(manifest, credentials, folder, covers);
+        shelf.loading_more = false;
+        let (loading, progress) = spawn_list(manifest, credentials, folder, None, covers);
         shelf.loading = Some(loading);
         shelf.progress = Some(progress);
+    }
+
+    /// 一覧の続きを取る（一番下近くまで送られたとき）。届いたら今の一覧の下に足す
+    pub(super) fn load_more_plugin_list(&mut self, key: &ShelfKey) {
+        let Some(manifest) = self.plugins.manifest(&key.0).cloned() else {
+            return;
+        };
+        let Some(next) = self
+            .plugins
+            .shelves
+            .get(key)
+            .filter(|shelf| shelf.can_load_more())
+            .and_then(|shelf| shelf.next.clone())
+        else {
+            return;
+        };
+        let credentials = self.plugins.credentials_for(&manifest);
+        let folder = (!key.1.is_empty()).then(|| key.1.clone());
+        let covers = self.plugins.cover_cache_dir();
+        let shelf = self.plugins.shelves.entry(key.clone()).or_default();
+        let (loading, progress) = spawn_list(manifest, credentials, folder, Some(next), covers);
+        shelf.loading = Some(loading);
+        shelf.progress = Some(progress);
+        shelf.loading_more = true;
     }
 
     /// 一覧の本を、いま置いてある（これから置く）場所。別の本が使っていれば、印を付けた場所
@@ -622,6 +663,23 @@ impl MangaReader {
             .iter()
             .any(same)
             .then_some(DownloadStatus::Queued)
+    }
+
+    /// 読むプラグインで本 `id` を開く（None ならプラグインの入口。ログインなどに使う）。
+    /// キー設定と、単ページか見開きかを渡して、本体と同じキーで読めるようにする
+    pub(super) fn open_in_reader(&mut self, plugin: &str, id: Option<&str>) {
+        let Some(manifest) = self.plugins.manifest(plugin).cloned() else {
+            return;
+        };
+        let request = serde_json::json!({
+            "credentials": self.plugins.credentials_for(&manifest),
+            "keys": self.config.keys,
+            "page_view_options": self.config.page_view_options,
+        });
+        self.plugins.download_error = match spawn_open(&manifest, &request, id) {
+            Ok(()) => None,
+            Err(error) => Some(format!("{}: {}", manifest.name, error.message())),
+        };
     }
 
     /// 本のダウンロードを頼む。同じ本を待っていれば何もしない
@@ -675,6 +733,7 @@ impl MangaReader {
         let mut arrived = Vec::new();
         let mut stores = Vec::new();
         let mut accounts = Vec::new();
+        let mut more_failures = Vec::new();
         for (key, shelf) in self.plugins.shelves.iter_mut() {
             let Some(rx) = &shelf.loading else {
                 continue;
@@ -684,8 +743,27 @@ impl MangaReader {
                     shelf.loading = None;
                     shelf.progress = None;
                     stores.push((key.0.clone(), store));
+                    let more = std::mem::take(&mut shelf.loading_more);
                     match result {
+                        // 続きは今の一覧の下に足す。前の答えと重なる本（同じ id）は足さない
+                        Ok(listing) if more => {
+                            let known: HashSet<String> =
+                                shelf.books.iter().map(|book| book.id.clone()).collect();
+                            shelf.books.extend(
+                                listing
+                                    .books
+                                    .into_iter()
+                                    .filter(|book| !known.contains(&book.id)),
+                            );
+                            shelf.next = listing.next;
+                        }
+                        // 続きを取れなければ、一覧はそのままにして、続きはあきらめる（更新で取り直せる）
+                        Err(error) if more => {
+                            shelf.next = None;
+                            more_failures.push(error.message().to_owned());
+                        }
                         Ok(listing) => {
+                            shelf.next = listing.next;
                             shelf.message = listing.message;
                             shelf.books = listing.books;
                             shelf.parent = listing.parent;
@@ -702,8 +780,12 @@ impl MangaReader {
                 Err(TryRecvError::Disconnected) => {
                     shelf.loading = None;
                     shelf.progress = None;
+                    shelf.loading_more = false;
                 }
             }
+        }
+        if let Some(message) = more_failures.pop() {
+            self.plugins.download_error = Some(message);
         }
         for (plugin, store) in stores {
             self.plugins.apply_store(&plugin, store);
@@ -726,6 +808,7 @@ impl MangaReader {
                     parent: shelf.parent.clone(),
                     account: self.plugins.accounts.get(&key.0).cloned().flatten(),
                     fetched_at: shelf.fetched_at,
+                    next: shelf.next.clone(),
                 }
                 .save(&self.plugins.list_cache_path(&key));
                 if showing {
@@ -932,6 +1015,7 @@ impl MangaReader {
     /// 設定画面に出すものがあるプラグインか。ログイン情報の欄、許可の操作、知らせのどれも無いものは名前も出さない
     fn plugin_has_settings(&mut self, manifest: &PluginManifest) -> bool {
         manifest.auth
+            || manifest.kind == PluginKind::Reader
             || self.plugins.auth_message.contains_key(&manifest.id)
             || manifest.credentials.iter().any(|field| {
                 !field.hidden
@@ -1044,6 +1128,15 @@ impl MangaReader {
                 } else {
                     tr("plugin.not_connected")
                 });
+            });
+        }
+        if manifest.kind == PluginKind::Reader {
+            // ログインなどは、プラグインが開くブラウザで行う
+            ui.horizontal(|ui| {
+                if ui.button(tr("plugin.reader_open")).clicked() {
+                    self.open_in_reader(&manifest.id, None);
+                }
+                ui.label(egui::RichText::new(tr("plugin.reader_open.hint")).small());
             });
         }
         if let Some(message) = self.plugins.auth_message.get(&manifest.id) {

@@ -84,6 +84,9 @@ pub enum PluginKind {
     Books,
     /// ページの画像の文字を読む（ocr）
     Ocr,
+    /// 本の一覧を返し、本はプラグインが自分で開いて読ませる（list・open）。
+    /// DRM のかかった本を、そのサービスのビューアで読むときに使う
+    Reader,
 }
 
 /// プラグインが返す本
@@ -144,6 +147,10 @@ pub struct Listing {
     /// 利用者に見せる一言（表紙を取れた数など）。次に取り直すまでタブに出す
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// 続きの印。一覧を何回かに分けて返すプラグインが付ける。本体は一番下近くまで送られたら、
+    /// 標準入力の1行にこの値を "next" として入れて、もう一度 `list` を呼ぶ
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
 }
 
 /// プラグインが保存してほしい値。空の値は消す
@@ -290,6 +297,16 @@ fn bundled(exe_dir: &Path) -> Vec<PluginManifest> {
             ],
             auth: true,
             kind: PluginKind::Books,
+            ocr_batch: None,
+            dir: exe_dir.to_path_buf(),
+        },
+        PluginManifest {
+            id: "kindle".to_owned(),
+            name: "Kindle".to_owned(),
+            command: program("mangareeda-kindle"),
+            credentials: Vec::new(),
+            auth: false,
+            kind: PluginKind::Reader,
             ocr_batch: None,
             dir: exe_dir.to_path_buf(),
         },
@@ -676,19 +693,19 @@ fn run(
     args: &[&str],
     limit: Duration,
 ) -> (Result<String, PluginError>, Store) {
-    run_reporting(manifest, credentials, args, limit, None)
+    run_reporting(manifest, &request_line(credentials), args, limit, None)
 }
 
 /// `run` と同じ。進み具合の行（`{"progress": …}`）が届いたら `progress` に入れ、
 /// 動いているとみなして時間の上限を数え直す
 fn run_reporting(
     manifest: &PluginManifest,
-    credentials: &HashMap<String, String>,
+    request: &str,
     args: &[&str],
     limit: Duration,
     progress: Option<&ListProgress>,
 ) -> (Result<String, PluginError>, Store) {
-    let running = match Running::start(manifest, &request_line(credentials), args, limit, None) {
+    let running = match Running::start(manifest, request, args, limit, None) {
         Ok(running) => running,
         Err(error) => return (Err(error), Store::new()),
     };
@@ -733,6 +750,30 @@ pub fn auth_url(
     let (stdout, store) = run(manifest, credentials, &["auth-url"], AUTH_URL_LIMIT);
     let url = stdout.and_then(|stdout| last_reply::<UrlReply>(&stdout).map(|reply| reply.url));
     (url, store)
+}
+
+/// 読むプラグインに本 `id` を開かせる（`open <id>`。None ならプラグインの入口を開く）。
+/// `request` は標準入力に渡す1行（ログイン情報、キー設定など）。プラグインは利用者が読み終えるまで
+/// 動き続けるので、終わるのを待たない（終わったら別のスレッドで後始末だけする）
+pub fn spawn_open(
+    manifest: &PluginManifest,
+    request: &serde_json::Value,
+    id: Option<&str>,
+) -> Result<(), PluginError> {
+    let mut args = vec!["open"];
+    args.extend(id);
+    let mut command = manifest
+        .command(&args)
+        .ok_or_else(|| PluginError::Other("プラグインの命令がありません".to_owned()))?;
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = spawn(&mut command).map_err(|e| PluginError::Other(e.to_string()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(stdin, "{request}");
+    }
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// プラグインに渡す1行目
@@ -809,35 +850,47 @@ fn list(
     credentials: &HashMap<String, String>,
     folder: Option<&str>,
 ) -> (Result<Listing, PluginError>, Store) {
-    list_reporting(manifest, credentials, folder, None)
+    list_reporting(manifest, credentials, folder, None, None)
 }
 
 fn list_reporting(
     manifest: &PluginManifest,
     credentials: &HashMap<String, String>,
     folder: Option<&str>,
+    next: Option<&str>,
     progress: Option<&ListProgress>,
 ) -> (Result<Listing, PluginError>, Store) {
     let mut args = vec!["list"];
     args.extend(folder);
-    let (stdout, store) = run_reporting(manifest, credentials, &args, LIST_LIMIT, progress);
+    let mut request = serde_json::json!({ "credentials": credentials });
+    if let Some(next) = next {
+        request["next"] = serde_json::json!(next);
+    }
+    let (stdout, store) =
+        run_reporting(manifest, &request.to_string(), &args, LIST_LIMIT, progress);
     (stdout.and_then(|stdout| last_reply(&stdout)), store)
 }
 
-/// `list` を別スレッドで行う。進み具合は、返す `ListProgress` で見られる。
+/// `list` を別スレッドで行う。`next` が Some なら、前の答えの続き。進み具合は、返す `ListProgress` で見られる。
 /// 一覧に付いてきた表紙の画像は、画面を止めないよう、このスレッドで `covers` に置く
 pub fn spawn_list(
     manifest: PluginManifest,
     credentials: HashMap<String, String>,
     folder: Option<String>,
+    next: Option<String>,
     covers: PathBuf,
 ) -> (Receiver<ListAnswer>, ListProgress) {
     let (tx, rx) = channel();
     let progress = ListProgress::default();
     let reporting = progress.clone();
     thread::spawn(move || {
-        let (mut listing, store) =
-            list_reporting(&manifest, &credentials, folder.as_deref(), Some(&reporting));
+        let (mut listing, store) = list_reporting(
+            &manifest,
+            &credentials,
+            folder.as_deref(),
+            next.as_deref(),
+            Some(&reporting),
+        );
         if let Ok(listing) = listing.as_mut() {
             store_list_covers(&manifest.id, &mut listing.books, &covers);
         }
@@ -965,6 +1018,9 @@ pub struct ListCache {
     pub account: Option<String>,
     /// 取った日時（UNIX 秒）
     pub fetched_at: u64,
+    /// 続きの印（`Listing::next`）。続きを足すたびに新しくする
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
 }
 
 impl ListCache {
@@ -1113,6 +1169,28 @@ mod tests {
         }
     }
 
+    /// 読むプラグインには、open と本の id を渡し、標準入力にキー設定などの1行を書く。終わるのは待たない
+    #[cfg(unix)]
+    #[test]
+    fn reader_plugins_get_the_book_and_the_request() {
+        let dir = temp("open");
+        let out = dir.join("got.txt");
+        let plugin = script_plugin(
+            &dir,
+            &format!("read request\necho \"$1 $2 $request\" > '{}'\n", out.display()),
+        );
+        let request = serde_json::json!({"keys": {"next_page": null}});
+        spawn_open(&plugin, &request, Some("B0TEST")).unwrap();
+        let started = Instant::now();
+        while !out.is_file() && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(100));
+        let got = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(got.trim(), r#"open B0TEST {"keys":{"next_page":null}}"#);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 答えを返さなくなったプラグインは、出力を握った子孫ごと止めて、失敗として知らせる
     #[cfg(unix)]
     #[test]
@@ -1245,7 +1323,7 @@ mod tests {
             &dir,
             "read request\necho '{\"progress\": 1, \"total\": 2}'\necho '{\"progress\": 2, \"total\": 2}'\necho '{\"books\": [], \"message\": \"表紙 2/2 冊\"}'\n",
         );
-        let (rx, progress) = spawn_list(plugin, HashMap::new(), None, dir.join("covers"));
+        let (rx, progress) = spawn_list(plugin, HashMap::new(), None, None, dir.join("covers"));
         let (listing, _) = rx.recv().unwrap();
         assert_eq!(listing.unwrap().message.as_deref(), Some("表紙 2/2 冊"));
         assert_eq!(*progress.lock().unwrap(), Some((2, Some(2))));

@@ -1,18 +1,19 @@
-# mangareeda-kindle（試作）
+# mangareeda-kindle
 
-Kindle Cloud Reader を Chromium 系のブラウザで開き、MangaReeda のキー設定で操作できるようにするプラグインの試作です。
+Kindle Cloud Reader を Chromium 系のブラウザで開き、MangaReeda のキー設定で操作できるようにする読むプラグイン（`kind: "reader"`）です。
 本はブラウザで表示するだけで、ページの画像を取り出したり保存したりはしません。
 
-まだ本体には組み込んでいません。単独のコマンドとして動かします。
+MangaReeda からの使い方は [docs/plugins.md](../../docs/plugins.md#kindle) にあります。ここには、単独で動かすときの使い方と、作りのメモを書きます。
 
 ## 使い方
 
 ```sh
 cargo build -p mangareeda-kindle
 target/debug/mangareeda-kindle open            # ライブラリを開く（最初はここで Amazon にログインする）
-target/debug/mangareeda-kindle open --asin B0XXXXXXXX
+target/debug/mangareeda-kindle open B0XXXXXXXX # 本を開く（--asin でも可）
+target/debug/mangareeda-kindle list            # ライブラリの本を書き出す（library も同じ）
 target/debug/mangareeda-kindle probe > probe.json   # 開いているページのボタンなどを書き出す（調査用）
-target/debug/mangareeda-kindle library         # ライブラリの本を list と同じ形の JSON で書き出す
+target/debug/mangareeda-kindle eval --expr 'location.href'   # リーダーで式を評価する（調査用）
 ```
 
 共通の引数:
@@ -24,6 +25,14 @@ target/debug/mangareeda-kindle library         # ライブラリの本を list �
 | `--site co.jp` / `--site com` | Amazon のサイト |
 | `--fullscreen` | 全画面で開く |
 | `--headless` | ウィンドウを出さずに開く（調べもの用） |
+
+MangaReeda から呼ばれたときは、キー設定と単ページか見開きかを標準入力で受け取ります。端末から動かしたときは `settings.json` を読みます。
+すでに Kindle の窓が開いているときの `open` は、その窓で本を開くよう頼むだけで終わります（キーは最初の `open` が受け持つ）。
+ログインしていないときの `list` は、終了コード 2（ログインが必要）で終わります。
+
+`list` は、ライブラリのページが続きを読み込むときと同じ `/kindle-library/search`（`querySize=50`）を1回だけ呼び、50 冊と続きの印（`next`）を返します。
+続きを頼まれたら（標準入力の `"next"`）、その印を `paginationToken` にして次の 50 冊を返します。
+本を開く URL（`webReaderUrl`。マンガは `/kindle-library/manga-wr/<ASIN>`）は `reader-urls.json` に覚えておき、`open` で使います。
 
 ## ブラウザの探し方
 
@@ -82,12 +91,10 @@ DevTools のデバイスエミュレーションでも単ページにはなり�
 - 「本を閉じる」を Ctrl+W にしていても、窓は閉じずにライブラリに戻る
 - 単ページ: 中央に1ページ出て、見開きに戻せる。全画面・窓の大きさの変更に追従し、1ページずつ進む。
   単ページか見開きかはプラグインが1つだけ持ち（本ごとではない）、別の本を開いてもそのまま
-- `library` はログイン済みなら headless でも一覧を返す（50 冊を確認。それで全部かは未確認）
+- `list` はログイン済みなら headless でも一覧を返す。最初の 50 冊と続きの 50 冊を確認（続きの印が 45 なので 5 冊重なる。本体が同じ id を足さない）
 
 ## まだ確かめていないこと
 
-- 単ページと見開きの切り替えの方法（リーダーの設定メニュー）
-- 文字の本（マンガ以外）のリーダーの URL
-- `library` が全部の本を拾えるか（下まで送って集めている）
+- 文字の本（マンガ以外）を開いたときの動き（URL は `webReaderUrl` を使う）。単ページはマンガのリーダー（`/manga/`）だけで効く
 - flatpak 版のブラウザで DevTools につなげるか
 - Windows の Edge で動くか

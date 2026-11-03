@@ -742,9 +742,12 @@ impl MangaReader {
                 let Some(entry) = shelf.entries.get(selected) else {
                     return String::new();
                 };
-                // プラグインの本は、書名とダウンロードの状態
+                // プラグインの本は、書名とダウンロードの状態（読むプラグインの本はダウンロードしない）
                 if let Some(remote) = &entry.remote {
                     let status = match self.download_status(entry) {
+                        _ if self.plugins.is_reader(&remote.plugin) => {
+                            tr("plugin.reader_book").to_owned()
+                        }
                         Some(DownloadStatus::Running(Some(ratio))) => {
                             format!("{}%", (ratio * 100.0) as u32)
                         }
@@ -910,6 +913,14 @@ impl MangaReader {
             self.show_shelf(source, None);
             return;
         }
+        // 読むプラグインの本は、プラグインに開かせる（一覧はそのまま出しておく）
+        if let Some(remote) = &entry.remote
+            && self.plugins.is_reader(&remote.plugin)
+        {
+            let (plugin, id) = (remote.plugin.clone(), remote.id.clone());
+            self.open_in_reader(&plugin, Some(&id));
+            return;
+        }
         // プラグインの本は、ダウンロードしてあれば開き、無ければダウンロードする（終わったら開く）。
         // 置く場所は、並べたあとに別の本が使い始めていないか確かめ直す
         if entry.remote.is_some() {
@@ -953,6 +964,8 @@ impl MangaReader {
         let mut go_back = false;
         let mut refresh = false;
         let mut filter_changed = false;
+        // 見えている最後の冊が最後の行に入った（プラグインの一覧なら続きを取る）
+        let mut near_end = false;
         let tabs: Vec<(ShelfTab, String)> = self
             .shelf_tabs()
             .into_iter()
@@ -984,7 +997,9 @@ impl MangaReader {
                 shelf
                     .entries
                     .iter()
-                    .map(|entry| match entry.remote {
+                    .map(|entry| match &entry.remote {
+                        // 読むプラグインの本は、手元に無くても読める
+                        Some(remote) if self.plugins.is_reader(&remote.plugin) => (None, true),
                         Some(_) => (
                             self.download_status(entry),
                             self.remote_path(entry).is_file(),
@@ -1234,6 +1249,7 @@ impl MangaReader {
                 let last_row = ((scroll + rect.height()) / grid.cell).ceil() as usize;
                 let first = first_row * grid.columns;
                 let last = (last_row * grid.columns).min(count);
+                near_end = last + grid.columns >= count;
                 // 見えている冊の表紙を先に作る
                 if let Some(shelf) = &view.covers {
                     shelf.queue.show(
@@ -1442,6 +1458,13 @@ impl MangaReader {
             self.go_back_in_shelf();
         } else if refresh && let Some(ShelfSource::Plugin(id, folder)) = self.shelf_source() {
             self.refresh_plugin_list(&(id, folder));
+        } else if near_end
+            && self.shelf_filter.trim().is_empty()
+            && let Some(ShelfSource::Plugin(id, folder)) = self.shelf_source()
+        {
+            // 一番下近くまで来たら、一覧の続きを取って下に足す。題名でしぼっているあいだは取らない
+            // （しぼって冊が少なく見えると、続きを次々に取りに行ってしまうので）
+            self.load_more_plugin_list(&(id, folder));
         }
     }
 }
