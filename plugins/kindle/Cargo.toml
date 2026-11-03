@@ -1,0 +1,11 @@
+[package]
+name = "mangareeda-kindle"
+version = "0.1.0"
+edition = "2024"
+description = "MangaReeda plugin that opens Kindle Cloud Reader in a Chromium-based browser and maps MangaReeda's keys to it (prototype)"
+license = "Apache-2.0"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tungstenite = "0.28.0"

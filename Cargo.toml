@@ -6,7 +6,7 @@ license = "Apache-2.0"
 build = "build.rs"
 
 [workspace]
-members = ["plugins/bookscan", "plugins/dropbox", "plugins/gdrive", "plugins/common", "plugins/ocr-tesseract", "plugins/ocr-windows"]
+members = ["plugins/bookscan", "plugins/kindle", "plugins/dropbox", "plugins/gdrive", "plugins/common", "plugins/ocr-tesseract", "plugins/ocr-windows"]
 
 [profile.dev]
 debug = true
