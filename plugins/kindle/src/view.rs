@@ -1,6 +1,6 @@
 //! 本体の窓の中で読むための `view` 命令。
 //!
-//! 画面を出さない（headless の）ブラウザで本を開き、描かれた画面（screencast）を
+//! 画面を出さない（headless の）ブラウザで本を開き、変わりそうなときに撮った画面を
 //! 標準出力に1行ずつ流す。本体はそれを窓に映すだけで、保存も、文字の読み取りも、
 //! 表紙などへの使い回しもしない。操作は本体から標準入力で受け取る。
 //!
@@ -8,7 +8,7 @@
 //!   （大きさは本体の論理ピクセル。倍率は1論理ピクセルあたりの画素の数）
 //! 2行目から: {"action": "next_page"} / {"size": [幅, 高さ], "scale": 倍率} / {"single": 真偽}
 //!   / {"click": [x, y]}（画面の左上からの論理ピクセル）/ {"quit": true}
-//! 標準出力: {"frame": "<JPEG の base64>", "width": 幅, "height": 高さ}（幅と高さは論理ピクセル）
+//! 標準出力: {"frame": "<JPEG の base64>", "width": 幅, "height": 高さ}（幅と高さは論理ピクセル。前と同じ画面は送らない）
 //!   / {"closed": true}（ライブラリに移ったとき。本体は表紙サムネイルに戻る）
 //!   / {"error": "…"}
 
@@ -22,18 +22,18 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// 本体へ画面を送る間隔の下限（毎秒 30 枚まで）。Cloud Reader は変わらなくても描き直し続けるので抑える
-const FRAME_INTERVAL: Duration = Duration::from_millis(33);
-
-/// 画面の中継を続ける時間。Cloud Reader のページは、変わらなくても描き直し続け、中継していると
-/// そのたびに JPEG に圧縮するので CPU を 1 コア以上使う。そこで、操作や新しい画面があってから
-/// この時間だけ中継し、あとは止める
-const WAKE: Duration = Duration::from_millis(1500);
-/// 止めているあいだに、遅れて変わった画面（本の画像の読み込みなど）を拾うために、ときどき少しだけ中継する
-const PEEK_INTERVAL: Duration = Duration::from_secs(4);
-const PEEK: Duration = Duration::from_millis(300);
-/// 開いた直後は、読み込みが落ち着くまで長めに中継する
-const FIRST_WAKE: Duration = Duration::from_secs(10);
+/// 画面を撮る時刻。Cloud Reader のページは変わらなくても描き直し続けるので、描かれた画面を
+/// 流し続ける中継（screencast）だと、そのたびに JPEG に圧縮して CPU を 1 コア以上使う。
+/// そこで、変わりそうなときだけ1枚ずつ撮る（`Page.captureScreenshot`）。
+/// 操作のあとに撮る時刻（操作からの経過、ミリ秒）。ページめくりは 0.1 秒ほどで描かれ、画像の読み込みが遅れることもある
+const AFTER_ACTION: [u64; 4] = [50, 150, 400, 1000];
+/// 撮った画面が変わっていたら、まだ変わっている途中かもしれないので、このあとにもう1枚撮る
+const FOLLOW_UP: Duration = Duration::from_millis(300);
+/// ページを移った直後は、読み込みが落ち着くまで、この間隔で撮る
+const LOADING_INTERVAL: Duration = Duration::from_millis(300);
+const LOADING: Duration = Duration::from_secs(10);
+/// 何もしていないあいだも、遅れて変わった画面を拾うために、この間隔で1枚撮る
+const IDLE_INTERVAL: Duration = Duration::from_secs(4);
 
 /// 単ページのときの幅と高さの比（Cloud Reader は縦長の画面だと1ページずつ表示する）
 const SINGLE_RATIO: f64 = 0.7;
@@ -224,47 +224,15 @@ fn run(
     cdp.call("Page.enable", json!({}), Some(session))?;
     apply_screen(cdp, session, screen)?;
     cdp.call("Page.navigate", json!({"url": url}), Some(session))?;
-    // 画面の中継は、読み込みの途中だと断られるので、始められるまで間を空けてやり直す
-    let started = Instant::now();
-    let mut casting = false;
-    let mut last_try: Option<Instant> = None;
-    // この時刻まで中継する。操作や新しい画面のたびに延ばす
-    let mut wake_until = Instant::now() + FIRST_WAKE;
-    let mut last_peek = Instant::now();
-    // まだ送っていない最新の画面と、最後に送った画面
-    let mut pending: Option<Value> = None;
+
+    let mut captures = Captures::default();
+    // この時刻までは、ページを移ったあとの読み込み中として、間を詰めて撮る
+    let mut loading_until = Instant::now() + LOADING;
+    let mut last_capture = Instant::now();
+    // 最後に送った画面（同じ画面は送らない）
     let mut last_sent = String::new();
-    let mut last_emit: Option<Instant> = None;
 
     loop {
-        if pending.is_some() && last_emit.is_none_or(|at| at.elapsed() >= FRAME_INTERVAL) {
-            let frame = pending.take().unwrap_or_default();
-            last_sent = frame["frame"].as_str().unwrap_or_default().to_owned();
-            last_emit = Some(Instant::now());
-            emit(&frame);
-        }
-        let now = Instant::now();
-        if now >= wake_until && now.duration_since(last_peek) >= PEEK_INTERVAL {
-            last_peek = now;
-            wake_until = now + PEEK;
-        }
-        let wanted = now < wake_until;
-        if casting && !wanted {
-            cdp.call("Page.stopScreencast", json!({}), Some(session))?;
-            casting = false;
-        }
-        if wanted && !casting && last_try.is_none_or(|at| at.elapsed() > Duration::from_millis(500)) {
-            last_try = Some(Instant::now());
-            match cdp.call(
-                "Page.startScreencast",
-                json!({"format": "jpeg", "quality": 85}),
-                Some(session),
-            ) {
-                Ok(_) => casting = true,
-                Err(e) if started.elapsed() > Duration::from_secs(60) => return Err(e),
-                Err(_) => {}
-            }
-        }
         // 本体からの命令
         loop {
             let command = match commands.try_recv() {
@@ -276,8 +244,6 @@ fn run(
             if command["quit"].as_bool() == Some(true) {
                 return Ok(());
             }
-            // 操作があったら、変わった画面を受け取るために中継する
-            wake_until = wake_until.max(Instant::now() + WAKE);
             if let Some(action) = command["action"].as_str()
                 && let Err(e) = perform(cdp, session, operations, action)
             {
@@ -299,48 +265,74 @@ fn run(
             if let (Some(x), Some(y)) = (command["click"][0].as_f64(), command["click"][1].as_f64()) {
                 click(cdp, session, x, y)?;
             }
+            // 操作のあと、変わっていく画面を何回かに分けて撮る
+            captures.after_action(Instant::now());
+        }
+
+        // 撮る時刻が来たら撮る。前と違う画面だけを本体に送る
+        let now = Instant::now();
+        let since = now.duration_since(last_capture);
+        let due = captures.take_due(now)
+            || since >= IDLE_INTERVAL
+            || (now < loading_until && since >= LOADING_INTERVAL);
+        if due {
+            last_capture = now;
+            // 読み込みの途中などで撮れないときは、次の機会に撮る
+            if let Ok(shot) = cdp.call(
+                "Page.captureScreenshot",
+                json!({"format": "jpeg", "quality": 85, "optimizeForSpeed": true}),
+                Some(session),
+            ) && let Some(data) = shot["data"].as_str()
+                && data != last_sent
+            {
+                let (width, height) = screen.viewport();
+                emit(&json!({"frame": data, "width": width, "height": height}));
+                last_sent = data.to_owned();
+                // まだ変わっている途中かもしれないので、もう1枚撮る
+                captures.at(Instant::now() + FOLLOW_UP);
+            }
         }
 
         // ブラウザからの知らせ
-        let Some(event) = cdp.poll_event(Duration::from_millis(15))? else {
+        let Some(event) = cdp.poll_event(Duration::from_millis(10))? else {
             continue;
         };
-        match event.method.as_str() {
-            "Page.screencastFrame" => {
-                let params = &event.params;
-                // 受け取ったと返さないと、次の画面が来ない
-                cdp.call(
-                    "Page.screencastFrameAck",
-                    json!({"sessionId": params["sessionId"]}),
-                    Some(session),
-                )?;
-                // 前に送ったものと同じ画面は送らない。間引くときは最新のものだけを残す
-                if params["data"].as_str() != Some(last_sent.as_str()) {
-                    // 画面が変わっているあいだは中継を続ける
-                    wake_until = wake_until.max(Instant::now() + WAKE);
-                    pending = Some(json!({
-                        "frame": params["data"],
-                        "width": params["metadata"]["deviceWidth"],
-                        "height": params["metadata"]["deviceHeight"],
-                    }));
-                } else {
-                    pending = None;
-                }
+        if event.method == "Page.frameNavigated" && event.params["frame"]["parentId"].is_null() {
+            loading_until = Instant::now() + LOADING;
+            let url = event.params["frame"]["url"].as_str().unwrap_or_default();
+            if is_sign_in_page(url) {
+                return Err(NOT_SIGNED_IN.into());
             }
-            "Page.frameNavigated" if event.params["frame"]["parentId"].is_null() => {
-                wake_until = wake_until.max(Instant::now() + FIRST_WAKE);
-                let url = event.params["frame"]["url"].as_str().unwrap_or_default();
-                if is_sign_in_page(url) {
-                    return Err(NOT_SIGNED_IN.into());
-                }
-                // リーダーの「ライブラリ」ボタンなどで本を閉じた
-                if is_library_page(url) {
-                    emit(&json!({"closed": true}));
-                    return Ok(());
-                }
+            // リーダーの「ライブラリ」ボタンなどで本を閉じた
+            if is_library_page(url) {
+                emit(&json!({"closed": true}));
+                return Ok(());
             }
-            _ => {}
         }
+    }
+}
+
+/// これから画面を撮る時刻
+#[derive(Default)]
+struct Captures {
+    times: Vec<Instant>,
+}
+
+impl Captures {
+    fn at(&mut self, time: Instant) {
+        self.times.push(time);
+    }
+
+    fn after_action(&mut self, now: Instant) {
+        self.times
+            .extend(AFTER_ACTION.iter().map(|ms| now + Duration::from_millis(*ms)));
+    }
+
+    /// 時刻が来たものがあれば、それらを除いて真を返す
+    fn take_due(&mut self, now: Instant) -> bool {
+        let before = self.times.len();
+        self.times.retain(|time| *time > now);
+        self.times.len() != before
     }
 }
 
