@@ -9,22 +9,29 @@
 use super::MangaReader;
 use super::thumbnails::ShelfSource;
 use crate::config::{MangaAction, MouseButton, MouseGesture, PageViewOptions};
-use crate::engine::plugin::spawn_view;
+use crate::engine::plugin::{ViewProcess, spawn_view};
 use crate::localize::tr;
 use eframe::egui;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout};
+use std::process::ChildStdout;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// 本を閉じたときに、プラグインが終わるのを待つ時間。過ぎたら、起動したブラウザごと止める
+const STOP_GRACE: Duration = Duration::from_secs(5);
+/// MangaReeda を終えるときに待つ時間（終わる前に後始末を済ませる）
+pub(super) const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// 届いた画面の置き場。最新の1枚だけを持ち、描いていないあいだに届いた古い画面は上書きして捨てる
+type FrameSlot = Arc<Mutex<Option<(egui::ColorImage, [f32; 2])>>>;
 
 /// リーダーのバナーを出すためにクリックする、上端と下端の帯の高さ（表示場所の高さに対する割合）
 const CHROME_BAND: f32 = 0.1;
 
-/// プラグインから届いたもの
+/// プラグインから届いた、画面のほかの知らせ（画面は `FrameSlot` に置く）
 enum ViewEvent {
-    /// 画面と、その大きさ（ブラウザの見かけの大きさ。論理ピクセル）
-    Frame(egui::ColorImage, [f32; 2]),
     /// リーダーのバナー（ツールバーと進み具合）が出た・消えた
     Chrome(bool),
     /// 本を閉じた（リーダーでライブラリに戻った）
@@ -33,9 +40,10 @@ enum ViewEvent {
 }
 
 pub(super) struct WebView {
-    child: Option<Child>,
-    stdin: ChildStdin,
+    process: Option<ViewProcess>,
     events: Receiver<ViewEvent>,
+    /// 届いた最新の画面（画面の大きさは、ブラウザの見かけの大きさ。論理ピクセル）
+    frame: FrameSlot,
     texture: Option<egui::TextureHandle>,
     /// いま映している画面の、ブラウザでの大きさ（クリックの位置を直すのに使う）
     frame_size: [f32; 2],
@@ -50,8 +58,18 @@ pub(super) struct WebView {
 
 impl WebView {
     fn send(&mut self, value: Value) {
-        let _ = writeln!(self.stdin, "{value}");
-        let _ = self.stdin.flush();
+        if let Some(process) = self.process.as_mut() {
+            let _ = writeln!(process.stdin, "{value}");
+            let _ = process.stdin.flush();
+        }
+    }
+
+    /// プラグインに終わるよう頼み、終わるのを `grace` まで待つ。過ぎたら、起動したブラウザごと止める
+    pub(super) fn shut_down(mut self, grace: Duration) {
+        self.send(json!({"quit": true}));
+        if let Some(process) = self.process.take() {
+            process.stop(grace);
+        }
     }
 }
 
@@ -59,24 +77,14 @@ impl Drop for WebView {
     /// プラグインに終わるよう頼み、終わらなければ止める（画面を止めないよう、待つのは別のスレッドで）
     fn drop(&mut self) {
         self.send(json!({"quit": true}));
-        if let Some(mut child) = self.child.take() {
-            std::thread::spawn(move || {
-                let start = Instant::now();
-                while start.elapsed() < Duration::from_secs(5) {
-                    if child.try_wait().ok().flatten().is_some() {
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                let _ = child.kill();
-                let _ = child.wait();
-            });
+        if let Some(process) = self.process.take() {
+            std::thread::spawn(move || process.stop(STOP_GRACE));
         }
     }
 }
 
 /// プラグインの出力を読み、画面を画像に直して送る。画像はここでも保存しない
-fn read_events(stdout: ChildStdout, ctx: egui::Context) -> Receiver<ViewEvent> {
+fn read_events(stdout: ChildStdout, ctx: egui::Context, frame: FrameSlot) -> Receiver<ViewEvent> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         use base64::Engine;
@@ -98,7 +106,11 @@ fn read_events(stdout: ChildStdout, ctx: egui::Context) -> Receiver<ViewEvent> {
                 let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
                 let width = value["width"].as_f64().unwrap_or(size[0] as f64) as f32;
                 let height = value["height"].as_f64().unwrap_or(size[1] as f64) as f32;
-                ViewEvent::Frame(color, [width, height])
+                if let Ok(mut slot) = frame.lock() {
+                    *slot = Some((color, [width, height]));
+                }
+                ctx.request_repaint();
+                continue;
             } else if let Some(chrome) = value["chrome"].as_bool() {
                 ViewEvent::Chrome(chrome)
             } else if value["closed"].as_bool() == Some(true) {
@@ -151,12 +163,13 @@ impl MangaReader {
             "single": single,
         });
         match spawn_view(&manifest, &request, id) {
-            Ok((child, stdin, stdout)) => {
+            Ok((process, stdout)) => {
                 self.thumbnails = None;
+                let frame = FrameSlot::default();
                 self.web_view = Some(WebView {
-                    child: Some(child),
-                    stdin,
-                    events: read_events(stdout, ctx.clone()),
+                    process: Some(process),
+                    events: read_events(stdout, ctx.clone(), frame.clone()),
+                    frame,
                     texture: None,
                     frame_size: [0.0, 0.0],
                     shelf,
@@ -184,13 +197,12 @@ impl MangaReader {
     /// （全画面や終了など、本体が受け持つものは残す）
     pub(super) fn render_web_view(&mut self, ctx: &egui::Context, action: &mut MangaAction) {
         // 届いたもの。画面は最新のものだけを映す
-        let mut latest = None;
         let mut leave = false;
         let mut error = None;
         if let Some(view) = self.web_view.as_mut() {
+            let latest = view.frame.lock().ok().and_then(|mut slot| slot.take());
             loop {
                 match view.events.try_recv() {
-                    Ok(ViewEvent::Frame(image, size)) => latest = Some((image, size)),
                     Ok(ViewEvent::Chrome(chrome)) => view.chrome = chrome,
                     Ok(ViewEvent::Closed) | Err(TryRecvError::Disconnected) => {
                         leave = true;
@@ -306,13 +318,22 @@ impl MangaReader {
         }
 
         // 動作（キー・マウス・ゲームパッド）
-        match *action {
+        *action = self.route_web_view_action(*action);
+    }
+
+    /// 窓の中で読んでいるときの動作を振り分ける。キー・マウス・ゲームパッドのほか、メニューからの
+    /// 動作もここを通す（読んでいた別の本を動かさないように）。本体がそのまま行う動作（全画面・終了など）
+    /// を返し、窓の中の表示が受け持ったものは None を返す
+    pub(super) fn route_web_view_action(&mut self, action: MangaAction) -> MangaAction {
+        if self.web_view.is_none() {
+            return action;
+        }
+        match action {
             MangaAction::CloseBook => {
-                *action = MangaAction::None;
                 self.leave_web_view();
+                MangaAction::None
             }
             MangaAction::ToggleAutoPageLayout => {
-                *action = MangaAction::None;
                 if let Some(view) = self.web_view.as_mut() {
                     view.single = !view.single;
                     let single = view.single;
@@ -323,20 +344,22 @@ impl MangaReader {
                         "settings.page_view.double_rl"
                     }));
                 }
+                MangaAction::None
             }
             // 本体が受け持つもの
-            MangaAction::FullScreen | MangaAction::QuitApp => {}
+            MangaAction::FullScreen | MangaAction::QuitApp | MangaAction::None => action,
             // 別のものを開くときは、窓の中で読むのをやめてから
             MangaAction::OpenFile | MangaAction::ShowHistory | MangaAction::ShowFavorites => {
                 self.web_view = None;
+                action
             }
             other => {
-                *action = MangaAction::None;
                 if let Some(name) = plugin_action_name(other)
                     && let Some(view) = self.web_view.as_mut()
                 {
                     view.send(json!({"action": name}));
                 }
+                MangaAction::None
             }
         }
     }

@@ -17,6 +17,7 @@
 use crate::cdp::Cdp;
 use crate::keys::{self, Operation};
 use crate::{NOT_SIGNED_IN, Options, attach, connect, data_dir, page_targets, read_request, reader_url};
+
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -164,7 +165,16 @@ fn click(cdp: &mut Cdp, session: &str, x: f64, y: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// 失敗はどれも、本体に JSON で知らせる（本体は標準エラー出力を読まない）
 pub fn view(options: &Options) -> Result<(), String> {
+    let result = view_book(options);
+    if let Err(e) = &result {
+        emit(&json!({"error": e}));
+    }
+    result
+}
+
+fn view_book(options: &Options) -> Result<(), String> {
     let asin = options.asin.clone().ok_or("開く本（ASIN）を指定してください")?;
     let request = read_request().unwrap_or(Value::Null);
     let number = |value: &Value, default: f64| value.as_f64().filter(|v| *v > 0.0).unwrap_or(default);
@@ -195,14 +205,7 @@ pub fn view(options: &Options) -> Result<(), String> {
     };
     let session = attach(&mut cdp, &target)?;
     let result = run(&mut cdp, &session, &operations, &url, &mut screen, &commands);
-    if launched {
-        let _ = cdp.call("Browser.close", json!({}), None);
-    } else {
-        let _ = cdp.call("Target.closeTarget", json!({"targetId": target}), None);
-    }
-    if let Err(e) = &result {
-        emit(&json!({"error": e}));
-    }
+    crate::release(&mut cdp, &target);
     result
 }
 

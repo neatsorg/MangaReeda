@@ -169,6 +169,19 @@ fn connect(options: &Options, url: &str, headless: bool) -> Result<(Cdp, bool), 
     Ok((Cdp::connect(&ws)?, true))
 }
 
+/// 使い終わったページを閉じる。ほかにページが無ければ（ほかの命令が使っていなければ）ブラウザも閉じる。
+/// ブラウザは、一覧を取る list・窓の中で読む view・ログインの open が分け合うことがあるので、
+/// 起動した者ではなく、最後に使っていた者が閉じる
+fn release(cdp: &mut Cdp, target: &str) {
+    let _ = cdp.call("Target.closeTarget", json!({"targetId": target}), None);
+    // 閉じたページが一覧から消えるのを少し待つ
+    thread::sleep(Duration::from_millis(200));
+    let others = page_targets(cdp).map(|pages| pages.into_iter().any(|(t, _)| t != target));
+    if matches!(others, Ok(false)) {
+        let _ = cdp.call("Browser.close", json!({}), None);
+    }
+}
+
 fn page_targets(cdp: &mut Cdp) -> Result<Vec<(String, String)>, String> {
     let targets = cdp.call("Target.getTargets", json!({}), None)?;
     Ok(targets["targetInfos"]
@@ -645,11 +658,7 @@ fn library(options: &Options) -> Result<(), String> {
     }
     thread::sleep(Duration::from_secs(2));
     let result = cdp.evaluate(&session, &library_page_script(token.as_deref()));
-    if launched {
-        let _ = cdp.call("Browser.close", json!({}), None);
-    } else {
-        let _ = cdp.call("Target.closeTarget", json!({"targetId": target}), None);
-    }
+    release(&mut cdp, &target);
     let result = result?;
     let page_url = result["url"].as_str().unwrap_or_default();
     let status = result["status"].as_u64().unwrap_or(0);
@@ -699,6 +708,8 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e}");
+            // 途中で失敗して、起動したブラウザを閉じないまま終わらないように
+            browser::kill_launched();
             if e == NOT_SIGNED_IN {
                 ExitCode::from(EXIT_AUTH)
             } else {

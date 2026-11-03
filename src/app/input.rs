@@ -602,6 +602,8 @@ impl MangaReader {
     }
 
     pub(super) fn execute_action(&mut self, action: MangaAction, ctx: &egui::Context) {
+        // 窓の中で読んでいるときは、その表示に振り分ける（メニューからの動作も）
+        let action = self.route_web_view_action(action);
         match action {
             MangaAction::ScrollNextPage => self.scroll_next_page(ctx),
             MangaAction::ScrollPrevPage => self.scroll_prev_page(ctx),

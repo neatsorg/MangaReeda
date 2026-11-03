@@ -5,7 +5,10 @@ use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// 1つの命令の答えを待つ時間の上限
+const CALL_LIMIT: Duration = Duration::from_secs(30);
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
@@ -59,8 +62,14 @@ impl Cdp {
         self.socket
             .send(Message::text(message.to_string()))
             .map_err(|e| format!("DevTools に送れません: {e}"))?;
+        // ブラウザが答えなくなっても止まったままにならないよう、待つ時間に上限を設ける
+        // （止まっていると、本体からの終わりの頼みも受け取れない）
+        let deadline = Instant::now() + CALL_LIMIT;
         loop {
-            let reply = self.read()?;
+            let reply = match self.read_within(deadline)? {
+                Some(reply) => reply,
+                None => return Err(format!("{method} の答えが来ません")),
+            };
             if reply.get("id").and_then(Value::as_u64) == Some(id) {
                 if let Some(error) = reply.get("error") {
                     return Err(format!("{method} が失敗しました: {error}"));
@@ -69,6 +78,31 @@ impl Cdp {
             }
             if reply.get("method").is_some() {
                 self.pending.push_back(reply);
+            }
+        }
+    }
+
+    /// `deadline` までに届いた1通。届かなければ None
+    fn read_within(&mut self, deadline: Instant) -> Result<Option<Value>, String> {
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(None);
+            }
+            self.set_read_timeout(Some((deadline - now).min(Duration::from_millis(500))));
+            let read = self.socket.read();
+            self.set_read_timeout(None);
+            match read {
+                Ok(Message::Text(text)) => {
+                    return serde_json::from_str(text.as_str())
+                        .map(Some)
+                        .map_err(|e| format!("DevTools の答えを読めません: {e}"));
+                }
+                Ok(Message::Close(_)) => return Err("ブラウザとの接続が閉じました".into()),
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(e))
+                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(e) => return Err(format!("ブラウザとの接続が切れました: {e}")),
             }
         }
     }

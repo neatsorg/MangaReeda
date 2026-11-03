@@ -4,7 +4,8 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -122,6 +123,20 @@ pub struct Launch<'a> {
     pub headless: bool,
 }
 
+/// このプロセスが起動したブラウザ。途中で失敗したときに止めるために持っておく
+static LAUNCHED: Mutex<Option<Child>> = Mutex::new(None);
+
+/// このプロセスが起動したブラウザが動いていれば止める（途中で失敗して、後始末をしないまま終わるとき）
+pub fn kill_launched() {
+    if let Ok(mut launched) = LAUNCHED.lock()
+        && let Some(mut child) = launched.take()
+        && matches!(child.try_wait(), Ok(None))
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 /// プロファイルの DevToolsActivePort から、ブラウザ全体の WebSocket の URL を作る
 pub fn devtools_url(profile: &Path) -> Option<String> {
     let text = fs::read_to_string(profile.join("DevToolsActivePort")).ok()?;
@@ -164,8 +179,10 @@ pub fn launch(browser: &Browser, launch: &Launch) -> Result<String, String> {
         Browser::Flatpak(id) => {
             let mut command = Command::new("flatpak");
             // プロファイルのフォルダだけをサンドボックスの中から見えるようにする
+            // flatpak の命令が止められたら、サンドボックスの中のブラウザも終わるようにする
             command
                 .arg("run")
+                .arg("--die-with-parent")
                 .arg(format!("--filesystem={}", launch.profile.display()))
                 .arg(id);
             command
@@ -176,9 +193,12 @@ pub fn launch(browser: &Browser, launch: &Launch) -> Result<String, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    command
+    let child = command
         .spawn()
         .map_err(|e| format!("ブラウザを起動できません（{}）: {e}", browser.describe()))?;
+    if let Ok(mut launched) = LAUNCHED.lock() {
+        *launched = Some(child);
+    }
 
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(30) {
@@ -187,6 +207,7 @@ pub fn launch(browser: &Browser, launch: &Launch) -> Result<String, String> {
         }
         thread::sleep(Duration::from_millis(200));
     }
+    kill_launched();
     Err(format!(
         "ブラウザが DevTools の待ち受けを始めませんでした（{}）",
         browser.describe()

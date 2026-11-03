@@ -518,8 +518,10 @@ impl eframe::App for MangaReader {
         }
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // 窓の中で読んでいる本のプラグイン（とブラウザ）を終わらせる
-        self.web_view = None;
+        // 窓の中で読んでいる本のプラグイン（とブラウザ）を終わらせる。終わる前に後始末を済ませる
+        if let Some(view) = self.web_view.take() {
+            view.shut_down(web_view::EXIT_GRACE);
+        }
         self.remember_current_book();
         self.save_settings();
         // OCR のプラグインを止め、作業用の画像を消し終えるのを待つ

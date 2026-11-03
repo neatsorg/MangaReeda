@@ -776,28 +776,76 @@ pub fn spawn_open(
     Ok(())
 }
 
+/// 窓の中で読ませているプラグイン（`view`）。プラグインが起動したブラウザも同じグループに入るので、
+/// 止めるときは子孫ごと止める（ブラウザだけが残らないように）
+pub struct ViewProcess {
+    child: std::process::Child,
+    group: Option<group::Group>,
+    pub stdin: std::process::ChildStdin,
+}
+
+impl ViewProcess {
+    /// 標準入力を閉じて終わりを待ち、`grace` のあいだに終わらなければ止める。終わったあとも、
+    /// グループに残ったもの（後始末をせずに終わったプラグインのブラウザなど）は止める
+    pub fn stop(self, grace: Duration) {
+        let Self {
+            mut child,
+            group,
+            stdin,
+        } = self;
+        drop(stdin);
+        let start = Instant::now();
+        loop {
+            let exited = match &group {
+                Some(group) => group.exited(&mut child),
+                None => !matches!(child.try_wait(), Ok(None)),
+            };
+            if exited || start.elapsed() >= grace {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        // 最初のプロセスの終わりを受け取る前にグループを止める（番号が別のプロセスに使われないうちに）
+        match &group {
+            Some(group) => group.kill(),
+            None => {
+                let _ = child.kill();
+            }
+        }
+        let _ = child.wait();
+    }
+}
+
 /// 読むプラグインに、本 `id` を本体の窓の中で読ませる（`view <id>`）。`request` は標準入力の1行目。
-/// プラグインは画面を標準出力に流し続け、本体は標準入力で操作を送るので、両方を返す
+/// プラグインは画面を標準出力に流し続け、本体は標準入力で操作を送る
 pub fn spawn_view(
     manifest: &PluginManifest,
     request: &serde_json::Value,
     id: &str,
-) -> Result<(std::process::Child, std::process::ChildStdin, std::process::ChildStdout), PluginError>
-{
+) -> Result<(ViewProcess, std::process::ChildStdout), PluginError> {
     let mut command = manifest
         .command(&["view", id])
         .ok_or_else(|| PluginError::Other("プラグインの命令がありません".to_owned()))?;
     command.stderr(Stdio::null());
+    group::configure(&mut command);
     let mut child = spawn(&mut command).map_err(|e| PluginError::Other(e.to_string()))?;
-    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+    // ログイン情報を渡す前にグループに入れる（プラグインが起動するブラウザも入るように）
+    let group = group::Group::new(&child);
+    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         let _ = child.kill();
+        let _ = child.wait();
         return Err(PluginError::Other("プラグインとやり取りできません".to_owned()));
     };
-    if writeln!(stdin, "{request}").is_err() {
-        let _ = child.kill();
+    let mut process = ViewProcess {
+        child,
+        group,
+        stdin,
+    };
+    if writeln!(process.stdin, "{request}").is_err() {
+        process.stop(Duration::ZERO);
         return Err(PluginError::Other("プラグインに書き込めません".to_owned()));
     }
-    Ok((child, stdin, stdout))
+    Ok((process, stdout))
 }
 
 /// プラグインに渡す1行目
@@ -1191,6 +1239,40 @@ mod tests {
             ocr_batch: None,
             dir: dir.to_path_buf(),
         }
+    }
+
+    /// 窓の中で読ませるプラグインは、終わりの頼みを無視しても、起動したもの（ブラウザ）ごと止まる
+    #[cfg(unix)]
+    #[test]
+    fn view_plugins_are_stopped_with_what_they_started() {
+        let dir = temp("view-stop");
+        let pid_file = dir.join("browser.pid");
+        // ブラウザの代わりに、裏で長く動くプロセスを起動し、標準入力が閉じても終わらない
+        let plugin = script_plugin(
+            &dir,
+            &format!(
+                "read request\nsleep 300 &\necho $! > '{}'\nwhile true; do sleep 1; done\n",
+                pid_file.display()
+            ),
+        );
+        let (process, _stdout) = spawn_view(&plugin, &serde_json::json!({}), "B0TEST").unwrap();
+        let started = Instant::now();
+        while !pid_file.is_file() && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(100));
+        let browser: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
+        assert!(alive(browser));
+        process.stop(Duration::from_millis(200));
+        // 止めたあと、裏のプロセスの終わりはシェルが受け取らないので、少し待ってから確かめる
+        let started = Instant::now();
+        while alive(browser) && started.elapsed() < Duration::from_secs(5) {
+            // 親が止まったので init に引き取られ、終わりが受け取られるまで待つ
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!alive(browser), "起動したものが残っている");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 読むプラグインには、open と本の id を渡し、標準入力にキー設定などの1行を書く。終わるのは待たない
