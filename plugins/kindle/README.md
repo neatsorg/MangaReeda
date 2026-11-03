@@ -49,6 +49,7 @@ MangaReeda から呼ばれたときは、キー設定と単ページか見開き
 - 手元の PC（1600×900）で測った CPU: 何もしないとき 117%（中継しっぱなし）→ 14%（操作のあと 1.5 秒だけ中継）→ 5%（撮る形）。めくり続けると 137% → 39%。めくってから画面が届くまでは 50〜60ms → 約 130ms（1枚撮るのに 0.07〜0.08 秒かかる）だが、読んでいて遅れは気にならなかった
 - headless の Chrome は自分で `--use-angle=swiftshader-webgl` を付けて CPU で描く。`MANGAREEDA_BROWSER_ARGS="--use-angle=vulkan --enable-features=Vulkan --ignore-gpu-blocklist"` で GPU に描かせると、ページを送り続けているときの CPU が 2 割ほど減る（137% → 107%）。ドライバに不具合のある環境もあるので既定にはしていない
 - 読み込みの途中で撮れないときは、次の機会に撮る
+- バナー（上のツールバーと下の進み具合）は、Cloud Reader では真ん中のクリックで出し入れする（上端・下端のクリックには反応しない）。出ているかは、下のバー `.kw-wdg-chrome-bar` に `kw-overlay-fade-enter-done`（出ている）か `kw-overlay-fade-exit-done`（隠れている）が付くかで見分け、画面を撮るたびに確かめて変わったら `{"chrome": …}` を送る。`{"toggle_chrome": true}` を受けたら真ん中をクリックする。本を開いた直後は Cloud Reader が 5 秒ほどバナーを出す
 - ライブラリのページに移ったら `{"closed": true}` を送って終わる。`/kindle-library/manga-wr/…` はリーダーへの入口なので、閉じたとはみなさない
 
 本体は画面を映すだけで、保存も OCR もしない。本体の JPEG の展開は、デバッグ版だと1枚 0.9 秒ほどかかって重いので、試すときはリリース版を使う（リリース版は 20ms ほど）。

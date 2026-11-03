@@ -18,10 +18,15 @@ use std::process::{Child, ChildStdin, ChildStdout};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
+/// リーダーのバナーを出すためにクリックする、上端と下端の帯の高さ（表示場所の高さに対する割合）
+const CHROME_BAND: f32 = 0.1;
+
 /// プラグインから届いたもの
 enum ViewEvent {
     /// 画面と、その大きさ（ブラウザの見かけの大きさ。論理ピクセル）
     Frame(egui::ColorImage, [f32; 2]),
+    /// リーダーのバナー（ツールバーと進み具合）が出た・消えた
+    Chrome(bool),
     /// 本を閉じた（リーダーでライブラリに戻った）
     Closed,
     Error(String),
@@ -37,6 +42,8 @@ pub(super) struct WebView {
     /// 閉じたときに戻る一覧
     shelf: ShelfSource,
     single: bool,
+    /// リーダーのバナーが出ているか。出ているあいだは、クリックをそのままリーダーに送る
+    chrome: bool,
     /// 最後にプラグインに伝えた、表示場所の大きさと倍率
     sent_size: Option<([u32; 2], f32)>,
 }
@@ -92,6 +99,8 @@ fn read_events(stdout: ChildStdout, ctx: egui::Context) -> Receiver<ViewEvent> {
                 let width = value["width"].as_f64().unwrap_or(size[0] as f64) as f32;
                 let height = value["height"].as_f64().unwrap_or(size[1] as f64) as f32;
                 ViewEvent::Frame(color, [width, height])
+            } else if let Some(chrome) = value["chrome"].as_bool() {
+                ViewEvent::Chrome(chrome)
             } else if value["closed"].as_bool() == Some(true) {
                 ViewEvent::Closed
             } else if let Some(error) = value["error"].as_str() {
@@ -152,6 +161,7 @@ impl MangaReader {
                     frame_size: [0.0, 0.0],
                     shelf,
                     single,
+                    chrome: false,
                     sent_size: None,
                 });
             }
@@ -181,6 +191,7 @@ impl MangaReader {
             loop {
                 match view.events.try_recv() {
                     Ok(ViewEvent::Frame(image, size)) => latest = Some((image, size)),
+                    Ok(ViewEvent::Chrome(chrome)) => view.chrome = chrome,
                     Ok(ViewEvent::Closed) | Err(TryRecvError::Disconnected) => {
                         leave = true;
                         break;
@@ -211,6 +222,7 @@ impl MangaReader {
         // 描く。マウスの操作は、本を読んでいるときと同じく、MangaReeda のマウスの設定で動作に直す
         let pixels_per_point = ctx.pixels_per_point();
         let mut forward_click = None;
+        let mut toggle_chrome = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
@@ -220,15 +232,29 @@ impl MangaReader {
                     ui.id().with("web_view"),
                     egui::Sense::click_and_drag(),
                 );
-                if self.binding_action.is_none()
+                let chrome = self.web_view.as_ref().is_some_and(|view| view.chrome);
+                let left_click = response
+                    .clicked_by(egui::PointerButton::Primary)
+                    .then(|| response.interact_pointer_pos())
+                    .flatten();
+                // 上端か下端の帯のクリックは、リーダーのバナーを出す（Cloud Reader は真ん中のクリックで出す）
+                let band = rect.height() * CHROME_BAND;
+                let band_click = !chrome
+                    && left_click.is_some_and(|pos| pos.y < rect.top() + band || pos.y > rect.bottom() - band);
+                if band_click {
+                    toggle_chrome = true;
+                } else if !chrome
+                    && self.binding_action.is_none()
                     && *action == MangaAction::None
                     && let Some(mouse_action) = self.collect_mouse_action(&response, ctx)
                 {
                     *action = mouse_action;
                 }
-                // 左クリックに動作を割り当てていなければ、クリックをリーダーに送る（ツールバーなどを使えるように）
-                let click_unassigned = self.get_mouse_action(MouseGesture::Click(MouseButton::Button1))
-                    == MangaAction::None;
+                // バナーが出ているあいだと、左クリックに動作を割り当てていないときは、クリックをリーダーに送る
+                // （進み具合のバーや文字の設定などを使えるように）
+                let click_to_reader = chrome
+                    || self.get_mouse_action(MouseGesture::Click(MouseButton::Button1))
+                        == MangaAction::None;
                 let Some(view) = self.web_view.as_mut() else {
                     return;
                 };
@@ -259,9 +285,9 @@ impl MangaReader {
                     egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
-                if click_unassigned
-                    && response.clicked_by(egui::PointerButton::Primary)
-                    && let Some(pos) = response.interact_pointer_pos()
+                if click_to_reader
+                    && !band_click
+                    && let Some(pos) = left_click
                     && image_rect.contains(pos)
                 {
                     forward_click = Some([
@@ -270,8 +296,13 @@ impl MangaReader {
                     ]);
                 }
             });
-        if let (Some([x, y]), Some(view)) = (forward_click, self.web_view.as_mut()) {
-            view.send(json!({"click": [x, y]}));
+        if let Some(view) = self.web_view.as_mut() {
+            if let Some([x, y]) = forward_click {
+                view.send(json!({"click": [x, y]}));
+            }
+            if toggle_chrome {
+                view.send(json!({"toggle_chrome": true}));
+            }
         }
 
         // 動作（キー・マウス・ゲームパッド）
