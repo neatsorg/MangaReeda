@@ -3,11 +3,12 @@
 //! プラグインは画面を出さないブラウザで本を開き、描かれた画面を送ってくる。本体はそれを
 //! 本の表示場所に映すだけで、保存も、文字の読み取りも、表紙やサムネイルへの使い回しもしない
 //! （DRM のかかった本の中身を取り出さないため。テクスチャは1枚を上書きして使う）。
-//! キーやマウスの操作は、本体の設定で動作に直してから、その名前をプラグインに送る。
+//! キー・マウス・ゲームパッドの操作は、本を読んでいるときと同じく本体の設定で動作に直し、
+//! ページを動かすものはその名前をプラグインに送る。
 
 use super::MangaReader;
 use super::thumbnails::ShelfSource;
-use crate::config::{MangaAction, MouseGesture, PageViewOptions};
+use crate::config::{MangaAction, MouseButton, MouseGesture, PageViewOptions};
 use crate::engine::plugin::spawn_view;
 use crate::localize::tr;
 use eframe::egui;
@@ -26,9 +27,6 @@ enum ViewEvent {
     Error(String),
 }
 
-/// ホイールでページを送ったあと、次に送るまで空ける時間（タッチパッドが細かく何度も送ってくるので）
-const WHEEL_INTERVAL: Duration = Duration::from_millis(200);
-
 pub(super) struct WebView {
     child: Option<Child>,
     stdin: ChildStdin,
@@ -41,7 +39,6 @@ pub(super) struct WebView {
     single: bool,
     /// 最後にプラグインに伝えた、表示場所の大きさと倍率
     sent_size: Option<([u32; 2], f32)>,
-    last_wheel: Option<Instant>,
 }
 
 impl WebView {
@@ -156,7 +153,6 @@ impl MangaReader {
                     shelf,
                     single,
                     sent_size: None,
-                    last_wheel: None,
                 });
             }
             Err(error) => {
@@ -212,69 +208,27 @@ impl MangaReader {
             return;
         }
 
-        // 動作
-        match *action {
-            MangaAction::CloseBook => {
-                *action = MangaAction::None;
-                self.leave_web_view();
-                return;
-            }
-            MangaAction::ToggleAutoPageLayout => {
-                *action = MangaAction::None;
-                if let Some(view) = self.web_view.as_mut() {
-                    view.single = !view.single;
-                    let single = view.single;
-                    view.send(json!({"single": single}));
-                    self.show_fading_error(tr(if single {
-                        "settings.page_view.single"
-                    } else {
-                        "settings.page_view.double_rl"
-                    }));
-                }
-            }
-            // 本体が受け持つもの
-            MangaAction::FullScreen | MangaAction::QuitApp => {}
-            // 別のものを開くときは、窓の中で読むのをやめてから
-            MangaAction::OpenFile | MangaAction::ShowHistory | MangaAction::ShowFavorites => {
-                self.web_view = None;
-                return;
-            }
-            other => {
-                *action = MangaAction::None;
-                if let Some(name) = plugin_action_name(other)
-                    && let Some(view) = self.web_view.as_mut()
-                {
-                    view.send(json!({"action": name}));
-                }
-            }
-        }
-
-        // ホイールは、本体のマウスの設定でページを送る
-        let wheel = ctx.input(|i| i.raw_scroll_delta.y);
-        if wheel != 0.0 {
-            let gesture = if wheel > 0.0 {
-                MouseGesture::ScrollUp
-            } else {
-                MouseGesture::ScrollDown
-            };
-            let name = plugin_action_name(self.get_mouse_action(gesture));
-            if let (Some(name), Some(view)) = (name, self.web_view.as_mut())
-                && view
-                    .last_wheel
-                    .is_none_or(|at| at.elapsed() > WHEEL_INTERVAL)
-            {
-                view.last_wheel = Some(Instant::now());
-                view.send(json!({"action": name}));
-            }
-        }
-
-        let background = egui::Color32::BLACK;
+        // 描く。マウスの操作は、本を読んでいるときと同じく、MangaReeda のマウスの設定で動作に直す
         let pixels_per_point = ctx.pixels_per_point();
+        let mut forward_click = None;
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(background))
+            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
-                let response = ui.allocate_rect(rect, egui::Sense::click());
+                let response = ui.interact(
+                    rect,
+                    ui.id().with("web_view"),
+                    egui::Sense::click_and_drag(),
+                );
+                if self.binding_action.is_none()
+                    && *action == MangaAction::None
+                    && let Some(mouse_action) = self.collect_mouse_action(&response, ctx)
+                {
+                    *action = mouse_action;
+                }
+                // 左クリックに動作を割り当てていなければ、クリックをリーダーに送る（ツールバーなどを使えるように）
+                let click_unassigned = self.get_mouse_action(MouseGesture::Click(MouseButton::Button1))
+                    == MangaAction::None;
                 let Some(view) = self.web_view.as_mut() else {
                     return;
                 };
@@ -305,16 +259,55 @@ impl MangaReader {
                     egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
-                // クリックはリーダーの操作（ツールバーなど）に、ブラウザでの位置に直して送る
-                if response.clicked()
+                if click_unassigned
+                    && response.clicked_by(egui::PointerButton::Primary)
                     && let Some(pos) = response.interact_pointer_pos()
                     && image_rect.contains(pos)
                 {
-                    let x = (pos.x - image_rect.left()) / scale;
-                    let y = (pos.y - image_rect.top()) / scale;
-                    view.send(json!({"click": [x, y]}));
+                    forward_click = Some([
+                        (pos.x - image_rect.left()) / scale,
+                        (pos.y - image_rect.top()) / scale,
+                    ]);
                 }
             });
+        if let (Some([x, y]), Some(view)) = (forward_click, self.web_view.as_mut()) {
+            view.send(json!({"click": [x, y]}));
+        }
+
+        // 動作（キー・マウス・ゲームパッド）
+        match *action {
+            MangaAction::CloseBook => {
+                *action = MangaAction::None;
+                self.leave_web_view();
+            }
+            MangaAction::ToggleAutoPageLayout => {
+                *action = MangaAction::None;
+                if let Some(view) = self.web_view.as_mut() {
+                    view.single = !view.single;
+                    let single = view.single;
+                    view.send(json!({"single": single}));
+                    self.show_fading_error(tr(if single {
+                        "settings.page_view.single"
+                    } else {
+                        "settings.page_view.double_rl"
+                    }));
+                }
+            }
+            // 本体が受け持つもの
+            MangaAction::FullScreen | MangaAction::QuitApp => {}
+            // 別のものを開くときは、窓の中で読むのをやめてから
+            MangaAction::OpenFile | MangaAction::ShowHistory | MangaAction::ShowFavorites => {
+                self.web_view = None;
+            }
+            other => {
+                *action = MangaAction::None;
+                if let Some(name) = plugin_action_name(other)
+                    && let Some(view) = self.web_view.as_mut()
+                {
+                    view.send(json!({"action": name}));
+                }
+            }
+        }
     }
 }
 
