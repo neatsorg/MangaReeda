@@ -546,7 +546,15 @@ fn library_page_script(token: Option<&str>) -> String {
     }
     format!(
         r#"(async () => {{
-  const r = await fetch("/kindle-library/search?{query}", {{ credentials: "include" }});
+  // ログインしていなければ、ライブラリから別のページへ移されている
+  if (!location.pathname.startsWith("/kindle-library")) return {{ status: 0, url: location.href }};
+  let r;
+  try {{
+    r = await fetch("/kindle-library/search?{query}", {{ credentials: "include" }});
+  }} catch (e) {{
+    // サインインのページ（別のドメイン）へ移されると、取れずに失敗する
+    return {{ status: 0, url: location.href, failed: String(e) }};
+  }}
   if (!r.ok) return {{ status: r.status, url: location.href }};
   const j = await r.json();
   return {{ status: r.status, url: location.href, items: j.itemsList || [], next: j.paginationToken || null }};
@@ -626,7 +634,7 @@ fn library(options: &Options) -> Result<(), String> {
     let page_url = result["url"].as_str().unwrap_or_default();
     let status = result["status"].as_u64().unwrap_or(0);
     // ログインしていないと /landing やサインインのページへ移され、一覧も取れない
-    if !page_url.contains("kindle-library") || status == 401 || status == 403 {
+    if !page_url.contains("kindle-library") || matches!(status, 0 | 401 | 403) {
         return Err(NOT_SIGNED_IN.into());
     }
     if status != 200 {
