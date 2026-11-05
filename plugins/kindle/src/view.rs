@@ -41,7 +41,8 @@ const LOADING: Duration = Duration::from_secs(10);
 /// 何もしていないあいだも、遅れて変わった画面を拾うために、この間隔で1枚撮る
 const IDLE_INTERVAL: Duration = Duration::from_secs(4);
 
-/// リーダーのバナーが出ているか、今のページ・総ページ数（keys::PAGE_FUNCTION）、縦スクロールか。
+/// リーダーのバナーが出ているか、今のページ・総ページ数（keys::PAGE_FUNCTION）、縦スクロールか、
+/// 本を読み込めなかったか（「Issue Loading Content」と TRY AGAIN の出る窓）。
 /// バナーは、出ているあいだ kw-overlay-fade-enter-done が付く。見開きのときは下の進み具合のバー、
 /// 縦スクロールのときは上のバー（#readerChromeTop）と右の縦のつまみ（#readerChromeRight）。
 /// 縦スクロールかは、リーダーが覚えている localStorage の scrollDirectionPreference で見分ける。
@@ -63,6 +64,7 @@ fn reader_state_script() -> String {
       '.kw-wdg-chrome-bar.kw-overlay-fade-enter-done, #readerChromeTop.kw-overlay-fade-enter-done, #readerChromeRight.kw-overlay-fade-enter-done'),
     page: page && page.every((n) => Number.isInteger(n) && n > 0) ? page : null,
     vertical: localStorage.getItem('scrollDirectionPreference') === 'Vertical',
+    error: !!document.querySelector('.kw-error-content-container'),
   }};
 }})()",
         page = keys::PAGE_FUNCTION
@@ -116,6 +118,16 @@ const WHEEL_STEP: f64 = 100.0;
 const TOP_HOVER_Y: f64 = 10.0;
 /// 縦スクロールのとき、右の縦のつまみを出すためにマウスを置く、右端からの位置
 const RIGHT_HOVER_X: f64 = 10.0;
+
+/// ブラウザとの接続が切れたとき（スリープに入るときに切れる。ブラウザは動き続けている）に、
+/// つなぎ直すまでの間。1回目は動いているブラウザにつなぎ直し、それでもだめなら起動し直す。
+/// 使い切ったら諦めて、本体に知らせる。つなぎ直したあと `STEADY` だけ読めていれば数え直す
+const RESTART_DELAYS: [u64; 6] = [1, 2, 4, 8, 15, 30];
+const STEADY: Duration = Duration::from_secs(60);
+/// 本を読み込めなかったとき（スリープに入るときや戻った直後の、ネットにつながっていないあいだなど）に、
+/// 読み込み直すまでの間。続けて失敗したら倍にしていき、`RELOAD_MAX` で止める。読めたら戻す
+const RELOAD_DELAY: Duration = Duration::from_secs(3);
+const RELOAD_MAX: Duration = Duration::from_secs(60);
 
 /// 単ページのときの幅と高さの比（Cloud Reader は縦長の画面だと1ページずつ表示する）
 const SINGLE_RATIO: f64 = 0.7;
@@ -320,13 +332,125 @@ fn view_book(options: &Options) -> Result<(), String> {
         scale: number(&request["scale"], 1.0),
         single: request["single"].as_bool().unwrap_or(false),
     };
-    let vertical = request["vertical"].as_bool().unwrap_or(false);
+    let mut state = Keep {
+        vertical: request["vertical"].as_bool().unwrap_or(false),
+        page: None,
+        target: None,
+    };
     let operations = keys::load_operations(&data_dir().join("actions.json"))?;
     let url = reader_url(&options.site, &asin);
     let commands = read_commands();
 
+    // ブラウザとの接続が切れたら、つなぎ直して（ブラウザが終わっていれば起動し直して）同じページに戻る
+    let mut attempt = 0;
+    loop {
+        let started = Instant::now();
+        let reopening = attempt > 0;
+        // 切れたわけと、つなぎ直せなかったのか（ブラウザが終わったか、答えなくなった）
+        let (lost, unreachable) =
+            match read_in_browser(options, &operations, &url, &mut screen, &mut state, &commands) {
+                Ok(Ended::Done) => return Ok(()),
+                Ok(Ended::Lost(e)) => (e, false),
+                // つなぎ直しの途中の失敗（ブラウザがまだ起動できないなど）も、もう一度試す。ログインを求められたときは別
+                Err(e) if reopening && e != NOT_SIGNED_IN => (e, true),
+                Err(e) => return Err(e),
+            };
+        if started.elapsed() >= STEADY {
+            attempt = 0;
+        }
+        let Some(delay) = RESTART_DELAYS.get(attempt) else {
+            return Err(lost);
+        };
+        attempt += 1;
+        eprintln!("{lost}。{delay} 秒後にブラウザにつなぎ直します（{attempt} 回目）");
+        // つなぎ直せなかったら、起動したブラウザ（このプロセスが起動したなら）を止めて、次は起動し直す
+        if unreachable {
+            crate::browser::kill_launched();
+            state.target = None;
+        }
+        if !wait_to_restart(Duration::from_secs(*delay), &commands, &mut screen, &mut state) {
+            return Ok(());
+        }
+    }
+}
+
+/// 開き直すときに引き継ぐもの
+struct Keep {
+    /// 縦スクロールで読むか（本体から最後に届いたもの）
+    vertical: bool,
+    /// 最後に知らせたページ
+    page: Option<u64>,
+    /// 本を開いたページ（ブラウザのタブ）。接続だけが切れたときは、つなぎ直してそのまま使う
+    target: Option<String>,
+}
+
+/// ブラウザで本を読み終えたわけ
+enum Ended {
+    /// 本体に頼まれた・本を閉じた
+    Done,
+    /// ブラウザとの接続が切れた（ブラウザが終わったか、スリープで切れた）
+    Lost(String),
+}
+
+/// 起動し直すまで待つ。そのあいだに届いた命令のうち、画面の大きさなどは覚えておく。
+/// 本体が終わるよう頼んだら false
+fn wait_to_restart(
+    delay: Duration,
+    commands: &Receiver<Option<Value>>,
+    screen: &mut Screen,
+    state: &mut Keep,
+) -> bool {
+    let until = Instant::now() + delay;
+    while Instant::now() < until {
+        loop {
+            let command = match commands.try_recv() {
+                Ok(Some(command)) => command,
+                Ok(None) | Err(TryRecvError::Disconnected) => return false,
+                Err(TryRecvError::Empty) => break,
+            };
+            if command["quit"].as_bool() == Some(true) {
+                return false;
+            }
+            if let (Some(width), Some(height)) = (command["size"][0].as_f64(), command["size"][1].as_f64()) {
+                screen.width = width.max(1.0);
+                screen.height = height.max(1.0);
+                screen.scale = command["scale"].as_f64().filter(|s| *s > 0.0).unwrap_or(screen.scale);
+            }
+            if let Some(single) = command["single"].as_bool() {
+                screen.single = single;
+            }
+            if let Some(vertical) = command["vertical"].as_bool() {
+                state.vertical = vertical;
+            }
+            // ページを動かす操作などは、開き直すまで届かないので捨てる
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    true
+}
+
+/// ブラウザにつないで（無ければ起動して）本を開き、読み終えるまで画面を流す
+fn read_in_browser(
+    options: &Options,
+    operations: &BTreeMap<String, Operation>,
+    url: &str,
+    screen: &mut Screen,
+    state: &mut Keep,
+    commands: &Receiver<Option<Value>>,
+) -> Result<Ended, String> {
     let (mut cdp, launched) = connect(options, "about:blank", true)?;
-    let target = if launched {
+    // 接続だけが切れて、ブラウザに本を開いたページが残っていれば、読み込み直さずにそのまま使う
+    let kept = match &state.target {
+        Some(kept) if !launched => page_targets(&mut cdp)?
+            .into_iter()
+            .find(|(t, _)| t == kept)
+            .map(|(t, _)| t),
+        _ => None,
+    };
+    let reuse = kept.is_some();
+    let target = if let Some(kept) = kept {
+        kept
+    } else if launched {
         page_targets(&mut cdp)?
             .into_iter()
             .next()
@@ -341,20 +465,18 @@ fn view_book(options: &Options) -> Result<(), String> {
             .to_owned()
     };
     let session = attach(&mut cdp, &target)?;
-    let result = run(&mut cdp, &session, &operations, &url, &mut screen, vertical, &commands);
+    state.target = Some(target.clone());
+    let result = prepare(&mut cdp, &session, screen, url, !reuse)
+        .and_then(|()| run(&mut cdp, &session, operations, url, screen, state, commands));
+    if cdp.is_lost() {
+        return Ok(Ended::Lost(result.err().unwrap_or_default()));
+    }
     crate::release(&mut cdp, &target);
-    result
+    result.map(|()| Ended::Done)
 }
 
-fn run(
-    cdp: &mut Cdp,
-    session: &str,
-    operations: &BTreeMap<String, Operation>,
-    url: &str,
-    screen: &mut Screen,
-    mut want_vertical: bool,
-    commands: &Receiver<Option<Value>>,
-) -> Result<(), String> {
+/// ページの名乗りと大きさを整え、本を開く。`navigate` が false なら、もう開いているページをそのまま使う
+fn prepare(cdp: &mut Cdp, session: &str, screen: &Screen, url: &str, navigate: bool) -> Result<(), String> {
     // headless のブラウザは名乗りに "HeadlessChrome" が入り、Cloud Reader に断られる。
     // ブラウザ自身が答える名乗りから、その文字だけを直す（版はそのまま）
     let version = cdp.call("Browser.getVersion", json!({}), None)?;
@@ -369,8 +491,21 @@ fn run(
     )?;
     cdp.call("Page.enable", json!({}), Some(session))?;
     apply_screen(cdp, session, screen)?;
-    cdp.call("Page.navigate", json!({"url": url}), Some(session))?;
+    if navigate {
+        cdp.call("Page.navigate", json!({"url": url}), Some(session))?;
+    }
+    Ok(())
+}
 
+fn run(
+    cdp: &mut Cdp,
+    session: &str,
+    operations: &BTreeMap<String, Operation>,
+    url: &str,
+    screen: &mut Screen,
+    state: &mut Keep,
+    commands: &Receiver<Option<Value>>,
+) -> Result<(), String> {
     let mut captures = Captures::default();
     // この時刻までは、ページを移ったあとの読み込み中として、間を詰めて撮る
     let mut loading_until = Instant::now() + LOADING;
@@ -384,6 +519,11 @@ fn run(
     // リーダーがいま縦スクロールか（最後に読んだもの）と、最後に揃えようとした時刻
     let mut vertical = false;
     let mut vertical_tried: Option<Instant> = None;
+    // 開き直したときは、読んでいたページに戻す（リーダーが読み込めて、ページが分かってから）
+    let mut return_to = state.page;
+    // 読み込めなかったとき、読み込み直す時刻と、次に失敗したときの間
+    let mut reload_at: Option<Instant> = None;
+    let mut reload_delay = RELOAD_DELAY;
 
     loop {
         // 本体からの命令
@@ -424,9 +564,9 @@ fn run(
                 }
             }
             if let Some(next) = command["vertical"].as_bool()
-                && next != want_vertical
+                && next != state.vertical
             {
-                want_vertical = next;
+                state.vertical = next;
                 vertical_tried = None;
             }
             let mut next = *screen;
@@ -467,6 +607,20 @@ fn run(
             captures.after_action(Instant::now());
         }
 
+        if reload_at.is_some_and(|at| Instant::now() >= at) {
+            reload_at = None;
+            loading_until = Instant::now() + LOADING;
+            // 読み込み直したら、読んでいたページに戻す
+            if return_to.is_none() {
+                return_to = state.page;
+            }
+            eprintln!("本を読み込めなかったので、読み込み直します");
+            if let Err(e) = cdp.call("Page.navigate", json!({"url": url}), Some(session)) {
+                eprintln!("本を読み込み直せませんでした: {e}");
+                reload_at = Some(Instant::now() + reload_delay);
+            }
+        }
+
         // 撮る時刻が来たら撮る。前と違う画面だけを本体に送る
         let now = Instant::now();
         let since = now.duration_since(last_capture);
@@ -491,33 +645,62 @@ fn run(
             }
             // バナーが出たか消えたか（本体は、出ているあいだクリックをリーダーに送る）と、
             // ページの位置（本体のツールバーに出す）が変わったら知らせる
-            if let Ok(state) = cdp.evaluate(session, &reader_state) {
+            let reader = cdp.evaluate(session, &reader_state);
+            // 本を読み込めなかった。ページの位置などは読まずに、少し待って読み込み直す
+            if let Ok(reader) = &reader
+                && reader["error"].as_bool() == Some(true)
+            {
+                if reload_at.is_none() {
+                    reload_at = Some(Instant::now() + reload_delay);
+                    reload_delay = (reload_delay * 2).min(RELOAD_MAX);
+                }
+            } else if let Ok(reader) = reader {
+                // 読めた。読み込み直す予定があれば取りやめる
+                if reader["page"].is_array() {
+                    reload_delay = RELOAD_DELAY;
+                    reload_at = None;
+                }
                 // リーダーの「縦スクロール」を、MangaReeda の縦スクロール表示に揃える
-                if let Some(now_vertical) = state["vertical"].as_bool() {
+                if let Some(now_vertical) = reader["vertical"].as_bool() {
                     vertical = now_vertical;
                 }
-                if vertical != want_vertical
+                if vertical != state.vertical
                     && vertical_tried.is_none_or(|time| time.elapsed() >= VERTICAL_RETRY)
                 {
                     vertical_tried = Some(Instant::now());
-                    match cdp.evaluate(session, &set_vertical_script(want_vertical)) {
+                    match cdp.evaluate(session, &set_vertical_script(state.vertical)) {
                         Ok(result) if result == "switched" => {
-                            vertical = want_vertical;
+                            vertical = state.vertical;
                             captures.after_action(Instant::now());
                         }
                         Ok(_) => {}
                         Err(e) => eprintln!("縦スクロールの切り替えに失敗しました: {e}"),
                     }
                 }
-                if let Some(chrome) = state["chrome"].as_bool()
+                if let Some(chrome) = reader["chrome"].as_bool()
                     && chrome != last_chrome
                 {
                     last_chrome = chrome;
                     emit(&json!({"chrome": chrome}));
                 }
-                let page = state["page"].clone();
+                let page = reader["page"].clone();
+                if let Some(current) = page[0].as_u64()
+                    && let Some(target) = return_to.take()
+                    && current != target
+                {
+                    match go_to_page(cdp, session, screen, vertical, &target.to_string()) {
+                        Ok(()) => captures.after_action(Instant::now()),
+                        // リーダーがまだ読み込み中なのかもしれない。次に様子を見るときにまた試す
+                        Err(e) => {
+                            eprintln!("{target} ページに戻れませんでした: {e}");
+                            return_to = Some(target);
+                        }
+                    }
+                    continue;
+                }
                 if page.is_array() && page != last_page {
                     emit(&json!({"page": page}));
+                    state.page = page[0].as_u64();
                     last_page = page;
                 }
             }
@@ -532,6 +715,11 @@ fn run(
             let url = event.params["frame"]["url"].as_str().unwrap_or_default();
             if is_sign_in_page(url) {
                 return Err(NOT_SIGNED_IN.into());
+            }
+            // 読み込めなかった（ネットにつながっていないなど）。少し待って読み込み直す
+            if url.starts_with("chrome-error://") && reload_at.is_none() {
+                reload_at = Some(Instant::now() + reload_delay);
+                reload_delay = (reload_delay * 2).min(RELOAD_MAX);
             }
             // リーダーの「ライブラリ」ボタンなどで本を閉じた
             if is_library_page(url) {

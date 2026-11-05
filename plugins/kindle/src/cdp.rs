@@ -17,6 +17,8 @@ pub struct Cdp {
     next_id: u64,
     /// 答えを待つあいだに届いたイベント
     pending: VecDeque<Value>,
+    /// ブラウザとの接続が切れたか（ブラウザが終わったか落ちた）。切れたら、つなぎ直すしかない
+    lost: bool,
 }
 
 /// CDP から届いたイベント
@@ -34,7 +36,19 @@ impl Cdp {
             socket,
             next_id: 1,
             pending: VecDeque::new(),
+            lost: false,
         })
+    }
+
+    /// ブラウザとの接続が切れたか
+    pub fn is_lost(&self) -> bool {
+        self.lost
+    }
+
+    /// 接続が切れたことを覚えて、そのことを伝える文を返す
+    fn lose(&mut self, message: String) -> String {
+        self.lost = true;
+        message
     }
 
     fn read(&mut self) -> Result<Value, String> {
@@ -44,9 +58,11 @@ impl Cdp {
                     return serde_json::from_str(text.as_str())
                         .map_err(|e| format!("DevTools の答えを読めません: {e}"));
                 }
-                Ok(Message::Close(_)) => return Err("ブラウザとの接続が閉じました".into()),
+                Ok(Message::Close(_)) => return Err(self.lose("ブラウザとの接続が閉じました".into())),
                 Ok(_) => continue,
-                Err(e) => return Err(format!("ブラウザとの接続が切れました: {e}")),
+                // スリープから戻ったときなどに、読むのが中断されただけ
+                Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => return Err(self.lose(format!("ブラウザとの接続が切れました: {e}"))),
             }
         }
     }
@@ -61,7 +77,8 @@ impl Cdp {
         }
         self.socket
             .send(Message::text(message.to_string()))
-            .map_err(|e| format!("DevTools に送れません: {e}"))?;
+            .map_err(|e| format!("DevTools に送れません: {e}"))
+            .map_err(|e| self.lose(e))?;
         // ブラウザが答えなくなっても止まったままにならないよう、待つ時間に上限を設ける
         // （止まっていると、本体からの終わりの頼みも受け取れない）
         let deadline = Instant::now() + CALL_LIMIT;
@@ -98,11 +115,11 @@ impl Cdp {
                         .map(Some)
                         .map_err(|e| format!("DevTools の答えを読めません: {e}"));
                 }
-                Ok(Message::Close(_)) => return Err("ブラウザとの接続が閉じました".into()),
+                Ok(Message::Close(_)) => return Err(self.lose("ブラウザとの接続が閉じました".into())),
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(e))
-                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-                Err(e) => return Err(format!("ブラウザとの接続が切れました: {e}")),
+                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => {}
+                Err(e) => return Err(self.lose(format!("ブラウザとの接続が切れました: {e}"))),
             }
         }
     }
@@ -139,14 +156,14 @@ impl Cdp {
         let message = match read {
             Ok(Message::Text(text)) => serde_json::from_str::<Value>(text.as_str())
                 .map_err(|e| format!("DevTools の答えを読めません: {e}"))?,
-            Ok(Message::Close(_)) => return Err("ブラウザとの接続が閉じました".into()),
+            Ok(Message::Close(_)) => return Err(self.lose("ブラウザとの接続が閉じました".into())),
             Ok(_) => return Ok(None),
             Err(tungstenite::Error::Io(e))
-                if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) =>
             {
                 return Ok(None);
             }
-            Err(e) => return Err(format!("ブラウザとの接続が切れました: {e}")),
+            Err(e) => return Err(self.lose(format!("ブラウザとの接続が切れました: {e}"))),
         };
         self.pending.push_back(message);
         self.next_event().map(Some)
