@@ -17,7 +17,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::ChildStdout;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 本を閉じたときに、プラグインが終わるのを待つ時間。過ぎたら、起動したブラウザごと止める
 const STOP_GRACE: Duration = Duration::from_secs(5);
@@ -29,6 +29,9 @@ type FrameSlot = Arc<Mutex<Option<(egui::ColorImage, [f32; 2])>>>;
 
 /// リーダーのバナーを出すためにクリックする、上端と下端の帯の高さ（表示場所の高さに対する割合）
 const CHROME_BAND: f32 = 0.1;
+/// 左クリックのあと、この間に出てきたマウスの動作は、そのクリックから出たものとみなす
+/// （ダブルクリックを待つあいだ、クリックの動作は遅れて出てくる）
+const TAP_WINDOW: Duration = Duration::from_secs(1);
 
 /// プラグインから届いた、画面のほかの知らせ（画面は `FrameSlot` に置く）
 enum ViewEvent {
@@ -62,6 +65,8 @@ pub(super) struct WebView {
     pub(super) page: Option<[usize; 2]>,
     /// ツールバーのシークバーで選んでいるページ。ドラッグのあいだと、飛んだ先の位置が届くまで持つ
     pub(super) seek: Option<usize>,
+    /// 最後に左クリックした時刻（クリックから出た動作を、その位置と一緒に送るため）
+    last_left_click: Option<Instant>,
 }
 
 impl WebView {
@@ -198,6 +203,7 @@ impl MangaReader {
                     vertical,
                     page: None,
                     seek: None,
+                    last_left_click: None,
                 });
             }
             Err(error) => {
@@ -274,6 +280,9 @@ impl MangaReader {
         let pixels_per_point = ctx.pixels_per_point();
         let mut forward_click = None;
         let mut toggle_chrome = false;
+        // 位置つきで送るもの: 位置（画面の論理ピクセル）と、その位置が本の表示だったときに行うこと。
+        // 本の表示でなければ（読み終わりのトレイや広告など）、プラグインはそこをクリックする
+        let mut tap: Option<([f32; 2], Value)> = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
@@ -292,6 +301,13 @@ impl MangaReader {
                 let band = rect.height() * CHROME_BAND;
                 let band_click = !chrome
                     && left_click.is_some_and(|pos| pos.y < rect.top() + band || pos.y > rect.bottom() - band);
+                if left_click.is_some()
+                    && let Some(view) = self.web_view.as_mut()
+                {
+                    view.last_left_click = Some(Instant::now());
+                }
+                // 左クリックから出た、ページを動かす動作と、その位置
+                let mut tap_action = None;
                 if band_click {
                     toggle_chrome = true;
                 } else if !chrome
@@ -300,6 +316,15 @@ impl MangaReader {
                     && let Some(mouse_action) = self.collect_mouse_action(&response, ctx)
                 {
                     *action = mouse_action;
+                    let scrolled = ctx.input(|i| i.raw_scroll_delta != egui::Vec2::ZERO);
+                    if let Some(name) = plugin_action_name(mouse_action)
+                        && !scrolled
+                        && let Some(view) = self.web_view.as_mut()
+                        && view.last_left_click.take().is_some_and(|time| time.elapsed() < TAP_WINDOW)
+                        && let Some(pos) = ctx.input(|i| i.pointer.hover_pos()).or(left_click)
+                    {
+                        tap_action = Some((pos, name));
+                    }
                 }
                 // バナーが出ているあいだと、左クリックに動作を割り当てていないときは、クリックをリーダーに送る
                 // （進み具合のバーや文字の設定などを使えるように）
@@ -342,15 +367,30 @@ impl MangaReader {
                     egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
+                let to_frame = |pos: egui::Pos2| {
+                    [(pos.x - image_rect.left()) / scale, (pos.y - image_rect.top()) / scale]
+                };
                 if click_to_reader
                     && !band_click
                     && let Some(pos) = left_click
                     && image_rect.contains(pos)
                 {
-                    forward_click = Some([
-                        (pos.x - image_rect.left()) / scale,
-                        (pos.y - image_rect.top()) / scale,
-                    ]);
+                    forward_click = Some(to_frame(pos));
+                }
+                // 帯のクリックと、左クリックから出たページの動作は、位置つきで送る
+                // （下端に出る広告など、本の表示でないものはクリックできるように）
+                if band_click
+                    && let Some(pos) = left_click
+                    && image_rect.contains(pos)
+                {
+                    toggle_chrome = false;
+                    tap = Some((to_frame(pos), json!({"toggle_chrome": true})));
+                }
+                if let Some((pos, name)) = tap_action
+                    && image_rect.contains(pos)
+                {
+                    *action = MangaAction::None;
+                    tap = Some((to_frame(pos), json!({"action": name})));
                 }
             });
         if let Some(view) = self.web_view.as_mut() {
@@ -359,6 +399,10 @@ impl MangaReader {
             }
             if toggle_chrome {
                 view.send(json!({"toggle_chrome": true}));
+            }
+            if let Some(([x, y], mut command)) = tap {
+                command["tap"] = json!([x, y]);
+                view.send(command);
             }
         }
 

@@ -10,6 +10,7 @@
 //!   / {"vertical": 真偽}（縦スクロールで読む。リーダーの設定の「縦スクロール」をこれに揃える）
 //!   / {"click": [x, y]}（画面の左上からの論理ピクセル）/ {"toggle_chrome": true}（リーダーのバナーを出し入れする）
 //!   / {"go_to_page": ページ}（1 から数える）/ {"quit": true}
+//!   / {"tap": [x, y], …}（ほかの命令に付く位置。そこが本の表示でなければ、命令の代わりにそこをクリックする）
 //! 標準出力: {"frame": "<JPEG の base64>", "width": 幅, "height": 高さ}（幅と高さは論理ピクセル。前と同じ画面は送らない）
 //!   / {"chrome": 真偽}（リーダーのバナーが出た・消えた。出ているあいだ、本体はクリックをそのまま送る）
 //!   / {"page": [今のページ, 総ページ数]}（変わったとき。本体のツールバーに出す）
@@ -92,6 +93,19 @@ fn set_vertical_script(vertical: bool) -> String {
   return toggle ? 'switched' : 'not-ready';
 }})()"
     )
+}
+
+/// 画面の (x, y) が本の表示（#renderContainer の中）か。読み終わりのトレイ、広告、ポップアップなどが
+/// 重なっていれば false。本の表示の入れ物が見つからなければ true（今までどおり動作を行う）
+fn is_book_at(cdp: &mut Cdp, session: &str, x: f64, y: f64) -> bool {
+    let script = format!(
+        "(() => {{
+  const root = document.querySelector('#renderContainer');
+  const e = document.elementFromPoint({x}, {y});
+  return !root || !e || root.contains(e);
+}})()"
+    );
+    cdp.evaluate(session, &script).map_or(true, |value| value != Value::Bool(false))
 }
 
 /// リーダーの設定を揃え直すまでの間（読み込み中で揃えられなかったとき）
@@ -369,6 +383,15 @@ fn run(
             };
             if command["quit"].as_bool() == Some(true) {
                 return Ok(());
+            }
+            // 位置つきの命令は、そこが本の表示でなければ、命令の代わりにそこをクリックする
+            // （読み終わりのトレイは画面全体を覆いで隠し、覆いのクリックで閉じる。広告の閉じるボタンなども）
+            if let (Some(x), Some(y)) = (command["tap"][0].as_f64(), command["tap"][1].as_f64())
+                && !is_book_at(cdp, session, x, y)
+            {
+                click(cdp, session, x, y)?;
+                captures.after_action(Instant::now());
+                continue;
             }
             if let Some(action) = command["action"].as_str() {
                 // スクロールは縦スクロールのときだけ、ホイールにして送る（見開きでは何もしない）
