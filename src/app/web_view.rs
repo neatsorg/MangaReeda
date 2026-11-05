@@ -56,6 +56,8 @@ pub(super) struct WebView {
     chrome: bool,
     /// 最後にプラグインに伝えた、表示場所の大きさと倍率
     sent_size: Option<([u32; 2], f32)>,
+    /// 最後にプラグインに伝えた、縦スクロールで読むか（MangaReeda の縦スクロール表示に合わせる）
+    vertical: bool,
     /// 今のページと総ページ数（プラグインが知らせたもの。まだ届いていなければ None）
     pub(super) page: Option<[usize; 2]>,
     /// ツールバーのシークバーで選んでいるページ。ドラッグのあいだと、飛んだ先の位置が届くまで持つ
@@ -153,6 +155,9 @@ fn plugin_action_name(action: MangaAction) -> Option<&'static str> {
         MangaAction::OnePrevPage => "one_prev_page",
         MangaAction::FirstPage => "first_page",
         MangaAction::LastPage => "last_page",
+        // 縦スクロールのときのスクロール（プラグインは、見開きのときは何もしない）
+        MangaAction::SlideImageDown | MangaAction::ScrollDown => "scroll_down",
+        MangaAction::SlideImageUp | MangaAction::ScrollUp => "scroll_up",
         _ => return None,
     })
 }
@@ -167,12 +172,14 @@ impl MangaReader {
             .shelf_source()
             .unwrap_or_else(|| ShelfSource::Plugin(plugin.to_owned(), String::new()));
         let single = self.config.page_view_options == PageViewOptions::Single;
+        let vertical = self.config.page_view_options == PageViewOptions::TopDown;
         let size = ctx.content_rect().size();
         let request = json!({
             "credentials": self.plugins.credentials_for(&manifest),
             "size": [size.x.round(), size.y.round()],
             "scale": ctx.pixels_per_point(),
             "single": single,
+            "vertical": vertical,
         });
         match spawn_view(&manifest, &request, id) {
             Ok((process, stdout)) => {
@@ -188,6 +195,7 @@ impl MangaReader {
                     single,
                     chrome: false,
                     sent_size: None,
+                    vertical,
                     page: None,
                     seek: None,
                 });
@@ -298,9 +306,15 @@ impl MangaReader {
                 let click_to_reader = chrome
                     || self.get_mouse_action(MouseGesture::Click(MouseButton::Button1))
                         == MangaAction::None;
+                // 縦スクロール表示を切り替えたら（メニューや設定画面から）、リーダーの設定も揃える
+                let vertical = self.config.page_view_options == PageViewOptions::TopDown;
                 let Some(view) = self.web_view.as_mut() else {
                     return;
                 };
+                if view.vertical != vertical {
+                    view.vertical = vertical;
+                    view.send(json!({"vertical": vertical}));
+                }
                 // 表示場所の大きさが変わったら、プラグインのブラウザの大きさも合わせる
                 let size = [rect.width().round() as u32, rect.height().round() as u32];
                 if view.sent_size != Some((size, pixels_per_point)) && size[0] > 0 && size[1] > 0 {

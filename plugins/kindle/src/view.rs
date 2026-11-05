@@ -4,9 +4,10 @@
 //! 標準出力に1行ずつ流す。本体はそれを窓に映すだけで、保存も、文字の読み取りも、
 //! 表紙などへの使い回しもしない。操作は本体から標準入力で受け取る。
 //!
-//! 標準入力の1行目: {"credentials": {…}, "size": [幅, 高さ], "scale": 倍率, "single": 真偽}
+//! 標準入力の1行目: {"credentials": {…}, "size": [幅, 高さ], "scale": 倍率, "single": 真偽, "vertical": 真偽}
 //!   （大きさは本体の論理ピクセル。倍率は1論理ピクセルあたりの画素の数）
 //! 2行目から: {"action": "next_page"} / {"size": [幅, 高さ], "scale": 倍率} / {"single": 真偽}
+//!   / {"vertical": 真偽}（縦スクロールで読む。リーダーの設定の「縦スクロール」をこれに揃える）
 //!   / {"click": [x, y]}（画面の左上からの論理ピクセル）/ {"toggle_chrome": true}（リーダーのバナーを出し入れする）
 //!   / {"go_to_page": ページ}（1 から数える）/ {"quit": true}
 //! 標準出力: {"frame": "<JPEG の base64>", "width": 幅, "height": 高さ}（幅と高さは論理ピクセル。前と同じ画面は送らない）
@@ -39,17 +40,68 @@ const LOADING: Duration = Duration::from_secs(10);
 /// 何もしていないあいだも、遅れて変わった画面を拾うために、この間隔で1枚撮る
 const IDLE_INTERVAL: Duration = Duration::from_secs(4);
 
-/// リーダーのバナーが出ているかと、今のページ・総ページ数。
-/// バナーは、下の進み具合のバーに、出ているあいだは kw-overlay-fade-enter-done が付く。
-/// ページは進み具合のつまみ（#sliderBar。バナーが隠れていてもある）の値と最大値
-const READER_STATE: &str = "(() => {
-  const s = document.querySelector('#sliderBar');
-  const page = s ? [Number(s.value), Number(s.max)] : null;
-  return {
-    chrome: !!document.querySelector('.kw-wdg-chrome-bar.kw-overlay-fade-enter-done'),
+/// リーダーのバナーが出ているか、今のページ・総ページ数（keys::PAGE_FUNCTION）、縦スクロールか。
+/// バナーは、出ているあいだ kw-overlay-fade-enter-done が付く。見開きのときは下の進み具合のバー、
+/// 縦スクロールのときは上のバー（#readerChromeTop）と右の縦のつまみ（#readerChromeRight）。
+/// 縦スクロールかは、リーダーが覚えている localStorage の scrollDirectionPreference で見分ける。
+/// あわせて、リーダーの設定の「縦スクロール」の行を隠す（MangaReeda の縦スクロール表示に揃えるため。
+/// 縦スクロールではバナーがマウスを乗せたときだけ出るので、押すとクリックで戻せなくなっていた）
+fn reader_state_script() -> String {
+    format!(
+        "(() => {{
+  {page}
+  if (!document.getElementById('mangareeda-style')) {{
+    const style = document.createElement('style');
+    style.id = 'mangareeda-style';
+    style.textContent = '.kw-rd-chrome-settings-popup-option:has(> #kw-rd-scroll-direction) {{ display: none !important; }}';
+    (document.head || document.documentElement).appendChild(style);
+  }}
+  const page = mangareedaPage();
+  return {{
+    chrome: !!document.querySelector(
+      '.kw-wdg-chrome-bar.kw-overlay-fade-enter-done, #readerChromeTop.kw-overlay-fade-enter-done, #readerChromeRight.kw-overlay-fade-enter-done'),
     page: page && page.every((n) => Number.isInteger(n) && n > 0) ? page : null,
-  };
-})()";
+    vertical: localStorage.getItem('scrollDirectionPreference') === 'Vertical',
+  }};
+}})()",
+        page = keys::PAGE_FUNCTION
+    )
+}
+
+/// リーダーの設定の「縦スクロール」を `vertical` に揃えるスクリプト。設定のパネルを開いて
+/// スイッチ（#kw-rd-scroll-direction）を押し、閉じる。リーダーがまだ読み込み中なら "not-ready"
+fn set_vertical_script(vertical: bool) -> String {
+    format!(
+        "(async () => {{
+  const want = {vertical};
+  if ((localStorage.getItem('scrollDirectionPreference') === 'Vertical') === want) return 'same';
+  const button = document.querySelector('.kw-rd-chrome-settings-btn');
+  if (!button) return 'not-ready';
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  let toggle = document.querySelector('#kw-rd-scroll-direction');
+  const opened = !toggle;
+  if (opened) {{
+    button.click();
+    for (let i = 0; i < 20 && !(toggle = document.querySelector('#kw-rd-scroll-direction')); i++) await wait(50);
+  }}
+  if (toggle && toggle.checked !== want) toggle.click();
+  if (opened) {{
+    await wait(100);
+    button.click();
+  }}
+  return toggle ? 'switched' : 'not-ready';
+}})()"
+    )
+}
+
+/// リーダーの設定を揃え直すまでの間（読み込み中で揃えられなかったとき）
+const VERTICAL_RETRY: Duration = Duration::from_secs(2);
+/// 縦スクロールのとき、スクロールの動作1回で送るホイールの量（CSS ピクセル。マウスのホイール1目盛りくらい）
+const WHEEL_STEP: f64 = 100.0;
+/// 縦スクロールのとき、上のバナーを出すためにマウスを置く、上端からの位置
+const TOP_HOVER_Y: f64 = 10.0;
+/// 縦スクロールのとき、右の縦のつまみを出すためにマウスを置く、右端からの位置
+const RIGHT_HOVER_X: f64 = 10.0;
 
 /// 単ページのときの幅と高さの比（Cloud Reader は縦長の画面だと1ページずつ表示する）
 const SINGLE_RATIO: f64 = 0.7;
@@ -164,6 +216,30 @@ fn perform(
     Ok(())
 }
 
+/// マウスを動かす（縦スクロールのバナーは、マウスを乗せたときに出る）
+fn hover(cdp: &mut Cdp, session: &str, x: f64, y: f64) -> Result<(), String> {
+    cdp.call(
+        "Input.dispatchMouseEvent",
+        json!({"type": "mouseMoved", "x": x, "y": y}),
+        Some(session),
+    )?;
+    Ok(())
+}
+
+/// 画面の真ん中でホイールを回す（縦スクロールのとき。下へは正）
+fn wheel(cdp: &mut Cdp, session: &str, screen: &Screen, delta_y: f64) -> Result<(), String> {
+    let (width, height) = screen.viewport();
+    cdp.call(
+        "Input.dispatchMouseEvent",
+        json!({
+            "type": "mouseWheel", "x": f64::from(width) / 2.0, "y": f64::from(height) / 2.0,
+            "deltaX": 0, "deltaY": delta_y,
+        }),
+        Some(session),
+    )?;
+    Ok(())
+}
+
 fn click(cdp: &mut Cdp, session: &str, x: f64, y: f64) -> Result<(), String> {
     for kind in ["mousePressed", "mouseReleased"] {
         cdp.call(
@@ -171,6 +247,29 @@ fn click(cdp: &mut Cdp, session: &str, x: f64, y: f64) -> Result<(), String> {
             json!({"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1}),
             Some(session),
         )?;
+    }
+    Ok(())
+}
+
+/// `page`（JavaScript の式。総ページ数を `total` で使える）のページに飛ぶ。進み具合のつまみがまだ無い
+/// （バナーを一度も出していない）ときは、出してから飛ぶ。見開きは真ん中のクリックで下のバナーを出し
+/// （出たままになる）、縦スクロールは右端にマウスを置いて右のつまみを出す（飛んだら真ん中に戻して消す）
+fn go_to_page(cdp: &mut Cdp, session: &str, screen: &Screen, vertical: bool, page: &str) -> Result<(), String> {
+    let script = keys::go_to_page_script(page);
+    if cdp.evaluate(session, &script)? == Value::Bool(true) {
+        return Ok(());
+    }
+    let (width, height) = screen.viewport();
+    let (x, y) = (f64::from(width) / 2.0, f64::from(height) / 2.0);
+    if vertical {
+        hover(cdp, session, f64::from(width) - RIGHT_HOVER_X, y)?;
+    } else {
+        click(cdp, session, x, y)?;
+    }
+    thread::sleep(Duration::from_millis(400));
+    cdp.evaluate(session, &script)?;
+    if vertical {
+        hover(cdp, session, x, y)?;
     }
     Ok(())
 }
@@ -194,6 +293,7 @@ fn view_book(options: &Options) -> Result<(), String> {
         scale: number(&request["scale"], 1.0),
         single: request["single"].as_bool().unwrap_or(false),
     };
+    let vertical = request["vertical"].as_bool().unwrap_or(false);
     let operations = keys::load_operations(&data_dir().join("actions.json"))?;
     let url = reader_url(&options.site, &asin);
     let commands = read_commands();
@@ -214,7 +314,7 @@ fn view_book(options: &Options) -> Result<(), String> {
             .to_owned()
     };
     let session = attach(&mut cdp, &target)?;
-    let result = run(&mut cdp, &session, &operations, &url, &mut screen, &commands);
+    let result = run(&mut cdp, &session, &operations, &url, &mut screen, vertical, &commands);
     crate::release(&mut cdp, &target);
     result
 }
@@ -225,6 +325,7 @@ fn run(
     operations: &BTreeMap<String, Operation>,
     url: &str,
     screen: &mut Screen,
+    mut want_vertical: bool,
     commands: &Receiver<Option<Value>>,
 ) -> Result<(), String> {
     // headless のブラウザは名乗りに "HeadlessChrome" が入り、Cloud Reader に断られる。
@@ -252,6 +353,10 @@ fn run(
     // 最後に知らせた、バナーが出ているかと、ページの位置
     let mut last_chrome = false;
     let mut last_page = Value::Null;
+    let reader_state = reader_state_script();
+    // リーダーがいま縦スクロールか（最後に読んだもの）と、最後に揃えようとした時刻
+    let mut vertical = false;
+    let mut vertical_tried: Option<Instant> = None;
 
     loop {
         // 本体からの命令
@@ -265,10 +370,26 @@ fn run(
             if command["quit"].as_bool() == Some(true) {
                 return Ok(());
             }
-            if let Some(action) = command["action"].as_str()
-                && let Err(e) = perform(cdp, session, operations, action)
+            if let Some(action) = command["action"].as_str() {
+                // スクロールは縦スクロールのときだけ、ホイールにして送る（見開きでは何もしない）
+                let result = match action {
+                    "scroll_down" if vertical => wheel(cdp, session, screen, WHEEL_STEP),
+                    "scroll_up" if vertical => wheel(cdp, session, screen, -WHEEL_STEP),
+                    "scroll_down" | "scroll_up" => Ok(()),
+                    // 縦スクロールの右のつまみは、マウスを乗せるまで作られないので、ページへの飛び方と同じ道で
+                    "first_page" if vertical => go_to_page(cdp, session, screen, true, "1"),
+                    "last_page" if vertical => go_to_page(cdp, session, screen, true, "total"),
+                    _ => perform(cdp, session, operations, action),
+                };
+                if let Err(e) = result {
+                    eprintln!("{action} に失敗しました: {e}");
+                }
+            }
+            if let Some(next) = command["vertical"].as_bool()
+                && next != want_vertical
             {
-                eprintln!("{action} に失敗しました: {e}");
+                want_vertical = next;
+                vertical_tried = None;
             }
             let mut next = *screen;
             if let (Some(width), Some(height)) = (command["size"][0].as_f64(), command["size"][1].as_f64()) {
@@ -287,14 +408,22 @@ fn run(
                 click(cdp, session, x, y)?;
             }
             if let Some(page) = command["go_to_page"].as_u64()
-                && let Err(e) = cdp.evaluate(session, &keys::go_to_page_script(&page.to_string()))
+                && let Err(e) = go_to_page(cdp, session, screen, vertical, &page.to_string())
             {
                 eprintln!("{page} ページへの移動に失敗しました: {e}");
             }
             // リーダーのバナー（ツールバーと進み具合）を出し入れする。Cloud Reader は真ん中のクリックで出し入れする
+            // 縦スクロールのときは、マウスを乗せたときに出るので、上端にマウスを置く（真ん中に戻せば消える）
             if command["toggle_chrome"].as_bool() == Some(true) {
                 let (width, height) = screen.viewport();
-                click(cdp, session, f64::from(width) / 2.0, f64::from(height) / 2.0)?;
+                let (x, y) = (f64::from(width) / 2.0, f64::from(height) / 2.0);
+                if !vertical {
+                    click(cdp, session, x, y)?;
+                } else if last_chrome {
+                    hover(cdp, session, x, y)?;
+                } else {
+                    hover(cdp, session, x, TOP_HOVER_Y)?;
+                }
             }
             // 操作のあと、変わっていく画面を何回かに分けて撮る
             captures.after_action(Instant::now());
@@ -324,7 +453,24 @@ fn run(
             }
             // バナーが出たか消えたか（本体は、出ているあいだクリックをリーダーに送る）と、
             // ページの位置（本体のツールバーに出す）が変わったら知らせる
-            if let Ok(state) = cdp.evaluate(session, READER_STATE) {
+            if let Ok(state) = cdp.evaluate(session, &reader_state) {
+                // リーダーの「縦スクロール」を、MangaReeda の縦スクロール表示に揃える
+                if let Some(now_vertical) = state["vertical"].as_bool() {
+                    vertical = now_vertical;
+                }
+                if vertical != want_vertical
+                    && vertical_tried.is_none_or(|time| time.elapsed() >= VERTICAL_RETRY)
+                {
+                    vertical_tried = Some(Instant::now());
+                    match cdp.evaluate(session, &set_vertical_script(want_vertical)) {
+                        Ok(result) if result == "switched" => {
+                            vertical = want_vertical;
+                            captures.after_action(Instant::now());
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("縦スクロールの切り替えに失敗しました: {e}"),
+                    }
+                }
                 if let Some(chrome) = state["chrome"].as_bool()
                     && chrome != last_chrome
                 {

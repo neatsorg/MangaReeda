@@ -147,19 +147,20 @@ MangaReeda はまず次のどちらかの引数を付けて `command` を起動�
 
 本 `id` を、MangaReeda の窓の中で読ませます。プラグインは本を描いた画面を標準出力に流し、MangaReeda は標準入力で操作を送ります。
 
-標準入力の1行目には、ログイン情報と、画面を描く大きさ（MangaReeda の論理ピクセル）、1論理ピクセルあたりの画素の数、単ページかを渡します。
+標準入力の1行目には、ログイン情報と、画面を描く大きさ（MangaReeda の論理ピクセル）、1論理ピクセルあたりの画素の数、単ページか、縦スクロールで読むかを渡します。
 
 ```json
-{"credentials": {}, "size": [1600, 900], "scale": 1.5, "single": false}
+{"credentials": {}, "size": [1600, 900], "scale": 1.5, "single": false, "vertical": false}
 ```
 
 2行目からは、次のどれかを1行ずつ送ります。
 
 | 行 | 意味 |
 |---|---|
-| `{"action": "next_page"}` | 動作。`next_page`、`prev_page`、`one_next_page`、`one_prev_page`、`first_page`、`last_page`（MangaReeda のキーやホイールの設定から決めたもの） |
+| `{"action": "next_page"}` | 動作。`next_page`、`prev_page`、`one_next_page`、`one_prev_page`、`first_page`、`last_page`、`scroll_down`、`scroll_up`（MangaReeda のキーやホイールの設定から決めたもの。縦スクロール表示では、縦スクロール用の操作設定から決める） |
 | `{"size": [幅, 高さ], "scale": 倍率}` | 表示場所の大きさが変わった |
 | `{"single": true}` | 単ページ（`false` で見開き）。自動見開きの切り替えのキーで切り替える |
+| `{"vertical": true}` | 縦スクロールで読む（`false` でやめる）。MangaReeda の「縦スクロール表示」を切り替えたときに送る |
 | `{"click": [x, y]}` | 画面の左上からの位置（画面の論理ピクセル）をクリックした。サービスのビューアのバナーが出ているとき、または左クリックに動作を割り当てていないときに送る |
 | `{"toggle_chrome": true}` | サービスのビューアのバナー（ツールバーや進み具合）を出す・消す。表示場所の上端か下端の帯（高さの1割ずつ）を左クリックしたときに送る |
 | `{"go_to_page": 80}` | そのページ（1 から数える）に移る。ツールバーのシークバーを離したときや、ページの数字を入れたときに送る |

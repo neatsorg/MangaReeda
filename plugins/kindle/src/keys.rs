@@ -48,25 +48,45 @@ pub fn default_operations() -> BTreeMap<String, Operation> {
     map.insert("quit_app".into(), Operation::Builtin("close".into()));
     // 最初と最後のページは、進み具合のつまみで飛ぶ
     map.insert("first_page".into(), Operation::Js(go_to_page_script("1")));
-    map.insert("last_page".into(), Operation::Js(go_to_page_script("Number(s.max)")));
+    map.insert("last_page".into(), Operation::Js(go_to_page_script("total")));
     // Cloud Reader に切り替えの項目は無いが、縦長の画面だと1ページずつ表示する
     map.insert("toggle_auto_page_layout".into(), Operation::Builtin("single".into()));
     map
 }
 
-/// 進み具合のつまみ（#sliderBar）で、`page` のページに飛ぶスクリプト。`page` は JavaScript の式で、
-/// つまみを `s` で使える。つまみは値を変えただけでは数字の表示しか変わらず、離したとき
-/// （mouseup か touchend）にページを移るので、値を入れたあとに mouseup を送る
+/// 今のページと総ページ数を返す JavaScript の関数（`mangareedaPage()`）。見開き（横）のときは
+/// 進み具合のつまみ #sliderBar の値と最大値。つまみは下のバナーを一度出すまで作られず、
+/// 縦スクロールのときは割合（0〜99）のつまみに変わるので、無ければ「165/199ページ」の文字から読む
+pub const PAGE_FUNCTION: &str = "function mangareedaPage() {
+  const s = document.querySelector('#sliderBar');
+  if (s) return [Number(s.value), Number(s.max)];
+  for (const e of document.querySelectorAll('.kw-wdg-page-info')) {
+    const m = /(\\d+)\\s*\\/\\s*(\\d+)/.exec(e.textContent || '');
+    if (m) return [Number(m[1]), Number(m[2])];
+  }
+  return null;
+}";
+
+/// `page` のページに飛ぶスクリプト。`page` は JavaScript の式で、総ページ数を `total` で使える。
+/// 見開きのときは進み具合のつまみ（#sliderBar）に値を入れ、mouseup を送る（つまみは値を変えただけでは
+/// 数字の表示しか変わらず、離したとき＝mouseup か touchend にページを移る）。
+/// 縦スクロールのときは、右の縦のつまみ（割合 0〜99。上端＝値 99 が最初のページ）に値を入れ、
+/// 同じく mouseup を送る（100 段階なので、ページ数の多い本ではおおよその位置になる）。
+/// どちらのつまみも無ければ（バナーをまだ出していない）false を返す
 pub fn go_to_page_script(page: &str) -> String {
     format!(
         "(() => {{
+  {PAGE_FUNCTION}
   const s = document.querySelector('#sliderBar');
-  if (!s) return false;
-  const page = Math.round({page});
-  const value = Math.min(Math.max(page, Number(s.min) || 1), Number(s.max) || 1);
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(s, String(value));
-  s.dispatchEvent(new Event('input', {{ bubbles: true }}));
-  s.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
+  const v = document.querySelector('#readerChromeRight input.kw-slider-input');
+  const total = s ? Number(s.max) : (mangareedaPage() || [0, 0])[1];
+  if (!total || !(s || v)) return false;
+  const page = Math.min(Math.max(Math.round({page}), 1), total);
+  const slider = s || v;
+  const value = s ? page : Math.round(((total - page) / Math.max(total - 1, 1)) * Number(v.max));
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(slider, String(value));
+  slider.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  slider.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
   return true;
 }})()"
     )
