@@ -65,8 +65,9 @@ pub(super) struct WebView {
     pub(super) page: Option<[usize; 2]>,
     /// ツールバーのシークバーで選んでいるページ。ドラッグのあいだと、飛んだ先の位置が届くまで持つ
     pub(super) seek: Option<usize>,
-    /// 最後に左クリックした時刻（クリックから出た動作を、その位置と一緒に送るため）
-    last_left_click: Option<Instant>,
+    /// 最後に左クリックした時刻と位置（クリックから出た動作を、その位置と一緒に送るため。
+    /// ダブルクリックを待つあいだにポインターを動かしても、クリックした位置で判定する）
+    last_left_click: Option<(Instant, egui::Pos2)>,
 }
 
 impl WebView {
@@ -301,10 +302,22 @@ impl MangaReader {
                 let band = rect.height() * CHROME_BAND;
                 let band_click = !chrome
                     && left_click.is_some_and(|pos| pos.y < rect.top() + band || pos.y > rect.bottom() - band);
-                if left_click.is_some()
-                    && let Some(view) = self.web_view.as_mut()
-                {
-                    view.last_left_click = Some(Instant::now());
+                // 左クリックの時刻と位置を覚える。左以外のボタンを押したら捨てる
+                // （そのボタンから出た動作を、左クリックのものと取り違えないように）
+                let other_click = [
+                    egui::PointerButton::Secondary,
+                    egui::PointerButton::Middle,
+                    egui::PointerButton::Extra1,
+                    egui::PointerButton::Extra2,
+                ]
+                .into_iter()
+                .any(|button| ctx.input(|i| i.pointer.button_pressed(button)));
+                if let Some(view) = self.web_view.as_mut() {
+                    if let Some(pos) = left_click {
+                        view.last_left_click = Some((Instant::now(), pos));
+                    } else if other_click {
+                        view.last_left_click = None;
+                    }
                 }
                 // 左クリックから出た、ページを動かす動作と、その位置
                 let mut tap_action = None;
@@ -320,8 +333,8 @@ impl MangaReader {
                     if let Some(name) = plugin_action_name(mouse_action)
                         && !scrolled
                         && let Some(view) = self.web_view.as_mut()
-                        && view.last_left_click.take().is_some_and(|time| time.elapsed() < TAP_WINDOW)
-                        && let Some(pos) = ctx.input(|i| i.pointer.hover_pos()).or(left_click)
+                        && let Some((time, pos)) = view.last_left_click.take()
+                        && time.elapsed() < TAP_WINDOW
                     {
                         tap_action = Some((pos, name));
                     }

@@ -265,6 +265,19 @@ fn click(cdp: &mut Cdp, session: &str, x: f64, y: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// 動作が既定の「最初・最後のページ」のままなら、飛ぶ先（`go_to_page` に渡す式）
+fn default_jump(operations: &BTreeMap<String, Operation>, action: &str) -> Option<&'static str> {
+    let page = match action {
+        "first_page" => "1",
+        "last_page" => "total",
+        _ => return None,
+    };
+    match operations.get(action) {
+        Some(Operation::Js(code)) if *code == keys::go_to_page_script(page) => Some(page),
+        _ => None,
+    }
+}
+
 /// `page`（JavaScript の式。総ページ数を `total` で使える）のページに飛ぶ。進み具合のつまみがまだ無い
 /// （バナーを一度も出していない）ときは、出してから飛ぶ。見開きは真ん中のクリックで下のバナーを出し
 /// （出たままになる）、縦スクロールは右端にマウスを置いて右のつまみを出す（飛んだら真ん中に戻して消す）
@@ -399,10 +412,12 @@ fn run(
                     "scroll_down" if vertical => wheel(cdp, session, screen, WHEEL_STEP),
                     "scroll_up" if vertical => wheel(cdp, session, screen, -WHEEL_STEP),
                     "scroll_down" | "scroll_up" => Ok(()),
-                    // 縦スクロールの右のつまみは、マウスを乗せるまで作られないので、ページへの飛び方と同じ道で
-                    "first_page" if vertical => go_to_page(cdp, session, screen, true, "1"),
-                    "last_page" if vertical => go_to_page(cdp, session, screen, true, "total"),
-                    _ => perform(cdp, session, operations, action),
+                    // 既定の「最初・最後のページ」は、ページへの飛び方と同じ道で（つまみがまだ無ければ、
+                    // バナーやつまみを出してから飛ぶ）。actions.json で変えていれば、その操作に従う
+                    _ => match default_jump(operations, action) {
+                        Some(page) => go_to_page(cdp, session, screen, vertical, page),
+                        None => perform(cdp, session, operations, action),
+                    },
                 };
                 if let Err(e) = result {
                     eprintln!("{action} に失敗しました: {e}");
@@ -554,6 +569,19 @@ impl Captures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 既定の「最初・最後のページ」だけを飛び方の道に回し、actions.json で変えたものや外したものは回さない
+    #[test]
+    fn only_default_first_and_last_pages_jump() {
+        let mut operations = keys::default_operations();
+        assert_eq!(default_jump(&operations, "first_page"), Some("1"));
+        assert_eq!(default_jump(&operations, "last_page"), Some("total"));
+        assert_eq!(default_jump(&operations, "next_page"), None);
+        operations.insert("first_page".into(), Operation::Key("Home".into()));
+        operations.remove("last_page");
+        assert_eq!(default_jump(&operations, "first_page"), None);
+        assert_eq!(default_jump(&operations, "last_page"), None);
+    }
 
     #[test]
     fn library_pages_are_told_apart_from_reader_entrances() {
