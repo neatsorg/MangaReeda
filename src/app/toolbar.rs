@@ -3,6 +3,7 @@
 use super::{
     FULLSCREEN_TITLE_BAR_HEIGHT, FULLSCREEN_TOP_CHROME_REVEAL_HEIGHT, MENU_BAR_HEIGHT, MangaReader,
 };
+use crate::config::MangaAction;
 use crate::engine::thumbnail::ThumbnailMode;
 use crate::localize::tr;
 use eframe::egui;
@@ -179,17 +180,20 @@ impl MangaReader {
                             font_id.size *= toolbar_scale;
                         }
 
+                        // 窓の中で読んでいる（読むプラグインの本）ときは、ページの操作をその本に送り、
+                        // 当てはまらないボタンは押せなくする
+                        let web = self.web_view.is_some();
                         ui.horizontal(|ui| {
                             // --- Folder Navigation ---
                             if ui
-                                .button("📁⏮")
+                                .add_enabled(!web, egui::Button::new("📁⏮"))
                                 .on_hover_text(tr("toolbar.prev_folder"))
                                 .clicked()
                             {
                                 self.prev_folder(ctx);
                             }
                             if ui
-                                .button("⏭📁")
+                                .add_enabled(!web, egui::Button::new("⏭📁"))
                                 .on_hover_text(tr("toolbar.next_folder"))
                                 .clicked()
                             {
@@ -199,14 +203,14 @@ impl MangaReader {
 
                             // --- File Navigation ---
                             if ui
-                                .button("📦⏮")
+                                .add_enabled(!web, egui::Button::new("📦⏮"))
                                 .on_hover_text(tr("toolbar.prev_file"))
                                 .clicked()
                             {
                                 self.prev_zip(ctx, false);
                             }
                             if ui
-                                .button("⏭📦")
+                                .add_enabled(!web, egui::Button::new("⏭📦"))
                                 .on_hover_text(tr("toolbar.next_file"))
                                 .clicked()
                             {
@@ -220,36 +224,60 @@ impl MangaReader {
                                 .on_hover_text(tr("toolbar.first_page"))
                                 .clicked()
                             {
-                                self.go_to_first_page(ctx);
+                                if web {
+                                    self.execute_action(MangaAction::FirstPage, ctx);
+                                } else {
+                                    self.go_to_first_page(ctx);
+                                }
                             }
                             if ui
                                 .button("◀")
                                 .on_hover_text(tr("toolbar.prev_page"))
                                 .clicked()
                             {
-                                self.prev_page(ctx, false);
+                                if web {
+                                    self.execute_action(MangaAction::PrevPage, ctx);
+                                } else {
+                                    self.prev_page(ctx, false);
+                                }
                             }
 
                             // Page Indicator in middle
-                            ui.label(format!(
-                                "{} / {}",
-                                self.current_index + 1,
-                                self.image_files.len()
-                            ));
+                            if web {
+                                let page = self.web_view.as_ref().and_then(|view| view.page);
+                                ui.label(match page {
+                                    Some([current, total]) => format!("{current} / {total}"),
+                                    None => "- / -".to_owned(),
+                                });
+                            } else {
+                                ui.label(format!(
+                                    "{} / {}",
+                                    self.current_index + 1,
+                                    self.image_files.len()
+                                ));
+                            }
 
                             if ui
                                 .button("▶")
                                 .on_hover_text(tr("toolbar.next_page"))
                                 .clicked()
                             {
-                                self.next_page(ctx, false);
+                                if web {
+                                    self.execute_action(MangaAction::NextPage, ctx);
+                                } else {
+                                    self.next_page(ctx, false);
+                                }
                             }
                             if ui
                                 .button("⏭")
                                 .on_hover_text(tr("toolbar.last_page"))
                                 .clicked()
                             {
-                                self.go_to_last_page(ctx);
+                                if web {
+                                    self.execute_action(MangaAction::LastPage, ctx);
+                                } else {
+                                    self.go_to_last_page(ctx);
+                                }
                             }
                             ui.separator();
 
@@ -258,7 +286,11 @@ impl MangaReader {
                                 .on_hover_text(tr("toolbar.prev_page"))
                                 .clicked()
                             {
-                                self.prev_page(ctx, true);
+                                if web {
+                                    self.execute_action(MangaAction::OnePrevPage, ctx);
+                                } else {
+                                    self.prev_page(ctx, true);
+                                }
                             }
 
                             if ui
@@ -266,7 +298,11 @@ impl MangaReader {
                                 .on_hover_text(tr("toolbar.next_page"))
                                 .clicked()
                             {
-                                self.next_page(ctx, true);
+                                if web {
+                                    self.execute_action(MangaAction::OneNextPage, ctx);
+                                } else {
+                                    self.next_page(ctx, true);
+                                }
                             }
                             ui.separator();
 
@@ -282,7 +318,7 @@ impl MangaReader {
                                 tr("state.even_page")
                             };
                             if ui
-                                .button(shift_label)
+                                .add_enabled(!web, egui::Button::new(shift_label))
                                 .on_hover_text(shift_tooltip)
                                 .clicked()
                             {
@@ -306,23 +342,27 @@ impl MangaReader {
                             }
                             self.render_history_menu(ui, ctx);
                             if ui
-                                .add_enabled(!self.image_files.is_empty(), egui::Button::new("🖼"))
+                                .add_enabled(!web && !self.image_files.is_empty(), egui::Button::new("🖼"))
                                 .on_hover_text(tr("toolbar.thumbnails"))
                                 .clicked()
                             {
                                 self.open_thumbnails(ThumbnailMode::FitAll);
                             }
                             if ui
-                                .add_enabled(self.zip_path.is_some(), egui::Button::new("📚"))
+                                .add_enabled(web || self.zip_path.is_some(), egui::Button::new("📚"))
                                 .on_hover_text(tr("toolbar.cover_thumbnails"))
                                 .clicked()
                             {
-                                self.toggle_cover_thumbnails();
+                                if web {
+                                    self.execute_action(MangaAction::CoverThumbnails, ctx);
+                                } else {
+                                    self.toggle_cover_thumbnails();
+                                }
                             }
 
                             ui.separator();
                             if ui
-                                .add_enabled(!self.image_files.is_empty(), egui::Button::new("↻"))
+                                .add_enabled(!web && !self.image_files.is_empty(), egui::Button::new("↻"))
                                 .on_hover_text(tr("toolbar.reload_current_image.tooltip"))
                                 .clicked()
                             {
@@ -340,6 +380,46 @@ impl MangaReader {
                                     if ui.button("⚙").on_hover_text(tr("settings.title")).clicked()
                                     {
                                         self.config.show_settings = !self.config.show_settings;
+                                    }
+                                    if web {
+                                        // 窓の中で読んでいる本。プラグインが知らせた位置を出し、
+                                        // 離したとき（クリックや数字の入力はその場で）に飛ぶ。
+                                        // ドラッグのあいだは数字だけ動かす（飛ぶたびにページを読み込ませないように）。
+                                        // 位置が届くまでは押せない形だけ出す
+                                        let (page, seek) = self
+                                            .web_view
+                                            .as_ref()
+                                            .map_or((None, None), |view| (view.page, view.seek));
+                                        let [current, total] = page.unwrap_or([1, 1]);
+                                        let mut page_val = seek.unwrap_or(current).clamp(1, total);
+                                        ui.label(if page.is_some() {
+                                            format!("/ {total}")
+                                        } else {
+                                            "/ -".to_owned()
+                                        });
+                                        let typed = ui.add_enabled(
+                                            page.is_some(),
+                                            egui::DragValue::new(&mut page_val).range(1..=total),
+                                        );
+                                        ui.spacing_mut().slider_width = ui.available_width();
+                                        let slider = ui.add_enabled(
+                                            page.is_some(),
+                                            egui::Slider::new(&mut page_val, 1..=total)
+                                                .show_value(false),
+                                        );
+                                        self.is_scrubbing = false;
+                                        let dragging = typed.dragged() || slider.dragged();
+                                        let released = typed.drag_stopped()
+                                            || slider.drag_stopped()
+                                            || ((typed.changed() || slider.changed()) && !dragging);
+                                        if released {
+                                            self.web_view_go_to_page(page_val);
+                                        } else if dragging
+                                            && let Some(view) = self.web_view.as_mut()
+                                        {
+                                            view.seek = Some(page_val);
+                                        }
+                                        return;
                                     }
                                     ui.label(format!("/ {max_pages}"));
                                     let typed = ui

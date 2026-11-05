@@ -8,9 +8,10 @@
 //!   （大きさは本体の論理ピクセル。倍率は1論理ピクセルあたりの画素の数）
 //! 2行目から: {"action": "next_page"} / {"size": [幅, 高さ], "scale": 倍率} / {"single": 真偽}
 //!   / {"click": [x, y]}（画面の左上からの論理ピクセル）/ {"toggle_chrome": true}（リーダーのバナーを出し入れする）
-//!   / {"quit": true}
+//!   / {"go_to_page": ページ}（1 から数える）/ {"quit": true}
 //! 標準出力: {"frame": "<JPEG の base64>", "width": 幅, "height": 高さ}（幅と高さは論理ピクセル。前と同じ画面は送らない）
 //!   / {"chrome": 真偽}（リーダーのバナーが出た・消えた。出ているあいだ、本体はクリックをそのまま送る）
+//!   / {"page": [今のページ, 総ページ数]}（変わったとき。本体のツールバーに出す）
 //!   / {"closed": true}（ライブラリに移ったとき。本体は表紙サムネイルに戻る）
 //!   / {"error": "…"}
 
@@ -38,8 +39,17 @@ const LOADING: Duration = Duration::from_secs(10);
 /// 何もしていないあいだも、遅れて変わった画面を拾うために、この間隔で1枚撮る
 const IDLE_INTERVAL: Duration = Duration::from_secs(4);
 
-/// リーダーのバナーが出ているか。下の進み具合のバーに、出ているあいだは kw-overlay-fade-enter-done が付く
-const CHROME_SHOWN: &str = "!!document.querySelector('.kw-wdg-chrome-bar.kw-overlay-fade-enter-done')";
+/// リーダーのバナーが出ているかと、今のページ・総ページ数。
+/// バナーは、下の進み具合のバーに、出ているあいだは kw-overlay-fade-enter-done が付く。
+/// ページは進み具合のつまみ（#sliderBar。バナーが隠れていてもある）の値と最大値
+const READER_STATE: &str = "(() => {
+  const s = document.querySelector('#sliderBar');
+  const page = s ? [Number(s.value), Number(s.max)] : null;
+  return {
+    chrome: !!document.querySelector('.kw-wdg-chrome-bar.kw-overlay-fade-enter-done'),
+    page: page && page.every((n) => Number.isInteger(n) && n > 0) ? page : null,
+  };
+})()";
 
 /// 単ページのときの幅と高さの比（Cloud Reader は縦長の画面だと1ページずつ表示する）
 const SINGLE_RATIO: f64 = 0.7;
@@ -239,8 +249,9 @@ fn run(
     let mut last_capture = Instant::now();
     // 最後に送った画面（同じ画面は送らない）
     let mut last_sent = String::new();
-    // 最後に知らせた、バナーが出ているか
+    // 最後に知らせた、バナーが出ているかと、ページの位置
     let mut last_chrome = false;
+    let mut last_page = Value::Null;
 
     loop {
         // 本体からの命令
@@ -275,6 +286,11 @@ fn run(
             if let (Some(x), Some(y)) = (command["click"][0].as_f64(), command["click"][1].as_f64()) {
                 click(cdp, session, x, y)?;
             }
+            if let Some(page) = command["go_to_page"].as_u64()
+                && let Err(e) = cdp.evaluate(session, &keys::go_to_page_script(&page.to_string()))
+            {
+                eprintln!("{page} ページへの移動に失敗しました: {e}");
+            }
             // リーダーのバナー（ツールバーと進み具合）を出し入れする。Cloud Reader は真ん中のクリックで出し入れする
             if command["toggle_chrome"].as_bool() == Some(true) {
                 let (width, height) = screen.viewport();
@@ -306,13 +322,20 @@ fn run(
                 // まだ変わっている途中かもしれないので、もう1枚撮る
                 captures.at(Instant::now() + FOLLOW_UP);
             }
-            // バナーが出たか消えたかを知らせる（本体は、出ているあいだクリックをリーダーに送る）
-            if let Ok(chrome) = cdp.evaluate(session, CHROME_SHOWN)
-                && let Some(chrome) = chrome.as_bool()
-                && chrome != last_chrome
-            {
-                last_chrome = chrome;
-                emit(&json!({"chrome": chrome}));
+            // バナーが出たか消えたか（本体は、出ているあいだクリックをリーダーに送る）と、
+            // ページの位置（本体のツールバーに出す）が変わったら知らせる
+            if let Ok(state) = cdp.evaluate(session, READER_STATE) {
+                if let Some(chrome) = state["chrome"].as_bool()
+                    && chrome != last_chrome
+                {
+                    last_chrome = chrome;
+                    emit(&json!({"chrome": chrome}));
+                }
+                let page = state["page"].clone();
+                if page.is_array() && page != last_page {
+                    emit(&json!({"page": page}));
+                    last_page = page;
+                }
             }
         }
 

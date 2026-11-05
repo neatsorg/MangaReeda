@@ -34,6 +34,8 @@ const CHROME_BAND: f32 = 0.1;
 enum ViewEvent {
     /// リーダーのバナー（ツールバーと進み具合）が出た・消えた
     Chrome(bool),
+    /// 今のページと総ページ数（1 から数える）
+    Page([usize; 2]),
     /// 本を閉じた（リーダーでライブラリに戻った）
     Closed,
     Error(String),
@@ -54,6 +56,10 @@ pub(super) struct WebView {
     chrome: bool,
     /// 最後にプラグインに伝えた、表示場所の大きさと倍率
     sent_size: Option<([u32; 2], f32)>,
+    /// 今のページと総ページ数（プラグインが知らせたもの。まだ届いていなければ None）
+    pub(super) page: Option<[usize; 2]>,
+    /// ツールバーのシークバーで選んでいるページ。ドラッグのあいだと、飛んだ先の位置が届くまで持つ
+    pub(super) seek: Option<usize>,
 }
 
 impl WebView {
@@ -113,6 +119,12 @@ fn read_events(stdout: ChildStdout, ctx: egui::Context, frame: FrameSlot) -> Rec
                 continue;
             } else if let Some(chrome) = value["chrome"].as_bool() {
                 ViewEvent::Chrome(chrome)
+            } else if let (Some(current), Some(total)) =
+                (value["page"][0].as_u64(), value["page"][1].as_u64())
+                && current >= 1
+                && total >= current
+            {
+                ViewEvent::Page([current as usize, total as usize])
             } else if value["closed"].as_bool() == Some(true) {
                 ViewEvent::Closed
             } else if let Some(error) = value["error"].as_str() {
@@ -176,10 +188,25 @@ impl MangaReader {
                     single,
                     chrome: false,
                     sent_size: None,
+                    page: None,
+                    seek: None,
                 });
             }
             Err(error) => {
                 self.show_fading_error(&format!("{}: {}", manifest.name, error.message()));
+            }
+        }
+    }
+
+    /// 窓の中で読んでいる本の、`page` ページ（1 から数える）に飛ぶ。
+    /// 位置が届くまで、ツールバーは選んだページを出しておく
+    pub(super) fn web_view_go_to_page(&mut self, page: usize) {
+        if let Some(view) = self.web_view.as_mut() {
+            if view.page.is_some_and(|[current, _]| current == page) {
+                view.seek = None;
+            } else {
+                view.seek = Some(page);
+                view.send(json!({"go_to_page": page}));
             }
         }
     }
@@ -204,6 +231,10 @@ impl MangaReader {
             loop {
                 match view.events.try_recv() {
                     Ok(ViewEvent::Chrome(chrome)) => view.chrome = chrome,
+                    Ok(ViewEvent::Page(page)) => {
+                        view.page = Some(page);
+                        view.seek = None;
+                    }
                     Ok(ViewEvent::Closed) | Err(TryRecvError::Disconnected) => {
                         leave = true;
                         break;
@@ -329,7 +360,8 @@ impl MangaReader {
             return action;
         }
         match action {
-            MangaAction::CloseBook => {
+            // 表紙サムネイルは、来た一覧（Kindle のライブラリなど）に戻る
+            MangaAction::CloseBook | MangaAction::CoverThumbnails => {
                 self.leave_web_view();
                 MangaAction::None
             }

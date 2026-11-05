@@ -46,9 +46,30 @@ pub fn default_operations() -> BTreeMap<String, Operation> {
     map.insert("fullscreen".into(), Operation::Builtin("fullscreen".into()));
     map.insert("close_book".into(), Operation::Builtin("library".into()));
     map.insert("quit_app".into(), Operation::Builtin("close".into()));
+    // 最初と最後のページは、進み具合のつまみで飛ぶ
+    map.insert("first_page".into(), Operation::Js(go_to_page_script("1")));
+    map.insert("last_page".into(), Operation::Js(go_to_page_script("Number(s.max)")));
     // Cloud Reader に切り替えの項目は無いが、縦長の画面だと1ページずつ表示する
     map.insert("toggle_auto_page_layout".into(), Operation::Builtin("single".into()));
     map
+}
+
+/// 進み具合のつまみ（#sliderBar）で、`page` のページに飛ぶスクリプト。`page` は JavaScript の式で、
+/// つまみを `s` で使える。つまみは値を変えただけでは数字の表示しか変わらず、離したとき
+/// （mouseup か touchend）にページを移るので、値を入れたあとに mouseup を送る
+pub fn go_to_page_script(page: &str) -> String {
+    format!(
+        "(() => {{
+  const s = document.querySelector('#sliderBar');
+  if (!s) return false;
+  const page = Math.round({page});
+  const value = Math.min(Math.max(page, Number(s.min) || 1), Number(s.max) || 1);
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(s, String(value));
+  s.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  s.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
+  return true;
+}})()"
+    )
 }
 
 /// 既定の操作に actions.json の中身を重ねる。値が null の動作は外す
