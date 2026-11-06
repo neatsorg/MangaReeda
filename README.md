@@ -119,6 +119,7 @@ packaging/linux/install.sh /path/to/mangareeda   # ほかの場所の実行フ�
 - マンガ、コミック、書庫などのコンテンツを提供・配布するためのものではなく、入手先へのリンクも持ちません。
 - プラグインは、利用者自身が契約しているサービスに、利用者のアカウントで接続します。サービスの利用規約にしたがって使ってください。
 - 開くコンテンツについては、利用者が責任を持ってください。
+- Kindle のプラグインは、共用の PC で使うと他の人にもブラウザの閲覧内容を見られる可能性があります。現在のところ、これは仕様です。ご注意ください。
 - 利用者が選んだコンテンツや入手先によって生じた著作権侵害その他の問題について、開発者は責任を負いません。
 
 ## ライセンス
@@ -251,6 +252,7 @@ MangaReeda is a tool for viewing.
 - It is not meant to provide or distribute manga, comics, archives or other content, and it has no links to download sources.
 - Plugins connect to services the user subscribes to, with the user's own account. Follow each service's terms of use.
 - Users are responsible for the content they open.
+- If you use the Kindle plugin on a shared PC, other people may be able to see what the browser shows. This is how it works for now, so please be careful.
 - The developers take no responsibility for copyright infringement or other issues arising from the content or sources users choose.
 
 ## License
