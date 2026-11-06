@@ -11,6 +11,7 @@ RapidOCR は、[PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) のモデ�
 ## 入れ方（Linux）
 
 [uv](https://docs.astral.sh/uv/) が要ります。次を実行すると、`~/.config/MangaReeda/plugins/rapidocr` に入ります（`XDG_CONFIG_HOME` があればその下）。
+リリースの `mangareeda-rapidocr-<版>.tar.gz` を使うときは、展開したフォルダの `./install.sh` を実行します。
 
 ```sh
 plugins/rapidocr/install.sh
@@ -23,6 +24,7 @@ MangaReeda を起動し直し、設定画面の「プラグイン」の「本の
 ## 入れ方（Windows）
 
 [uv](https://docs.astral.sh/uv/) が要ります。PowerShell で、`mangareeda.exe` のあるフォルダを指定して実行すると、その下の `plugins\rapidocr` に入ります（リリースの zip を展開して使う MangaReeda 向けです）。
+リリースの `mangareeda-rapidocr-<版>.zip` を使うときは、展開したフォルダの `install.ps1` を同じように実行します（`powershell -ExecutionPolicy Bypass -File install.ps1 C:\Tools\mangareeda`）。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File plugins\rapidocr\install.ps1 C:\Tools\mangareeda

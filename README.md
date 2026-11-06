@@ -12,6 +12,22 @@ Linux と Windows で動く、オフラインのマンガ・コミックビュ�
 
 Localized in Japanese and English.
 
+## 更新情報
+
+### 2026.11.0
+
+#### 機能追加
+- Kindle Cloud Reader のプラグインを同梱しました。Amazon のアカウントと、Google Chrome 系のブラウザ（Windows は標準の Edge でも可。ほか Chromium 系の派生ブラウザなど）が要ります。本をダウンロードするツールではありません。ソフトの中でブラウザを動かして Cloud Reader を映すだけなので、できることには限りがあります（[docs/plugins.md](docs/plugins.md#kindle)）
+- OCR のプラグインに RapidOCR を追加しました（別の配布物。[plugins/rapidocr](plugins/rapidocr/README.md)）
+- キーの割り当てを「未割り当て」に戻せるようにし、操作「閉じる」を追加しました
+- 本を移動・コピーしても、OCR の結果を引き継ぐようにしました
+
+#### 修正
+- 「奇数ページ開始」の設定が、次の起動で戻っていたのを直しました
+- 単ページ表示から奇数ページ開始へ切り替えると、読んでいた位置がずれたのを直しました
+- 設定画面を整理しました（プラグインを「クラウド」と「OCR」に分けた、スライダーのはみ出しなど）
+- manga-ocr のプラグインの入れ方を直しました（入れ替えに失敗したときは前のものに戻す、など）
+
 ## 主な機能
 
 - 単ページ、見開き（右から左／左から右）、縦スクロール（Web マンガ）表示
@@ -20,8 +36,8 @@ Localized in Japanese and English.
 - ページのサムネイル一覧と、同じフォルダの冊を表紙で並べる表紙サムネイル
 - 冊ごとに読んでいた位置を覚えるしおりと履歴
 - 履歴とお気に入りを表紙で並べるブックリスト（表紙サムネイルの画面で Tab で切り替え）
-- プラグインで本の一覧を足せるブックリスト。Dropbox、Google Drive についてはプラグイン同梱。BOOKSCAN の本棚表示ができるプラグインも試作（[docs/plugins.md](docs/plugins.md)）
-- 本の本文を検索（Ctrl+F）。PDF に埋め込まれた透明テキストが対象。埋め込みテキストのない本は OCR のプラグインで読んでから探す（Windows は OS 標準搭載の高性能な OCR を使います。Linux は Tesseract のプラグインを同梱）。マンガ向けには [manga-ocr のプラグイン](plugins/manga-ocr/README.md)も試作しました
+- プラグインで本の一覧を足せるブックリスト。Dropbox、Google Drive、Kindle（Cloud Reader を窓の中で読む）についてはプラグイン同梱。BOOKSCAN の本棚表示ができるプラグインも試作（[docs/plugins.md](docs/plugins.md)）
+- 本の本文を検索（Ctrl+F）。PDF に埋め込まれた透明テキストが対象。埋め込みテキストのない本は OCR のプラグインで読んでから探す（Windows は OS 標準搭載の高性能な OCR を使います。Linux は Tesseract のプラグインを同梱）。マンガ向けには [manga-ocr のプラグイン](plugins/manga-ocr/README.md)も試作しました。軽く動く [RapidOCR のプラグイン](plugins/rapidocr/README.md)もあります
 - ファイルを横断した全文検索（Shift+Ctrl+F）。ファイル名については履歴・お気に入り・ダウンロード済みファイル、およびユーザーが設定したフォルダが対象。本文については、一度でも開いたことのある PDF（ソフト上でいま開いている本や、ソフトがアイドル状態の際にバックグラウンドで処理した本。最大 1000 冊）内の文字列と、独自の OCR 機能の結果を対象にできます。
 - ルーペ、表示の縮小拡大、およびそのフィルタ（最近傍、線形補間、Catmull-Rom、Lanczos3）
 - 書庫を展開せずに直接読む。サブフォルダの画像も読める
@@ -48,10 +64,11 @@ Localized in Japanese and English.
 
 | ファイル | 中身 |
 |---|---|
-| `mangareeda-<版>-windows-x64.zip` | Windows 版。本体と、Dropbox・Google Drive・OCR のプラグイン |
+| `mangareeda-<版>-windows-x64.zip` | Windows 版。本体と、Dropbox・Google Drive・Kindle・OCR のプラグイン |
 | `mangareeda-<版>-linux-x64.tar.gz` | Linux 版。同じく本体とプラグイン（PDF を開くための libpdfium.so も同梱） |
-| `mangareeda-bookscan-<版>-<OS>-x64` | BOOKSCAN のプラグイン。使う人だけ、本体と同じフォルダに置く |
+| `mangareeda-bookscan-<版>-<OS>-x64` | BOOKSCAN のプラグイン。使う人だけ、本体と同じフォルダに置く。変更の無い版では作らないので、Releases でいちばん新しいものを使う |
 | `mangareeda-manga-ocr-<版>.tar.gz` | マンガ向けの OCR のプラグイン（Linux、GPL-3.0） |
+| `mangareeda-rapidocr-<版>.tar.gz` / `.zip` | 軽い OCR のプラグイン（Linux・Windows。中身は同じ） |
 
 - このソフトは署名をしていないので、Windows で初めて起動するときに SmartScreen の警告が出ることがあります。
 - Linux では、展開したフォルダの `packaging/linux/install.sh` を実行すると、ランチャーにアイコン付きで出せます。OCR を使うには Tesseract が要ります（ビルドの節を参照）。
@@ -127,6 +144,22 @@ It brings many up-to-date features: links to cloud services such as Dropbox and 
 
 Localized in Japanese and English.
 
+## What's new
+
+### 2026.11.0
+
+#### New
+- A Kindle Cloud Reader plugin is now included. It needs an Amazon account and a Google Chrome-based browser (on Windows the built-in Edge works too, as do other Chromium-based browsers). It is not a tool for downloading books: it only runs a browser inside the app and shows Cloud Reader, so what it can do is limited ([docs/plugins.md](docs/plugins.md#kindle), in Japanese)
+- A RapidOCR plugin for OCR (a separate download, [plugins/rapidocr](plugins/rapidocr/README.md), in Japanese)
+- Key bindings can be set back to unassigned, and there is a new Close action
+- OCR results are kept when a book is moved or copied
+
+#### Fixes
+- The odd-page start setting went back to its old value on the next launch
+- Switching from single page view to an odd-page start moved away from the page being read
+- The settings window is tidied up (plugins grouped into Cloud and OCR, sliders no longer overflow, and more)
+- Installing the manga-ocr plugin is more robust (the previous one is put back if replacing it fails, and more)
+
 ## Features
 
 - Single page, double-page spread (right to left / left to right) and vertical scroll (web comic) views
@@ -135,8 +168,8 @@ Localized in Japanese and English.
 - Page thumbnails, and cover thumbnails of the books in the same folder
 - Per-book bookmarks and history
 - A book list of history and favorites shown as covers (Tab switches lists in the cover thumbnails)
-- Plugins that add book lists; plugins for Dropbox and Google Drive are included, and an experimental plugin shows the BOOKSCAN bookshelf ([docs/plugins.md](docs/plugins.md), in Japanese)
-- Search the text of a book (Ctrl+F): the transparent text embedded in PDFs. Books without embedded text are read by an OCR plugin first (on Windows, the capable OCR built into the OS; on Linux, a Tesseract plugin is included). There is also an experimental [manga-ocr plugin](plugins/manga-ocr/README.md) for manga
+- Plugins that add book lists; plugins for Dropbox, Google Drive and Kindle (reading Cloud Reader inside the window) are included, and an experimental plugin shows the BOOKSCAN bookshelf ([docs/plugins.md](docs/plugins.md), in Japanese)
+- Search the text of a book (Ctrl+F): the transparent text embedded in PDFs. Books without embedded text are read by an OCR plugin first (on Windows, the capable OCR built into the OS; on Linux, a Tesseract plugin is included). There is also an experimental [manga-ocr plugin](plugins/manga-ocr/README.md) for manga, and a lighter [RapidOCR plugin](plugins/rapidocr/README.md)
 - Full-text search across files (Ctrl+Shift+F): file names from the history, favorites, downloaded files and folders you set; text from every PDF opened at least once (the book open now and books processed in the background while the app is idle, up to 1000) and from the results of the built-in OCR
 - Loupe, zooming out and in, and their resampling filters (nearest, bilinear, Catmull-Rom, Lanczos3)
 - Reads archives directly without extracting them, optionally including images in subfolders
@@ -163,10 +196,11 @@ For those who do not build it themselves: download the file for your OS from [Re
 
 | File | Contents |
 |---|---|
-| `mangareeda-<version>-windows-x64.zip` | Windows build: the viewer and the Dropbox, Google Drive and OCR plugins |
+| `mangareeda-<version>-windows-x64.zip` | Windows build: the viewer and the Dropbox, Google Drive, Kindle and OCR plugins |
 | `mangareeda-<version>-linux-x64.tar.gz` | Linux build: the same, with libpdfium.so for opening PDFs |
-| `mangareeda-bookscan-<version>-<OS>-x64` | The BOOKSCAN plugin. Put it in the viewer's folder only if you use it |
+| `mangareeda-bookscan-<version>-<OS>-x64` | The BOOKSCAN plugin. Put it in the viewer's folder only if you use it. It is not rebuilt in versions that do not change it, so use the newest one in Releases |
 | `mangareeda-manga-ocr-<version>.tar.gz` | An OCR plugin for manga (Linux, GPL-3.0) |
+| `mangareeda-rapidocr-<version>.tar.gz` / `.zip` | A light OCR plugin (Linux and Windows; the same contents) |
 
 - The programs are not signed, so SmartScreen may warn the first time you run them on Windows.
 - On Linux, run `packaging/linux/install.sh` in the extracted folder to show the app with its icon in launchers. OCR needs Tesseract (see Build).

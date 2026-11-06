@@ -87,6 +87,10 @@ jobs:
 
       - name: Package
         shell: bash
+        # BOOKSCAN のプラグインを変えていない版では、リポジトリの変数 RELEASE_BOOKSCAN を no にして作らない
+        # （前の版のものをそのまま使ってもらう）
+        env:
+          RELEASE_BOOKSCAN: ${{ vars.RELEASE_BOOKSCAN }}
         run: packaging/release/package.sh "${{ matrix.os }}" "$VERSION" dist
 
       - uses: actions/upload-artifact@v7

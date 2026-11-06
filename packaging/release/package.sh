@@ -7,9 +7,11 @@
 #   packaging/release/package.sh windows <版> <出力先>   Windows 版（Git Bash などで。7z を使う）
 #
 # 作るもの:
-#   mangareeda-<版>-<OS>-x64            本体と、Dropbox・Google Drive・OCR のプラグイン
-#   mangareeda-bookscan-<版>-<OS>-x64   BOOKSCAN のプラグイン（使う人が選んで入れる）
+#   mangareeda-<版>-<OS>-x64            本体と、Dropbox・Google Drive・Kindle・OCR のプラグイン
+#   mangareeda-bookscan-<版>-<OS>-x64   BOOKSCAN のプラグイン（使う人が選んで入れる。
+#                                        環境変数 RELEASE_BOOKSCAN が no なら作らない）
 #   mangareeda-manga-ocr-<版>           manga-ocr のプラグイン（GPL-3.0。Linux 版のときだけ作る）
+#   mangareeda-rapidocr-<版>            RapidOCR のプラグイン（OS によらない。Linux 版は tar.gz、Windows 版は zip）
 set -eu
 
 os=$1
@@ -57,7 +59,7 @@ main="mangareeda-$version-$os-x64"
 dir="$out/$main"
 rm -rf "$dir"
 mkdir -p "$dir/docs"
-plugins="mangareeda-dropbox mangareeda-gdrive mangareeda-ocr-tesseract"
+plugins="mangareeda-dropbox mangareeda-gdrive mangareeda-kindle mangareeda-ocr-tesseract"
 if [ "$os" = windows ]; then
     plugins="$plugins mangareeda-ocr-windows"
 fi
@@ -83,15 +85,17 @@ case $os in
 esac
 archive "$main"
 
-# BOOKSCAN のプラグイン
-bookscan="mangareeda-bookscan-$version-$os-x64"
-dir="$out/$bookscan"
-rm -rf "$dir"
-mkdir -p "$dir"
-install -m 755 "$release/mangareeda-bookscan$exe" "$dir/"
-install -m 644 "$root/packaging/release/BOOKSCAN.md" "$dir/README.md"
-notices "$dir"
-archive "$bookscan"
+# BOOKSCAN のプラグイン（変えていない版では作らず、前の版のものを使ってもらう）
+if [ "${RELEASE_BOOKSCAN:-yes}" != no ]; then
+    bookscan="mangareeda-bookscan-$version-$os-x64"
+    dir="$out/$bookscan"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    install -m 755 "$release/mangareeda-bookscan$exe" "$dir/"
+    install -m 644 "$root/packaging/release/BOOKSCAN.md" "$dir/README.md"
+    notices "$dir"
+    archive "$bookscan"
+fi
 
 # manga-ocr のプラグイン（OS によらないので、Linux 版のときだけ作る）
 if [ "$os" = linux ]; then
@@ -105,6 +109,18 @@ if [ "$os" = linux ]; then
     install -m 755 "$root/plugins/manga-ocr/install.sh" "$root/plugins/manga-ocr/run.sh" "$dir/"
     archive "$manga"
 fi
+
+# RapidOCR のプラグイン（Python。OS によらないので、どちらの OS でも同じ中身を、その OS の書庫の形で作る）
+rapid="mangareeda-rapidocr-$version"
+dir="$out/$rapid"
+rm -rf "$dir"
+mkdir -p "$dir"
+for file in README.md plugin.json rapidocr_plugin.py run.cmd install.ps1; do
+    install -m 644 "$root/plugins/rapidocr/$file" "$dir/"
+done
+install -m 755 "$root/plugins/rapidocr/install.sh" "$root/plugins/rapidocr/run.sh" "$dir/"
+install -m 644 "$root/LICENSE" "$root/NOTICE" "$dir/"
+archive "$rapid"
 
 rm -f "$out/THIRD_PARTY_LICENSES.html"
 echo "作りました:"
