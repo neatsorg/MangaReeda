@@ -18,9 +18,9 @@ Localized in Japanese and English.
 
 #### 機能追加
 - Kindle Cloud Reader のプラグインを同梱しました。Amazon のアカウントと、Google Chrome 系のブラウザ（Windows は標準の Edge でも可。ほか Chromium 系の派生ブラウザなど）が要ります。本をダウンロードするツールではありません。ソフトの中でブラウザを動かして Cloud Reader を映すだけなので、できることには限りがあります（[docs/plugins.md](docs/plugins.md#kindle)）
-- OCR のプラグインに RapidOCR を追加しました（別の配布物。[plugins/rapidocr](plugins/rapidocr/README.md)）
+- OCR のプラグインに RapidOCR を追加しました。本体には同梱されていませんので別途ダウンロードしてください。さほど精度は高くありませんのでチューンして使うといいかもしれません。導入方法はアーカイブ内の README を参照（[plugins/rapidocr](plugins/rapidocr/README.md)）
 - キーの割り当てを「未割り当て」に戻せるようにし、操作「閉じる」を追加しました
-- 本を移動・コピーしても、OCR の結果を引き継ぐようにしました
+- 本を別の場所へ移動・コピーしても、OCR の結果を引き継ぐようにしました
 
 #### 修正
 - 「奇数ページ開始」の設定が、次の起動で戻っていたのを直しました
@@ -151,9 +151,9 @@ Localized in Japanese and English.
 
 #### New
 - A Kindle Cloud Reader plugin is now included. It needs an Amazon account and a Google Chrome-based browser (on Windows the built-in Edge works too, as do other Chromium-based browsers). It is not a tool for downloading books: it only runs a browser inside the app and shows Cloud Reader, so what it can do is limited ([docs/plugins.md](docs/plugins.md#kindle), in Japanese)
-- A RapidOCR plugin for OCR (a separate download, [plugins/rapidocr](plugins/rapidocr/README.md), in Japanese)
+- A RapidOCR plugin for OCR. It is not bundled with the viewer, so download it separately. Its accuracy is not very high, so you may want to tune it. See the README in the archive to install it ([plugins/rapidocr](plugins/rapidocr/README.md), in Japanese)
 - Key bindings can be set back to unassigned, and there is a new Close action
-- OCR results are kept when a book is moved or copied
+- OCR results are kept when a book is moved or copied to another place
 
 #### Fixes
 - The odd-page start setting went back to its old value on the next launch
